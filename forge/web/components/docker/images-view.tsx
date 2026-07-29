@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Trash2, RefreshCw, Download } from "lucide-react";
 import { listImages, pullImage, deleteImage, type DockerImage } from "@/lib/api/docker";
@@ -32,9 +32,11 @@ export function ImagesView() {
     queryKey: ["docker", "images"],
     queryFn: listImages,
     refetchInterval: 30_000,
+    retry: false,
+    staleTime: 10_000,
   });
 
-  const images = imagesQuery.data ?? [];
+  const images = useMemo(() => Array.isArray(imagesQuery.data) ? imagesQuery.data : [], [imagesQuery.data]);
 
   const pullMut = useMutation({
     mutationFn: ({ image, tag }: { image: string; tag: string }) => pullImage(image, tag || undefined),
@@ -46,8 +48,11 @@ export function ImagesView() {
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["docker", "images"] }); setDeleteTarget(null); },
   });
 
-  const filtered = images.filter(
-    (i) => !search || i.tags.toLowerCase().includes(search.toLowerCase()) || i.id.toLowerCase().includes(search.toLowerCase()),
+  const filtered = useMemo(
+    () => images.filter(
+      (i) => !search || i.tags.toLowerCase().includes(search.toLowerCase()) || i.id.toLowerCase().includes(search.toLowerCase()),
+    ),
+    [images, search],
   );
 
   return (

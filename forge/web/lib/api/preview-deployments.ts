@@ -24,11 +24,11 @@ export type PreviewDeployment = {
 };
 
 export async function fetchPreviewDeployments(): Promise<PreviewDeployment[]> {
-  return fetchJSON<PreviewDeployment[]>("/admin/preview-deployments");
+  return fetchJSON<{ data: PreviewDeployment[] }>("/admin/preview-deployments").then(r => r.data);
 }
 
 export async function fetchPreviewDeployment(id: string): Promise<PreviewDeployment> {
-  return fetchJSON<PreviewDeployment>(`/admin/preview-deployments/${encodeURIComponent(id)}`);
+  return fetchJSON<{ data: PreviewDeployment }>(`/admin/preview-deployments/${encodeURIComponent(id)}`).then(r => r.data);
 }
 
 export async function createPreviewDeployment(data: {
@@ -42,7 +42,7 @@ export async function createPreviewDeployment(data: {
   commitSha?: string;
   source?: string;
 }): Promise<PreviewDeployment> {
-  return postJSON<PreviewDeployment>("/admin/preview-deployments", data);
+  return postJSON<{ data: PreviewDeployment }>("/admin/preview-deployments", data).then(r => r.data);
 }
 
 export async function deployPreview(id: string): Promise<void> {

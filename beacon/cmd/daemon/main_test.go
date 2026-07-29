@@ -27,6 +27,8 @@ type recoveryRuntime struct {
 	restarts atomic.Int32
 }
 
+func (*recoveryRuntime) Close() error { return nil }
+
 type recoveryConsole struct{}
 
 func (*recoveryConsole) Read([]byte) (int, error)    { return 0, io.EOF }

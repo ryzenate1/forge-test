@@ -4,7 +4,7 @@ import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Shield, Plus, Trash2, RotateCw, AlertTriangle, CheckCircle, XCircle } from "lucide-react";
 import { fetchJSON, postJSON, deleteJSON } from "@/lib/api";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
+import { AdminPageLayout, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
 
 type Certificate = {
   id: string;
@@ -64,7 +64,7 @@ export default function AdminCertificatesPage() {
   const isExpired = (expiresAt: string) => new Date(expiresAt) < new Date();
 
   return (
-    <div className="space-y-6">
+    <AdminPageLayout>
       <SectionHeader
         title="Certificate Management"
         sub="Manage TLS/SSL certificates for proxy domains. Upload custom certificates or use Let's Encrypt auto-provisioning."
@@ -99,11 +99,11 @@ export default function AdminCertificatesPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
-                {filtered.map((cert) => (
+                {Array.isArray(filtered) && filtered.map((cert) => (
                   <tr key={cert.id} className="hover:bg-white/[0.02]">
                     <td className="px-4 py-3">
                       <div className="flex flex-col gap-0.5">
-                        {cert.domains.map((d, i) => (
+                        {Array.isArray(cert.domains) && cert.domains.map((d, i) => (
                           <span key={i} className="font-mono text-xs font-medium text-slate-200">{d}</span>
                         ))}
                       </div>
@@ -186,6 +186,6 @@ export default function AdminCertificatesPage() {
           />
         </Modal>
       )}
-    </div>
+    </AdminPageLayout>
   );
 }

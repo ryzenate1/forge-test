@@ -127,11 +127,12 @@ type InstallResult struct {
 }
 
 type ContainerState struct {
-	ServerID string
-	ID       string
-	Exists   bool
-	Running  bool
-	Status   string
+	ServerID  string
+	ID        string
+	Exists    bool
+	Running   bool
+	Status    string
+	StartedAt time.Time
 }
 
 // Reconciler is implemented by runtimes that can safely apply a desired
@@ -141,6 +142,7 @@ type Reconciler interface {
 }
 
 type Runtime interface {
+	Close() error
 	Create(ctx context.Context, req CreateRequest) error
 	Install(ctx context.Context, req InstallRequest) (InstallResult, error)
 	Inspect(ctx context.Context, serverID string) (ContainerState, error)

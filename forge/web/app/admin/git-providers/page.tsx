@@ -20,7 +20,7 @@ function ProviderIcon({ provider }: { provider: string }) {
   return (
     <Image
       src={providerIcons[provider] || `https://${provider}.com/favicon.ico`}
-      alt={provider}
+      alt={provider || "git provider"}
       width={20}
       height={20}
       unoptimized

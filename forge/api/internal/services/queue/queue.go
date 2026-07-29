@@ -15,21 +15,21 @@ import (
 type JobType string
 
 const (
-	JobServerStart        JobType = "server.start"
-	JobServerStop         JobType = "server.stop"
-	JobServerRestart      JobType = "server.restart"
-	JobServerKill         JobType = "server.kill"
-	JobServerInstall      JobType = "server.install"
-	JobServerUninstall    JobType = "server.uninstall"
-	JobBackupCreate       JobType = "backup.create"
-	JobBackupRestore      JobType = "backup.restore"
-	JobServerTransfer     JobType = "server.transfer"
-	JobComposeDeploy      JobType = "compose.deploy"
-	JobComposeUpdate      JobType = "compose.update"
-	JobComposeDelete      JobType = "compose.delete"
-	JobComposeStart       JobType = "compose.start"
-	JobComposeStop        JobType = "compose.stop"
-	JobComposeRestart     JobType = "compose.restart"
+	JobServerStart     JobType = "server.start"
+	JobServerStop      JobType = "server.stop"
+	JobServerRestart   JobType = "server.restart"
+	JobServerKill      JobType = "server.kill"
+	JobServerInstall   JobType = "server.install"
+	JobServerUninstall JobType = "server.uninstall"
+	JobBackupCreate    JobType = "backup.create"
+	JobBackupRestore   JobType = "backup.restore"
+	JobServerTransfer  JobType = "server.transfer"
+	JobComposeDeploy   JobType = "compose.deploy"
+	JobComposeUpdate   JobType = "compose.update"
+	JobComposeDelete   JobType = "compose.delete"
+	JobComposeStart    JobType = "compose.start"
+	JobComposeStop     JobType = "compose.stop"
+	JobComposeRestart  JobType = "compose.restart"
 )
 
 type JobStatus string
@@ -77,23 +77,34 @@ type QueueStore interface {
 type HandlerFunc func(context.Context, *Job) error
 
 type Service struct {
-	store    QueueStore
-	handlers map[JobType]HandlerFunc
-	workers  int
-	workerID string
-	lease    time.Duration
-	mu       sync.RWMutex
-	wg       sync.WaitGroup
-	cancel   context.CancelFunc
-	active   map[string]context.CancelFunc
-	activeMu sync.Mutex
+	store      QueueStore
+	handlers   map[JobType]HandlerFunc
+	workers    int
+	workerID   string
+	lease      time.Duration
+	jobTimeout time.Duration
+	mu         sync.RWMutex
+	wg         sync.WaitGroup
+	cancel     context.CancelFunc
+	active     map[string]context.CancelFunc
+	activeMu   sync.Mutex
 }
 
 func New(store QueueStore, workers int) *Service {
 	if workers <= 0 {
 		workers = 5
 	}
-	return &Service{store: store, handlers: make(map[JobType]HandlerFunc), workers: workers, workerID: uuid.NewString(), lease: 30 * time.Second, active: make(map[string]context.CancelFunc)}
+	return &Service{
+		store: store, handlers: make(map[JobType]HandlerFunc), workers: workers,
+		workerID: uuid.NewString(), lease: 30 * time.Second, jobTimeout: 30 * time.Minute,
+		active: make(map[string]context.CancelFunc),
+	}
+}
+
+func (s *Service) SetJobTimeout(timeout time.Duration) {
+	if timeout > 0 {
+		s.jobTimeout = timeout
+	}
 }
 
 func (s *Service) RegisterHandler(jobType JobType, handler HandlerFunc) {
@@ -144,7 +155,7 @@ func (s *Service) worker(ctx context.Context) {
 }
 
 func (s *Service) process(ctx context.Context, job *Job) {
-	jobCtx, jobCancel := context.WithCancel(ctx)
+	jobCtx, jobCancel := context.WithTimeout(ctx, s.jobTimeout)
 	s.activeMu.Lock()
 	s.active[job.ID] = jobCancel
 	s.activeMu.Unlock()

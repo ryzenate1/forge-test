@@ -28,6 +28,7 @@ export class WebSocketManager {
   private retryCount = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private aborted = false;
+  private reconnecting = false;
   private _status: ConnectionStatus = "disconnected";
   private buffer: string[] = [];
   private initialConnection = true;
@@ -121,6 +122,10 @@ export class WebSocketManager {
 
     this.ws.onclose = () => {
       if (this.aborted) return;
+      if (this.reconnecting) {
+        this.reconnecting = false;
+        return;
+      }
       this.setStatus("disconnected");
       this.initialConnection = false;
       this.scheduleReconnect();
@@ -177,6 +182,7 @@ export class WebSocketManager {
 
   reconnect() {
     this.aborted = true;
+    this.reconnecting = true;
     if (this.retryTimer) {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
@@ -194,8 +200,20 @@ export function useWebSocket(config: WebSocketConfig) {
   const managerRef = useRef<WebSocketManager | null>(null);
   const { url, factory, onMessage, onStatusChange, onError, maxRetries, baseDelay, maxDelay } = config;
 
+  const onMessageRef = useRef(onMessage);
+  const onStatusChangeRef = useRef(onStatusChange);
+  const onErrorRef = useRef(onError);
+  onMessageRef.current = onMessage;
+  onStatusChangeRef.current = onStatusChange;
+  onErrorRef.current = onError;
+
   useEffect(() => {
-    const manager = new WebSocketManager({ url, factory, maxRetries, baseDelay, maxDelay });
+    const manager = new WebSocketManager({
+      url, factory, maxRetries, baseDelay, maxDelay,
+      onMessage: (data) => onMessageRef.current?.(data),
+      onStatusChange: (status) => onStatusChangeRef.current?.(status),
+      onError: (err) => onErrorRef.current?.(err),
+    });
     managerRef.current = manager;
     void manager.connect();
     return () => {
@@ -203,14 +221,6 @@ export function useWebSocket(config: WebSocketConfig) {
       managerRef.current = null;
     };
   }, [url, factory, maxRetries, baseDelay, maxDelay]);
-
-  useEffect(() => {
-    if (managerRef.current) {
-      managerRef.current.onMessage = onMessage;
-      managerRef.current.onStatusChange = onStatusChange;
-      managerRef.current.onError = onError;
-    }
-  }, [onError, onMessage, onStatusChange]);
 
   return useMemo(
     () => ({

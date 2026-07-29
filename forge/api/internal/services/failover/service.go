@@ -10,8 +10,6 @@ import (
 
 	"gamepanel/forge/internal/events"
 	"gamepanel/forge/internal/store"
-
-	"github.com/google/uuid"
 )
 
 type FailoverAction string
@@ -166,13 +164,6 @@ func (s *Service) HandleNodeOffline(ctx context.Context, nodeID string, payload 
 		return errors.New("nodeId is required")
 	}
 
-	s.mu.Lock()
-	if s.hasActiveIncidentLocked(ctx, nodeID) {
-		s.mu.Unlock()
-		return nil
-	}
-	s.mu.Unlock()
-
 	policies, err := s.db.ListFailoverPoliciesByNode(ctx, nodeID)
 	if err != nil {
 		return err
@@ -196,7 +187,6 @@ func (s *Service) HandleNodeOffline(ctx context.Context, nodeID string, payload 
 			if err == nil && action != FailoverActionNotify {
 				if matchingPolicy == nil {
 					matchingPolicy = &Policy{
-						ID:          uuid.New().String(),
 						Action:      action,
 						MaxFailures: 1,
 						CooldownSec: defaultCooldownSec,
@@ -210,7 +200,6 @@ func (s *Service) HandleNodeOffline(ctx context.Context, nodeID string, payload 
 			// Default to Evacuate for node failure scenarios
 			if matchingPolicy == nil {
 				matchingPolicy = &Policy{
-					ID:          uuid.New().String(),
 					Action:      FailoverActionEvacuate,
 					MaxFailures: 1,
 					CooldownSec: defaultCooldownSec,
@@ -228,17 +217,13 @@ func (s *Service) HandleNodeOffline(ctx context.Context, nodeID string, payload 
 		}
 	}
 
-	s.mu.Lock()
-	if s.hasActiveIncidentLocked(ctx, nodeID) {
-		s.mu.Unlock()
-		return nil
-	}
-	incident, err := s.createIncident(ctx, nodeID, matchingPolicy.ID, reason)
+	incident, created, err := s.createIncident(ctx, nodeID, matchingPolicy.ID, reason)
 	if err != nil {
-		s.mu.Unlock()
 		return err
 	}
-	s.mu.Unlock()
+	if !created {
+		return nil
+	}
 
 	_, err = s.executeAction(ctx, matchingPolicy, EventNodeFailure, nodeID, "",
 		fmt.Sprintf("node %s offline incident %s: %s", nodeID, incident, reason))
@@ -264,7 +249,7 @@ func (s *Service) hasActiveIncidentLocked(ctx context.Context, nodeID string) bo
 
 // createIncident persists a durable incident record that acts as a lock
 // against duplicate failover actions for the same node failure.
-func (s *Service) createIncident(ctx context.Context, nodeID, policyID, reason string) (string, error) {
+func (s *Service) createIncident(ctx context.Context, nodeID, policyID, reason string) (string, bool, error) {
 	evt := store.FailoverEvent{
 		PolicyID:  policyID,
 		NodeID:    nodeID,
@@ -273,10 +258,11 @@ func (s *Service) createIncident(ctx context.Context, nodeID, policyID, reason s
 		Status:    "detected",
 		Message:   reason,
 	}
-	if err := s.db.CreateFailoverEvent(ctx, &evt); err != nil {
-		return "", err
+	created, err := s.db.CreateFailoverIncident(ctx, &evt, activeIncidentWindow)
+	if err != nil {
+		return "", false, err
 	}
-	return evt.ID, nil
+	return evt.ID, created, nil
 }
 
 func (s *Service) CreatePolicy(ctx context.Context, policy *Policy) error {
@@ -453,13 +439,17 @@ func (s *Service) HandleServerCrash(ctx context.Context, serverID, nodeID string
 func (s *Service) executeAction(ctx context.Context, policy *Policy, eventType FailoverEventType, nodeID, serverID, message string) (*Event, error) {
 	s.mu.Lock()
 	now := time.Now().UTC()
-	if last := s.lastAction[policy.ID]; !last.IsZero() && now.Sub(last) < time.Duration(policy.CooldownSec)*time.Second {
+	actionKey := policy.ID
+	if actionKey == "" {
+		actionKey = "node:" + nodeID
+	}
+	if last := s.lastAction[actionKey]; !last.IsZero() && now.Sub(last) < time.Duration(policy.CooldownSec)*time.Second {
 		s.mu.Unlock()
 		return nil, nil
 	}
 	// Claim the cooldown before running the executor so event-delivery retries
 	// cannot start the same failover twice.
-	s.lastAction[policy.ID] = now
+	s.lastAction[actionKey] = now
 	s.failures[nodeID] = nil
 	executor := s.executor
 	s.mu.Unlock()

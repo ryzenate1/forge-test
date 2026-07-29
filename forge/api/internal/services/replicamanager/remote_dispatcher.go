@@ -41,11 +41,11 @@ func (d *RemoteCommandDispatcher) StartInstance(ctx context.Context, req StartIn
 	}
 
 	createReq := daemon.CreateRequest{
-		ServerID:   req.InstanceID,
-		MemoryMB:   int64(req.MemoryMB),
-		CPUShares:  int64(req.CPU),
-		DiskMB:     int64(req.DiskMB),
-		Provider:   req.RuntimeProvider,
+		ServerID:    req.InstanceID,
+		MemoryMB:    int64(req.MemoryMB),
+		CPUShares:   int64(req.CPU),
+		DiskMB:      int64(req.DiskMB),
+		Provider:    req.RuntimeProvider,
 		NetworkName: "gamepanel",
 	}
 	if req.Image != "" {
@@ -58,7 +58,6 @@ func (d *RemoteCommandDispatcher) StartInstance(ctx context.Context, req StartIn
 		d.logger.ErrorContext(ctx, "remote start instance failed",
 			"instanceId", req.InstanceID,
 			"nodeId", req.NodeID,
-			"nodeUrl", node.BaseURL,
 			"error", err,
 		)
 		return CommandReceipt{}, err
@@ -87,7 +86,6 @@ func (d *RemoteCommandDispatcher) StopInstance(ctx context.Context, req StopInst
 		d.logger.ErrorContext(ctx, "remote stop instance failed",
 			"instanceId", req.InstanceID,
 			"nodeId", req.NodeID,
-			"nodeUrl", node.BaseURL,
 			"error", err,
 		)
 		return CommandReceipt{}, err

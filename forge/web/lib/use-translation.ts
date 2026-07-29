@@ -93,17 +93,32 @@ export function useTranslation() {
 
   const changeLocale = useCallback((newLocale: Locale) => {
     document.cookie = `NEXT_LOCALE=${newLocale};path=/;max-age=31536000;SameSite=Lax`;
+    document.documentElement.lang = newLocale;
     setLocale(newLocale);
+  }, []);
+
+  const preloadAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => { preloadAbortRef.current?.abort(); };
   }, []);
 
   const preloadLocale = useCallback((localeToPreload: Locale) => {
     if (translationCache.has(localeToPreload) || localeToPreload === locale) return;
-    fetch(`/api/i18n/${localeToPreload}`)
+    preloadAbortRef.current?.abort();
+    const controller = new AbortController();
+    preloadAbortRef.current = controller;
+    fetch(`/api/i18n/${localeToPreload}`, { signal: controller.signal })
       .then((res) => res.json())
       .then((data) => {
-        translationCache.set(localeToPreload, data as Messages);
+        if (!controller.signal.aborted) {
+          translationCache.set(localeToPreload, data as Messages);
+        }
       })
-      .catch(() => {});
+      .catch((err) => {
+        if (err?.name === "AbortError") return;
+        console.warn("[i18n] preloadLocale failed:", err);
+      });
   }, [locale, translationCache]);
 
   return { t, locale, changeLocale, loading, supportedLocales: DEFAULT_I18N_CONFIG.supportedLocales, preloadLocale };

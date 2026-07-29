@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"mime"
 	"net"
 	"net/mail"
 	"net/smtp"
@@ -179,19 +180,43 @@ type EmailMessage struct {
 func (s *EmailService) Send(ctx context.Context, message EmailMessage) error {
 	// Create the email
 	from := mail.Address{Name: s.config.FromName, Address: s.config.FromAddress}
+	if strings.ContainsAny(s.config.FromName, "\r\n") {
+		return fmt.Errorf("from name contains invalid header characters")
+	}
+	parsedFrom, err := mail.ParseAddress(from.String())
+	if err != nil {
+		return fmt.Errorf("invalid from address: %w", err)
+	}
+	from = *parsedFrom
 
 	// Parse recipients
 	var toAddrs []mail.Address
 	for _, recipient := range message.To {
-		// Simple parsing - could be enhanced
-		toAddrs = append(toAddrs, mail.Address{Address: recipient})
+		if strings.ContainsAny(recipient, "\r\n") {
+			return fmt.Errorf("recipient contains invalid header characters")
+		}
+		parsedRecipient, err := mail.ParseAddress(recipient)
+		if err != nil {
+			return fmt.Errorf("invalid recipient: %w", err)
+		}
+		toAddrs = append(toAddrs, *parsedRecipient)
+	}
+	if len(toAddrs) == 0 {
+		return fmt.Errorf("at least one recipient is required")
+	}
+	if strings.ContainsAny(message.Subject, "\r\n") {
+		return fmt.Errorf("subject contains invalid header characters")
+	}
+	toHeader := make([]string, 0, len(toAddrs))
+	for _, recipient := range toAddrs {
+		toHeader = append(toHeader, recipient.String())
 	}
 
 	// Set up the email headers
 	headers := map[string]string{
 		"From":         from.String(),
-		"To":           strings.Join(message.To, ", "),
-		"Subject":      message.Subject,
+		"To":           strings.Join(toHeader, ", "),
+		"Subject":      mime.QEncoding.Encode("utf-8", message.Subject),
 		"Date":         time.Now().Format(time.RFC1123Z),
 		"Content-Type": "text/plain; charset=UTF-8",
 	}
@@ -356,12 +381,12 @@ func executeTemplate(tmpl string, data interface{}) (string, error) {
 // EmailNotificationData represents data for email notifications
 type EmailNotificationData struct {
 	EventType    string
-	ResourceID  string
+	ResourceID   string
 	ResourceType string
-	Timestamp   string
-	Payload     map[string]interface{}
-	Severity    string
-	Message     string
+	Timestamp    string
+	Payload      map[string]interface{}
+	Severity     string
+	Message      string
 }
 
 // SendAlertEmail sends an alert email notification
@@ -371,9 +396,9 @@ func (s *EmailService) SendAlertEmail(ctx context.Context, recipients []string, 
 		ResourceID:   alert.EntityID,
 		ResourceType: string(alert.EntityType),
 		Timestamp:    time.Now().Format(time.RFC3339),
-		Payload:     map[string]interface{}{},
-		Severity:    "warning", // Default, can be overridden
-		Message:     message,
+		Payload:      map[string]interface{}{},
+		Severity:     "warning", // Default, can be overridden
+		Message:      message,
 	}
 
 	// Use a custom template for alerts

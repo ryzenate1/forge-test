@@ -4,8 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Terminal as XTerm } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import { Terminal as TerminalIcon, RefreshCw, Wifi, WifiOff } from "lucide-react";
-import { API_BASE_URL } from "@/lib/api/http";
-import { Card, CardHeader, SectionHeader, Btn } from "@/components/admin/admin-ui";
+import { API_BASE_URL, checkApiReachable } from "@/lib/api/http";
+import { Card, CardHeader, Btn, AdminToolbar, AdminLoadingState, AdminPageLayout, AdminPageHeader } from "@/components/admin/admin-ui";
 import { NodeSelect } from "@/components/admin/node-select";
 import { cn } from "@/lib/utils";
 import "@xterm/xterm/css/xterm.css";
@@ -130,21 +130,14 @@ export default function AdminTerminalPage() {
 
     const wsUrl = API_BASE_URL.replace(/^http/, "ws") + "/host/terminal/ws"
       + (nodeId ? `?nodeId=${encodeURIComponent(nodeId)}` : "");
-    const apiBase = API_BASE_URL;
 
     void (async () => {
       if (aborted) return;
-      try {
-        const res = await fetch(`${apiBase}/health`, { signal: AbortSignal.timeout(3000) });
-        if (!res.ok && !aborted) {
-          terminal.writeln("\x1b[1;33mAPI responded, connecting...\x1b[0m");
-        }
-      } catch {
-        if (!aborted) {
-          setError(`API unreachable at ${apiBase} — make sure the Go backend is running`);
-          terminal.writeln(`\x1b[1;31mAPI unreachable\x1b[0m`);
-          return;
-        }
+      const reachable = await checkApiReachable();
+      if (!reachable && !aborted) {
+        setError("API unreachable — make sure the Go backend is running");
+        terminal.writeln("\x1b[1;31mAPI unreachable\x1b[0m");
+        return;
       }
     })();
 
@@ -166,8 +159,9 @@ export default function AdminTerminalPage() {
       if (aborted) return;
       if (event.data instanceof Blob) {
         event.data.arrayBuffer().then((buf) => {
+          if (aborted) return;
           terminal.write(new Uint8Array(buf));
-        });
+        }).catch((err) => console.error("[Terminal] arrayBuffer error:", err));
         return;
       }
       terminal.write(event.data);
@@ -175,7 +169,7 @@ export default function AdminTerminalPage() {
 
     ws.onerror = () => {
       if (aborted) return;
-      setError(`WebSocket connection failed — ${apiBase}/host/terminal/ws not reachable`);
+      setError(`WebSocket connection failed — ${API_BASE_URL}/host/terminal/ws not reachable`);
       terminal.writeln("\x1b[1;31mConnection failed\x1b[0m");
     };
 
@@ -209,17 +203,14 @@ export default function AdminTerminalPage() {
   }, []);
 
   return (
-    <div className="space-y-6">
-      <SectionHeader
-        title="Host Terminal"
-        sub="Interactive shell on the host system"
-      />
+    <AdminPageLayout>
+      <AdminPageHeader title="Host Terminal" description="Interactive shell on the host system" />
       <Card>
         <CardHeader
           title="Terminal"
           icon={TerminalIcon}
           action={
-            <div className="flex items-center gap-3">
+            <AdminToolbar className="border-0 bg-transparent p-0">
               <NodeSelect value={nodeId} onChange={handleNodeChange} />
               <span
                 className={cn(
@@ -236,7 +227,7 @@ export default function AdminTerminalPage() {
                 <RefreshCw size={12} />
                 Reconnect
               </Btn>
-            </div>
+            </AdminToolbar>
           }
         />
         <div className="p-0">
@@ -246,12 +237,17 @@ export default function AdminTerminalPage() {
               <button className="ml-3 underline font-semibold" onClick={handleRetry} type="button">Retry</button>
             </div>
           ) : null}
+          {!terminalReady && !error ? (
+            <div className="mx-4 mt-4">
+              <AdminLoadingState label="Initializing terminal..." />
+            </div>
+          ) : null}
           <div
             ref={terminalRef}
-            className="h-[calc(100vh-20rem)] min-h-[300px] w-full bg-[#020617]"
+            className={cn("h-[calc(100vh-20rem)] min-h-[300px] w-full bg-[#020617]", !terminalReady && "hidden")}
           />
         </div>
       </Card>
-    </div>
+    </AdminPageLayout>
   );
 }

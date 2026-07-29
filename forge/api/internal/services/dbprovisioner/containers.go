@@ -42,8 +42,13 @@ func NewDBContainerService(s *store.Store, dc *daemon.Client, beaconBaseURL, nod
 }
 
 func generatePassword(length int) string {
-	b := make([]byte, length)
-	_, _ = rand.Read(b)
+	if length <= 0 {
+		return ""
+	}
+	b := make([]byte, (length+1)/2)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
 	return hex.EncodeToString(b)[:length]
 }
 
@@ -76,11 +81,12 @@ func envVarsForDB(engine, dbName, username, password string) []string {
 			"POSTGRES_PASSWORD=" + password,
 		}
 	case "mysql", "mariadb":
+		rootPassword := generatePassword(64)
 		return []string{
 			"MYSQL_DATABASE=" + dbName,
 			"MYSQL_USER=" + username,
 			"MYSQL_PASSWORD=" + password,
-			"MYSQL_ROOT_PASSWORD=" + password,
+			"MYSQL_ROOT_PASSWORD=" + rootPassword,
 		}
 	case "mongodb":
 		return []string{
@@ -164,6 +170,9 @@ func (s *DBContainerService) Provision(ctx context.Context, serverID, engine, ve
 	dbName := generateDBName()
 	username := generateUsername()
 	password := generatePassword(32)
+	if password == "" {
+		return store.DBContainer{}, errors.New("generate database password")
+	}
 	volumeName := "mgp-db-" + db.ID[:12]
 	port := defaultPortForEngine(engine)
 
@@ -212,6 +221,9 @@ func (s *DBContainerService) ProvisionDevFallback(ctx context.Context, serverID,
 	dbName := generateDBName()
 	username := generateUsername()
 	password := generatePassword(32)
+	if password == "" {
+		return store.DBContainer{}, errors.New("generate database password")
+	}
 	volumeName := "mgp-db-" + db.ID[:12]
 	port := defaultPortForEngine(engine)
 	host := s.dockerHost

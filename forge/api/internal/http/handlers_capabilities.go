@@ -108,17 +108,17 @@ func registerCapabilityRoutes(protected fiber.Router, cfg Config, nodeProbe *nod
 		capabilitiesJSON, _ := json.Marshal(capEntries)
 
 		nc := &store.NodeCapability{
-			NodeID:          nodeID,
-			BeaconVersion:   info.Version,
-			OS:              info.OS,
-			Architecture:    info.Architecture,
-			CPUThreads:      info.CPUThreads,
-			MemoryMB:        int64(info.MemoryMB),
-			UptimeSeconds:   info.UptimeSeconds,
+			NodeID:           nodeID,
+			BeaconVersion:    info.Version,
+			OS:               info.OS,
+			Architecture:     info.Architecture,
+			CPUThreads:       info.CPUThreads,
+			MemoryMB:         int64(info.MemoryMB),
+			UptimeSeconds:    info.UptimeSeconds,
 			RuntimeAvailable: info.DockerAvailable,
-			RuntimeStatus:   info.DockerStatus,
-			RawReport:       capabilitiesJSON,
-			FetchedAt:       time.Now().UTC(),
+			RuntimeStatus:    info.DockerStatus,
+			RawReport:        capabilitiesJSON,
+			FetchedAt:        time.Now().UTC(),
 		}
 		if err := cfg.Store.UpsertNodeCapability(ctx, nc); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
@@ -178,16 +178,16 @@ func registerCapabilityRoutes(protected fiber.Router, cfg Config, nodeProbe *nod
 		}
 
 		nc := &store.NodeCapability{
-			NodeID:           report.NodeID,
-			BeaconVersion:    report.BeaconVersion,
-			OS:               report.OS,
-			Architecture:     report.Architecture,
-			CPUThreads:       report.CPUThreads,
-			MemoryMB:         report.MemoryMB,
-			DiskMB:           report.DiskMB,
-			UptimeSeconds:    report.UptimeSeconds,
-			RawReport:        report.Capabilities,
-			FetchedAt:        fetchedAt,
+			NodeID:        report.NodeID,
+			BeaconVersion: report.BeaconVersion,
+			OS:            report.OS,
+			Architecture:  report.Architecture,
+			CPUThreads:    report.CPUThreads,
+			MemoryMB:      report.MemoryMB,
+			DiskMB:        report.DiskMB,
+			UptimeSeconds: report.UptimeSeconds,
+			RawReport:     report.Capabilities,
+			FetchedAt:     fetchedAt,
 		}
 		if err := cfg.Store.UpsertNodeCapability(ctx, nc); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
@@ -203,8 +203,8 @@ func registerCapabilityRoutes(protected fiber.Router, cfg Config, nodeProbe *nod
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
 		var req struct {
-			NodeID    string `json:"nodeId"`
-			TTLHours  int    `json:"ttlHours"`
+			NodeID   string `json:"nodeId"`
+			TTLHours int    `json:"ttlHours"`
 		}
 		if err := c.BodyParser(&req); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request")
@@ -228,11 +228,11 @@ func registerCapabilityRoutes(protected fiber.Router, cfg Config, nodeProbe *nod
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-			"token":       token.TokenHash,
-			"tokenId":     token.ID,
-			"nodeId":      token.NodeID,
-			"expiresAt":   token.ExpiresAt.Format(time.RFC3339),
-			"state":       token.State,
+			"token":     token.PlainToken,
+			"tokenId":   token.ID,
+			"nodeId":    token.NodeID,
+			"expiresAt": token.ExpiresAt.Format(time.RFC3339),
+			"state":     token.State,
 		})
 	})
 

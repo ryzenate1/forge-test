@@ -42,10 +42,10 @@ const (
 type NodeActualState string
 
 const (
-	NodeActualStateOnline       NodeActualState = "online"
-	NodeActualStateOffline      NodeActualState = "offline"
-	NodeActualStateDegraded     NodeActualState = "degraded"
-	NodeActualStateReconciling  NodeActualState = "reconciling"
+	NodeActualStateOnline      NodeActualState = "online"
+	NodeActualStateOffline     NodeActualState = "offline"
+	NodeActualStateDegraded    NodeActualState = "degraded"
+	NodeActualStateReconciling NodeActualState = "reconciling"
 )
 
 type NodeHealth struct {
@@ -125,6 +125,24 @@ type PlacementRequest struct {
 	CPUShares       int    `json:"cpuShares,omitempty"`
 	CPU             int    `json:"cpu,omitempty"`
 	DiskMB          int    `json:"diskMb,omitempty"`
+}
+
+type ConstraintFailure struct {
+	Constraint string `json:"constraint"`
+	Required   string `json:"required"`
+	Available  string `json:"available"`
+	Message    string `json:"message"`
+}
+
+type TargetValidationError struct {
+	Code            string              `json:"code"`
+	Message         string              `json:"message"`
+	Reasons         []ConstraintFailure `json:"reasons"`
+	EligibleTargets []string            `json:"-"`
+}
+
+func (e *TargetValidationError) Error() string {
+	return e.Message
 }
 
 type PlacementDecision struct {
@@ -289,34 +307,34 @@ const (
 type EndpointStatus string
 
 const (
-	EndpointStatusUnknown    EndpointStatus = "unknown"
-	EndpointStatusOnline     EndpointStatus = "online"
-	EndpointStatusDegraded   EndpointStatus = "degraded"
-	EndpointStatusOffline    EndpointStatus = "offline"
+	EndpointStatusUnknown      EndpointStatus = "unknown"
+	EndpointStatusOnline       EndpointStatus = "online"
+	EndpointStatusDegraded     EndpointStatus = "degraded"
+	EndpointStatusOffline      EndpointStatus = "offline"
 	EndpointStatusProvisioning EndpointStatus = "provisioning"
 )
 
 type Endpoint struct {
-	ID                string               `json:"id"`
-	Name              string               `json:"name"`
-	Description       string               `json:"description"`
-	EndpointType      EndpointType          `json:"endpointType"`
-	ConnectionMode    ConnectionMode        `json:"connectionMode"`
-	Status            EndpointStatus        `json:"status"`
-	EdgeID            string               `json:"edgeId,omitempty"`
-	Tags              []string             `json:"tags"`
-	Labels            []LabelPair           `json:"labels"`
-	URL               string               `json:"url,omitempty"`
-	ProjectID         string               `json:"projectId,omitempty"`
-	GroupID           string               `json:"groupId,omitempty"`
-	Reachable         bool                 `json:"reachable"`
-	Version           string               `json:"version,omitempty"`
-	NodeCount         int                  `json:"nodeCount"`
-	TotalContainers   int                  `json:"totalContainers"`
-	TotalImages       int                  `json:"totalImages"`
-	TotalVolumes      int                  `json:"totalVolumes"`
-	CreatedAt         time.Time            `json:"createdAt"`
-	UpdatedAt         time.Time            `json:"updatedAt"`
+	ID              string         `json:"id"`
+	Name            string         `json:"name"`
+	Description     string         `json:"description"`
+	EndpointType    EndpointType   `json:"endpointType"`
+	ConnectionMode  ConnectionMode `json:"connectionMode"`
+	Status          EndpointStatus `json:"status"`
+	EdgeID          string         `json:"edgeId,omitempty"`
+	Tags            []string       `json:"tags"`
+	Labels          []LabelPair    `json:"labels"`
+	URL             string         `json:"url,omitempty"`
+	ProjectID       string         `json:"projectId,omitempty"`
+	GroupID         string         `json:"groupId,omitempty"`
+	Reachable       bool           `json:"reachable"`
+	Version         string         `json:"version,omitempty"`
+	NodeCount       int            `json:"nodeCount"`
+	TotalContainers int            `json:"totalContainers"`
+	TotalImages     int            `json:"totalImages"`
+	TotalVolumes    int            `json:"totalVolumes"`
+	CreatedAt       time.Time      `json:"createdAt"`
+	UpdatedAt       time.Time      `json:"updatedAt"`
 }
 
 type LabelPair struct {
@@ -338,25 +356,25 @@ type EndpointDiagnostics struct {
 }
 
 type NodeSummary struct {
-	NodeID       string `json:"nodeId"`
-	Name         string `json:"name"`
-	Status       string `json:"status"`
-	ServerCount  int    `json:"serverCount"`
-	AllocatedMem int    `json:"allocatedMemMb"`
-	AllocatedCPU int    `json:"allocatedCpu"`
-	AllocatedDisk int   `json:"allocatedDiskMb"`
+	NodeID        string `json:"nodeId"`
+	Name          string `json:"name"`
+	Status        string `json:"status"`
+	ServerCount   int    `json:"serverCount"`
+	AllocatedMem  int    `json:"allocatedMemMb"`
+	AllocatedCPU  int    `json:"allocatedCpu"`
+	AllocatedDisk int    `json:"allocatedDiskMb"`
 }
 
 type InventorySummary struct {
-	TotalServers   int `json:"totalServers"`
-	TotalContainers int `json:"totalContainers"`
-	TotalImages    int `json:"totalImages"`
-	TotalVolumes   int `json:"totalVolumes"`
-	TotalAllocations int `json:"totalAllocations"`
-	UsedMemoryMB   int64 `json:"usedMemoryMb"`
-	TotalMemoryMB  int64 `json:"totalMemoryMb"`
-	UsedDiskMB     int64 `json:"usedDiskMb"`
-	TotalDiskMB    int64 `json:"totalDiskMb"`
+	TotalServers     int   `json:"totalServers"`
+	TotalContainers  int   `json:"totalContainers"`
+	TotalImages      int   `json:"totalImages"`
+	TotalVolumes     int   `json:"totalVolumes"`
+	TotalAllocations int   `json:"totalAllocations"`
+	UsedMemoryMB     int64 `json:"usedMemoryMb"`
+	TotalMemoryMB    int64 `json:"totalMemoryMb"`
+	UsedDiskMB       int64 `json:"usedDiskMb"`
+	TotalDiskMB      int64 `json:"totalDiskMb"`
 }
 
 type HealthRecord struct {
@@ -413,5 +431,5 @@ type UpdateEndpointRequest struct {
 type TLSConfig struct {
 	CACert  string `json:"caCert"`
 	TLSCert string `json:"tlsCert"`
-	TLSKey  string `json:"tlsKey"`
+	TLSKey  string `json:"-"`
 }

@@ -137,7 +137,14 @@ export function ConsoleView({ server }: { server: ApiServer }) {
     if (!canConsole) { setConnection("error"); setConnectionError("You do not have permission to access this server console."); return; }
     setConnection(nonce ? "reconnecting" : "connecting");
     setConnectionError("");
-    void fetchServerLogs(server.id).then((logs) => setLines(logs.split("\n").filter(Boolean).slice(-MAX_LINES))).catch((error) => setConnectionError(error instanceof Error ? error.message : "Previous logs could not be loaded."));
+    let aborted = false;
+    void fetchServerLogs(server.id).then((logs) => {
+      if (aborted) return;
+      setLines(logs.split("\n").filter(Boolean).slice(-MAX_LINES));
+    }).catch((error) => {
+      if (aborted) return;
+      setConnectionError(error instanceof Error ? error.message : "Previous logs could not be loaded.");
+    });
 
     const manager = new WebSocketManager({
       maxRetries: 20,
@@ -179,7 +186,7 @@ export function ConsoleView({ server }: { server: ApiServer }) {
     socketRef.current = proxySocket;
 
     void manager.connect();
-    return () => { manager.disconnect(); socketRef.current = null; cmdBuffer.current = []; };
+    return () => { aborted = true; manager.disconnect(); socketRef.current = null; cmdBuffer.current = []; };
   }, [canConsole, nonce, server.id]);
 
   useEffect(() => {

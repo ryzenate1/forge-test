@@ -166,3 +166,13 @@ func TestFirstNonEmpty(t *testing.T) {
 		})
 	}
 }
+
+func hasCapacity(total, available, requested int) bool {
+	if total <= 0 {
+		return true
+	}
+	if requested <= 0 {
+		return true
+	}
+	return requested <= available
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, use } from "react";
+import { useState, use, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import {
@@ -65,11 +65,11 @@ export default function AppDeploymentsPage({ params }: { params: Promise<{ id: s
     rollbackMut.mutate();
   };
 
-  const deployments = deploymentsQuery.data ?? [];
+  const deployments = useMemo(() => deploymentsQuery.data ?? [], [deploymentsQuery.data]);
   const app = appQuery.data;
-  const inProgress = deployments.filter(
+  const inProgress = useMemo(() => Array.isArray(deployments) ? deployments.filter(
     (d) => d.status === "pending" || d.status === "running",
-  );
+  ) : [], [deployments]);
 
   const buildRollbackChanges = (dep: AppDeployment): RollbackChange[] => {
     const changes: RollbackChange[] = [];
@@ -96,7 +96,7 @@ export default function AppDeploymentsPage({ params }: { params: Promise<{ id: s
         </Btn>
         <SectionHeader
           title="Deployments"
-          sub={app ? `${app.name} - ${deployments.length} total` : "Loading..."}
+          sub={app ? `${app.name} - ${(Array.isArray(deployments) ? deployments : []).length} total` : "Loading..."}
         />
         <div className="ml-auto flex gap-2">
           <Btn tone="ghost" size="sm" onClick={() => setShowCompare(!showCompare)}>
@@ -110,7 +110,7 @@ export default function AppDeploymentsPage({ params }: { params: Promise<{ id: s
         </div>
       </div>
 
-      {inProgress.length > 0 && (
+      {Array.isArray(inProgress) && inProgress.length > 0 && (
         <Card>
           <CardHeader
             title="Active Deployment"
@@ -139,7 +139,7 @@ export default function AppDeploymentsPage({ params }: { params: Promise<{ id: s
 
       {showCompare && (
         <RevisionCompare
-          deploymentId={inProgress.length > 0 ? inProgress[0].id : deployments[0]?.id ?? ""}
+          deploymentId={Array.isArray(inProgress) && inProgress.length > 0 ? inProgress[0].id : (Array.isArray(deployments) ? deployments[0]?.id : "") ?? ""}
           onRollback={() => {
             qc.invalidateQueries({ queryKey: ["app-deployments", id] });
           }}
@@ -150,7 +150,7 @@ export default function AppDeploymentsPage({ params }: { params: Promise<{ id: s
         <CardHeader title="Deployment History" icon={History} />
         {deploymentsQuery.isLoading ? (
           <div className="p-8 text-center text-sm text-slate-500">Loading deployments...</div>
-        ) : deployments.length === 0 ? (
+        ) : !Array.isArray(deployments) || deployments.length === 0 ? (
           <EmptyState icon={History} message="No deployments yet." />
         ) : (
           <div className="overflow-x-auto">
@@ -168,7 +168,7 @@ export default function AppDeploymentsPage({ params }: { params: Promise<{ id: s
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
-                {deployments.map((dep) => (
+                {Array.isArray(deployments) && deployments.map((dep) => (
                   <tr
                     key={dep.id}
                     className="hover:bg-white/[0.02]"

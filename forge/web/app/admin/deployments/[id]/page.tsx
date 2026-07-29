@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
 import {
@@ -7,6 +8,7 @@ import {
   RotateCcw, Server, XOctagon,
 } from "lucide-react";
 import { fetchJSON, postJSON } from "@/lib/api";
+import { rollbackToPrevious, cancelDeployment } from "@/lib/api/deployments";
 import { Btn, Card, CardHeader, EmptyState, Pill, SectionHeader } from "@/components/admin/admin-ui";
 
 type Deployment = {
@@ -40,37 +42,37 @@ export default function AdminDeploymentDetailPage() {
 
   const depQuery = useQuery({
     queryKey: ["admin", "deployments", id],
-    queryFn: () => fetchJSON<Deployment>(`/admin/deployments/${id}`),
-  });
+      queryFn: () => fetchJSON<Deployment>(`/admin/deployments/${encodeURIComponent(id)}`),
+    });
 
-  const timelineQuery = useQuery({
-    queryKey: ["admin", "deployments", id, "timeline"],
-    queryFn: () => fetchJSON<TimelineEvent[]>(`/admin/deployments/${id}/timeline`),
-  });
+    const timelineQuery = useQuery({
+      queryKey: ["admin", "deployments", id, "timeline"],
+      queryFn: () => fetchJSON<TimelineEvent[]>(`/admin/deployments/${encodeURIComponent(id)}/timeline`),
+    });
 
-  const rollbackMutation = useMutation({
-    mutationFn: () => postJSON(`/admin/deployments/${id}/rollback`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["admin", "deployments", id] });
-    },
-  });
+    const rollbackMutation = useMutation({
+      mutationFn: () => rollbackToPrevious(id),
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: ["admin", "deployments", id] });
+      },
+    });
 
   const completeMutation = useMutation({
-    mutationFn: () => postJSON(`/admin/deployments/${id}/complete`),
+    mutationFn: () => postJSON(`/admin/deployments/${encodeURIComponent(id)}/complete`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin", "deployments", id] });
     },
   });
 
   const cancelMutation = useMutation({
-    mutationFn: () => postJSON(`/admin/deployments/${id}/cancel`),
+    mutationFn: () => cancelDeployment(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin", "deployments", id] });
     },
   });
 
   const dep = depQuery.data;
-  const timeline = timelineQuery.data ?? [];
+  const timeline = useMemo(() => timelineQuery.data ?? [], [timelineQuery.data]);
 
   if (depQuery.isLoading) {
     return <div className="p-8 text-center text-sm text-slate-500">Loading deployment...</div>;
@@ -196,12 +198,12 @@ export default function AdminDeploymentDetailPage() {
         <CardHeader title="Deployment Timeline" icon={Activity} />
         {timelineQuery.isLoading ? (
           <div className="p-8 text-center text-sm text-slate-500">Loading timeline...</div>
-        ) : timeline.length === 0 ? (
+        ) : !Array.isArray(timeline) || timeline.length === 0 ? (
           <EmptyState icon={Activity} message="No timeline events recorded." />
         ) : (
           <div className="relative pl-8 pr-4 py-4">
             <div className="absolute left-4 top-0 bottom-0 w-px bg-white/[0.06]" />
-            {timeline.map((event) => (
+            {Array.isArray(timeline) && timeline.map((event) => (
               <div key={event.id} className="relative pb-4 last:pb-0">
                 <div className="absolute -left-[19px] mt-1.5 h-2.5 w-2.5 rounded-full border-2 border-[#dc2626] bg-[#1e2536]" />
                 <div className="flex items-start justify-between">

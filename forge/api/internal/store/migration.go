@@ -212,6 +212,7 @@ func (mr *MigrationRunner) getRunMigrationIDs(ctx context.Context) map[string]st
 	query := getListMigrationsSQL(mr.driver.Type())
 	rows, err := mr.driver.Query(ctx, query)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to list run migrations: %v\n", err)
 		return map[string]struct{}{}
 	}
 	defer rows.Close()
@@ -221,6 +222,8 @@ func (mr *MigrationRunner) getRunMigrationIDs(ctx context.Context) map[string]st
 		var id string
 		if err := rows.Scan(&id); err == nil {
 			ids[id] = struct{}{}
+		} else {
+			fmt.Fprintf(os.Stderr, "failed to scan migration ID: %v\n", err)
 		}
 	}
 	return ids

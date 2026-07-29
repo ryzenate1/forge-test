@@ -2,8 +2,11 @@ package deployment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
 	"strings"
 	"time"
 
@@ -43,6 +46,9 @@ func (s *Service) StartRollout(ctx context.Context, req *RolloutRequest) (*Deplo
 	if err := validateImageRef(req.Image); err != nil {
 		return nil, err
 	}
+	if err := validateHealthGateTarget(req); err != nil {
+		return nil, err
+	}
 	req.Image = digestImageRef(req.Image)
 	if req.Strategy == "" {
 		req.Strategy = StrategyRecreate
@@ -60,6 +66,27 @@ func (s *Service) StartRollout(ctx context.Context, req *RolloutRequest) (*Deplo
 	default:
 		return nil, fmt.Errorf("unknown rollout strategy: %s", req.Strategy)
 	}
+}
+
+func validateHealthGateTarget(req *RolloutRequest) error {
+	if req.HealthCheckPort < 0 || req.HealthCheckPort > 65535 {
+		return errors.New("health check port is out of range")
+	}
+	if req.HealthCheckPath != "" {
+		parsed, err := url.ParseRequestURI(req.HealthCheckPath)
+		if err != nil || !strings.HasPrefix(req.HealthCheckPath, "/") || parsed.IsAbs() || strings.HasPrefix(req.HealthCheckPath, "//") {
+			return errors.New("health check path must be a local absolute path")
+		}
+	}
+	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(req.HealthCheckHost)), ".")
+	if host == "" || host == "localhost" {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return errors.New("health checks may only target the local deployment gateway")
+	}
+	return nil
 }
 
 func applyRolloutRequest(d *Deployment, req *RolloutRequest) {
@@ -139,13 +166,13 @@ func (s *Service) recreateRollout(ctx context.Context, req *RolloutRequest) (*De
 		}))
 	}
 
-	go func(id string, parentCtx context.Context) {
-		execCtx, cancel := context.WithTimeout(parentCtx, 30*time.Minute)
+	go func(id string) {
+		execCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 		if execErr := s.ExecuteDeployment(execCtx, id); execErr != nil {
 			slog.Error("execute deployment", "deploymentId", id, "error", execErr.Error())
 		}
-	}(deployment.ID, ctx)
+	}(deployment.ID)
 
 	return deployment, nil
 }
@@ -190,13 +217,13 @@ func (s *Service) rollingRollout(ctx context.Context, req *RolloutRequest) (*Dep
 		}))
 	}
 
-	go func(id string, parentCtx context.Context) {
-		execCtx, cancel := context.WithTimeout(parentCtx, 30*time.Minute)
+	go func(id string) {
+		execCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 		if execErr := s.ExecuteDeployment(execCtx, id); execErr != nil {
 			slog.Error("execute deployment", "deploymentId", id, "error", execErr.Error())
 		}
-	}(deployment.ID, ctx)
+	}(deployment.ID)
 
 	return deployment, nil
 }
@@ -218,13 +245,13 @@ func (s *Service) blueGreenRollout(ctx context.Context, req *RolloutRequest) (*D
 		return nil, fmt.Errorf("set rollout strategy: %w", err)
 	}
 
-	go func(id string, parentCtx context.Context) {
-		execCtx, cancel := context.WithTimeout(parentCtx, 30*time.Minute)
+	go func(id string) {
+		execCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 		if execErr := s.ExecuteDeployment(execCtx, id); execErr != nil {
 			slog.Error("execute deployment", "deploymentId", id, "error", execErr.Error())
 		}
-	}(dep.ID, ctx)
+	}(dep.ID)
 
 	return dep, nil
 }
@@ -278,13 +305,13 @@ func (s *Service) canaryRollout(ctx context.Context, req *RolloutRequest) (*Depl
 		}))
 	}
 
-	go func(id string, parentCtx context.Context) {
-		execCtx, cancel := context.WithTimeout(parentCtx, 30*time.Minute)
+	go func(id string) {
+		execCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 		if execErr := s.ExecuteDeployment(execCtx, id); execErr != nil {
 			slog.Error("execute deployment", "deploymentId", id, "error", execErr.Error())
 		}
-	}(deployment.ID, ctx)
+	}(deployment.ID)
 
 	return deployment, nil
 }

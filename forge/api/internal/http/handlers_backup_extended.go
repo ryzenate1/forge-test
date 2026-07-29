@@ -150,35 +150,6 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		return c.JSON(fiber.Map{"ok": true, "cleaned": count})
 	})
 
-	protected.Post("/servers/:id/backups", mutationLimiter, requireRole("admin"), requireAdminScope("backups.write"), func(c *fiber.Ctx) error {
-		if err := hasServerAccess(cfg, c); err != nil {
-			return err
-		}
-		var body struct {
-			Name    string   `json:"name"`
-			Storage string   `json:"storage"`
-			Ignored []string `json:"ignored"`
-		}
-		_ = c.BodyParser(&body)
-		if body.Name == "" {
-			body.Name = "backup-" + time.Now().Format("20060102-150405")
-		}
-		ctx, cancel := requestContext()
-		defer cancel()
-		b, err := svc.CreateBackup(ctx, c.Params("id"), backup.CreateBackupRequest{
-			Name:    body.Name,
-			Storage: body.Storage,
-		})
-		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
-		}
-		return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-			"uuid":   b.ID,
-			"name":   b.Name,
-			"status": string(b.Status),
-		})
-	})
-
 	protected.Get("/backup/providers", requireRole("admin"), func(c *fiber.Ctx) error {
 		providers := backup.RegisteredProviders()
 		return c.JSON(fiber.Map{"providers": providers})

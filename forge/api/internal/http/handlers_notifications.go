@@ -9,19 +9,19 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-func registerNotificationRoutes(protected fiber.Router, notificationService *notificationsvc.Service) {
+func registerNotificationRoutes(protected fiber.Router, notificationService *notificationsvc.Service, mutationLimiter fiber.Handler) {
 	channels := protected.Group("/notification-channels", requireRole("admin"))
 	channels.Get("/", handleListNotificationChannels(notificationService))
-	channels.Post("/", handleCreateNotificationChannel(notificationService))
+	channels.Post("/", mutationLimiter, handleCreateNotificationChannel(notificationService))
 	channels.Get("/:id", handleGetNotificationChannel(notificationService))
-	channels.Patch("/:id", handleUpdateNotificationChannel(notificationService))
-	channels.Delete("/:id", handleDeleteNotificationChannel(notificationService))
-	channels.Post("/:id/test", handleTestNotificationChannel(notificationService))
+	channels.Patch("/:id", mutationLimiter, handleUpdateNotificationChannel(notificationService))
+	channels.Delete("/:id", mutationLimiter, handleDeleteNotificationChannel(notificationService))
+	channels.Post("/:id/test", mutationLimiter, handleTestNotificationChannel(notificationService))
 
 	subs := protected.Group("/notification-channels/:id/subscribe", requireRole("admin"))
 	subs.Get("/", handleListSubscriptions(notificationService))
-	subs.Post("/", handleCreateSubscription(notificationService))
-	subs.Delete("/:subId", handleDeleteSubscription(notificationService))
+	subs.Post("/", mutationLimiter, handleCreateSubscription(notificationService))
+	subs.Delete("/:subId", mutationLimiter, handleDeleteSubscription(notificationService))
 
 	protected.Get("/notification-logs", requireRole("admin"), handleListNotificationLogs(notificationService))
 }

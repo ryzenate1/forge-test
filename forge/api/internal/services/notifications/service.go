@@ -26,6 +26,7 @@ type Service struct {
 	mu                 sync.RWMutex
 	channels           []store.NotificationChannel
 	eventSubscriptions map[string][]store.NotificationEventSubscription
+	deliverySlots      chan struct{}
 }
 
 // New creates a new notification service
@@ -39,6 +40,7 @@ func New(logger *slog.Logger, repository Repository, s store.Store) *Service {
 		notificationStore:  s,
 		channels:           make([]store.NotificationChannel, 0),
 		eventSubscriptions: make(map[string][]store.NotificationEventSubscription),
+		deliverySlots:      make(chan struct{}, 32),
 	}
 
 	// Initialize alert service
@@ -150,7 +152,15 @@ func (svc *Service) Handle(ctx context.Context, ev events.Envelope) error {
 			continue
 		}
 
-		go svc.deliver(ch, eventName, ev, template)
+		select {
+		case svc.deliverySlots <- struct{}{}:
+			go func(channel store.NotificationChannel, event, bodyTemplate string) {
+				defer func() { <-svc.deliverySlots }()
+				svc.deliver(channel, event, ev, bodyTemplate)
+			}(ch, eventName, template)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return nil
 }
@@ -320,16 +330,15 @@ func (svc *Service) sendTelegram(ctx context.Context, config map[string]any, eve
 		return fmt.Errorf("telegram bot_token and chat_id required")
 	}
 
-	text := fmt.Sprintf("*%s*\n%s\n\nResource: `%s` (%s)", eventName, formatEventMessage(eventName, ev), ev.ResourceID, ev.ResourceType)
+	text := fmt.Sprintf("%s\n%s\n\nResource: %s (%s)", eventName, formatEventMessage(eventName, ev), ev.ResourceID, ev.ResourceType)
 	if len(ev.Payload) > 0 {
 		details, _ := json.MarshalIndent(ev.Payload, "", "  ")
 		text += "\n\n```json\n" + string(details) + "\n```"
 	}
 
 	payload := map[string]any{
-		"chat_id":    chatID,
-		"text":       text,
-		"parse_mode": "Markdown",
+		"chat_id": chatID,
+		"text":    text,
 	}
 
 	_, err := svc.webhookService.SendSimple(ctx, WebhookConfig{
@@ -348,9 +357,8 @@ func (svc *Service) sendTelegramMessage(ctx context.Context, config map[string]a
 	}
 
 	payload := map[string]any{
-		"chat_id":    chatID,
-		"text":       message,
-		"parse_mode": "Markdown",
+		"chat_id": chatID,
+		"text":    message,
 	}
 
 	_, err := svc.webhookService.SendSimple(ctx, WebhookConfig{
@@ -414,7 +422,7 @@ func (svc *Service) sendEmailMessage(ctx context.Context, config map[string]any,
 		return fmt.Errorf("no valid email recipients")
 	}
 
-	subject := config["subject"].(string)
+	subject, _ := config["subject"].(string)
 	if subject == "" {
 		subject = "GamePanel Notification"
 	}

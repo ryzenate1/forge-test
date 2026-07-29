@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, Globe, MessageSquare, Mail, Send, Trash2, Plus, Edit2 } from "lucide-react";
 import {
@@ -63,7 +63,7 @@ export function ChannelsList() {
     queryKey: ["notification-channels"],
     queryFn: fetchNotificationChannels,
   });
-  const channels = channelsQuery.data ?? [];
+  const channels = useMemo(() => channelsQuery.data ?? [], [channelsQuery.data]);
 
   const createMut = useMutation({
     mutationFn: () =>
@@ -218,7 +218,7 @@ export function ChannelsList() {
               <Btn size="sm" tone="ghost" onClick={() => void channelsQuery.refetch()}>Retry</Btn>
             </div>
           </div>
-        ) : channels.length === 0 ? (
+        ) : !Array.isArray(channels) || channels.length === 0 ? (
           <EmptyState icon={Bell} message="No notification channels configured." />
         ) : (
           <div className="overflow-x-auto">
@@ -232,7 +232,7 @@ export function ChannelsList() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
-                {channels.map((ch) => (
+                {Array.isArray(channels) && channels.map((ch) => (
                   <tr key={ch.id} className="hover:bg-white/[0.02]">
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">

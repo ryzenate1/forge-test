@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   ArrowLeft, ArrowRightLeft, GitCommit, History, Layers,
   Package, RefreshCw, RotateCcw, Search, ShieldAlert,
@@ -63,13 +63,13 @@ export default function DeploymentRevisionsPage() {
     },
   });
 
-  const revisions = revsQuery.data ?? [];
-  const activeRevision = revisions.find((r) => r.status === "active");
+  const revisions = useMemo(() => revsQuery.data ?? [], [revsQuery.data]);
+  const activeRevision = Array.isArray(revisions) ? revisions.find((r) => r.status === "active") : undefined;
 
   const handleCompare = async (from: string, to: string) => {
     try {
       const data = await fetchJSON<RevisionDiff>(
-        `/admin/deployments/${id}/compare?from=${from}&to=${to}`
+        `/admin/deployments/${encodeURIComponent(id)}/compare?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
       );
       setDiffData(data);
       setShowDiff(true);
@@ -99,13 +99,14 @@ export default function DeploymentRevisionsPage() {
               <p className="text-xs text-slate-400 mt-1">{activeRevision.imageRef}</p>
             </div>
             <div className="flex gap-2">
-              {revisions.length > 1 && (
+              {(Array.isArray(revisions) ? revisions : []).length > 1 && (
                 <Btn
                   tone="warning"
                   onClick={() => {
-                    const activeIdx = revisions.findIndex((r) => r.id === activeRevision.id);
-                    if (activeIdx < revisions.length - 1) {
-                      rollbackMutation.mutate(revisions[activeIdx + 1].id);
+                    const revs = Array.isArray(revisions) ? revisions : [];
+                    const activeIdx = revs.findIndex((r) => r.id === activeRevision.id);
+                    if (activeIdx < revs.length - 1) {
+                      rollbackMutation.mutate(revs[activeIdx + 1].id);
                     }
                   }}
                   disabled={rollbackMutation.isPending}
@@ -123,7 +124,7 @@ export default function DeploymentRevisionsPage() {
           title="Revisions"
           icon={History}
           action={
-            revisions.length >= 2 && (
+            (Array.isArray(revisions) ? revisions : []).length >= 2 && (
               <Btn tone="ghost" size="sm" onClick={() => setShowDiff(!showDiff)}>
                 <ArrowRightLeft size={14} /> {showDiff ? "Hide Diff" : "Compare"}
               </Btn>
@@ -131,7 +132,7 @@ export default function DeploymentRevisionsPage() {
           }
         />
 
-        {showDiff && revisions.length >= 2 && (
+        {showDiff && (Array.isArray(revisions) ? revisions : []).length >= 2 && (
           <div className="border-b border-white/[0.06] p-4">
             <div className="flex items-center gap-3 mb-3">
               <select
@@ -140,7 +141,7 @@ export default function DeploymentRevisionsPage() {
                 onChange={(e) => setDiffFrom(e.target.value)}
               >
                 <option value="">Select from revision</option>
-                {revisions.map((r) => (
+                {Array.isArray(revisions) && revisions.map((r) => (
                   <option key={r.id} value={r.id}>
                     Rev #{r.revisionNumber} — {r.description}
                   </option>
@@ -153,7 +154,7 @@ export default function DeploymentRevisionsPage() {
                 onChange={(e) => setDiffTo(e.target.value)}
               >
                 <option value="">Select to revision</option>
-                {revisions.map((r) => (
+                {Array.isArray(revisions) && revisions.map((r) => (
                   <option key={r.id} value={r.id}>
                     Rev #{r.revisionNumber} — {r.description}
                   </option>
@@ -195,12 +196,12 @@ export default function DeploymentRevisionsPage() {
 
         {revsQuery.isLoading ? (
           <div className="p-8 text-center text-sm text-slate-500">Loading revisions...</div>
-        ) : revisions.length === 0 ? (
+        ) : !Array.isArray(revisions) || revisions.length === 0 ? (
           <EmptyState icon={GitCommit} message="No revisions recorded yet." />
         ) : (
           <div className="relative pl-8 pr-4 py-4">
             <div className="absolute left-4 top-0 bottom-0 w-px bg-white/[0.06]" />
-            {revisions.map((rev, idx) => {
+            {Array.isArray(revisions) && revisions.map((rev, idx) => {
               const cfg = statusConfig[rev.status] ?? statusConfig.pending;
               const isActive = rev.status === "active";
               const canRollback = !isActive && idx > 0;
@@ -254,11 +255,14 @@ export default function DeploymentRevisionsPage() {
                           <RotateCcw size={12} /> Rollback
                         </Btn>
                       )}
-                      {revisions.length >= 2 && idx < revisions.length - 1 && (
+                      {(Array.isArray(revisions) ? revisions : []).length >= 2 && idx < (Array.isArray(revisions) ? revisions : []).length - 1 && (
                         <Btn
                           size="sm"
                           tone="ghost"
-                          onClick={() => handleCompare(revisions[idx + 1].id, rev.id)}
+                          onClick={() => {
+                            const revs = Array.isArray(revisions) ? revisions : [];
+                            handleCompare(revs[idx + 1].id, rev.id);
+                          }}
                         >
                           <ArrowRightLeft size={12} /> Diff
                         </Btn>

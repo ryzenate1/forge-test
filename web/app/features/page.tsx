@@ -9,7 +9,7 @@ export default function FeaturesPage() {
     <div className="breadcrumbs"><Link href="/">Forge</Link><span>/</span><span>Features</span></div>
     <p className="doc-kicker">Forge Control Plane</p>
     <h1>Everything the panel can manage.</h1>
-    <p className="doc-summary">This is the practical map of Forge's administrator panel: what each area controls, how it fits into the platform, and where capability is intentionally limited today.</p>
+    <p className="doc-summary">This is the practical map of Forge&apos;s administrator panel: what each area controls, how it fits into the platform, and where capability is intentionally limited today.</p>
     <div className="feature-hero-actions"><Link href="/docs/introduction" className="docs-button primary">Get started <span>→</span></Link><Link href="/docs/architecture" className="docs-button">Read the architecture</Link></div>
     <div className="feature-truth"><b>How to read this page</b><span>Available areas are backed by the current panel registry. Planning-only and registry-only areas are labelled so operators do not mistake navigation for a completed runtime workflow.</span></div>
     {featureGroups.map((group) => <section className="feature-group" key={group.title}><div className="feature-group-heading"><p>{group.title}</p><h2>{group.summary}</h2></div><div className="feature-list">{group.items.map((item) => { const feature = featureMap.get(item.name); return <Link className="feature-card-link" href={`/manual/${feature?.slug ?? ""}`} key={item.name}><div><h3>{item.name}</h3>{item.status && <small>{item.status}</small>}</div><p><b>What it does</b>{item.does}</p><p><b>How it works</b>{item.how}</p><em>Open user manual →</em></Link>; })}</div></section>)}

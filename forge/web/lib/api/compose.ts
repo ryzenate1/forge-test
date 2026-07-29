@@ -1,4 +1,16 @@
-import { fetchJSON, postJSON, patchJSON, deleteJSON } from './http';
+export interface ComposeValidationError {
+  field: string;
+  message: string;
+}
+
+export interface ComposeValidateResult {
+  valid: boolean;
+  errors?: ComposeValidationError[];
+  warnings?: ComposeValidationError[];
+  summary?: { services?: { name: string; image: string }[]; networks?: unknown[]; volumes?: unknown[] };
+}
+
+import { deleteJSON, fetchJSON, patchJSON, postJSON } from './http';
 
 export interface ComposeStack {
   id: string;
@@ -21,7 +33,7 @@ export interface ComposeStack {
   updatedAt: string;
 }
 
-export interface ComposeServiceState {
+export interface ServiceState {
   name: string;
   image: string;
   status: string;
@@ -31,41 +43,14 @@ export interface ComposeServiceState {
 
 export interface StackStatusResponse {
   stack: ComposeStack;
-  services: ComposeServiceState[];
+  services: ServiceState[];
 }
 
-export interface ValidateResult {
-  valid: boolean;
-  errors: { field: string; message: string }[];
-  warnings: { field: string; message: string }[];
-  summary?: {
-    services: { name: string; image: string }[];
-    networks: unknown[];
-    volumes: unknown[];
-  };
+export function validateCompose(content: string) {
+  return postJSON<ComposeValidateResult>('/compose/validate', { content });
 }
 
-export async function listStacks(): Promise<ComposeStack[]> {
-  return fetchJSON<ComposeStack[]>('/compose');
-}
-
-export async function getStack(id: string): Promise<ComposeStack> {
-  return fetchJSON<ComposeStack>(`/compose/${encodeURIComponent(id)}`);
-}
-
-export async function getStackStatus(id: string): Promise<StackStatusResponse> {
-  return fetchJSON<StackStatusResponse>(`/compose/${encodeURIComponent(id)}/status`);
-}
-
-export async function getStackLogs(id: string, service?: string, tail?: number): Promise<{ stackId: string; services: Record<string, string> }> {
-  const params = new URLSearchParams();
-  if (service) params.set('service', service);
-  if (tail) params.set('tail', String(tail));
-  const qs = params.toString();
-  return fetchJSON(`/compose/${encodeURIComponent(id)}/logs${qs ? `?${qs}` : ''}`);
-}
-
-export async function createStack(data: {
+export function createComposeStack(body: {
   name: string;
   composeYaml: string;
   nodeId?: string;
@@ -75,37 +60,52 @@ export async function createStack(data: {
   diskMb?: number;
   composeType?: string;
   sourceType?: string;
-  environmentId?: string;
-}): Promise<ComposeStack> {
-  return postJSON<ComposeStack>('/compose', data);
+}) {
+  return postJSON<ComposeStack>('/compose', body);
 }
 
-export async function updateStack(id: string, data: {
-  composeYaml?: string;
+export function listComposeStacks() {
+  return fetchJSON<unknown[]>('/compose');
+}
+
+export function getComposeStack(id: string) {
+  return fetchJSON<unknown>(`/compose/${encodeURIComponent(id)}`);
+}
+
+export function updateComposeStack(id: string, body: {
+  composeYaml: string;
   envVars?: Record<string, string>;
   memoryMb?: number;
   cpuShares?: number;
   diskMb?: number;
-}): Promise<ComposeStack> {
-  return patchJSON<ComposeStack>(`/compose/${encodeURIComponent(id)}`, data);
+}) {
+  return patchJSON(`/compose/${encodeURIComponent(id)}`, body);
 }
 
-export async function deleteStack(id: string): Promise<void> {
+export function deleteComposeStack(id: string) {
   return deleteJSON(`/compose/${encodeURIComponent(id)}`);
 }
 
-export async function deployStack(id: string): Promise<ComposeStack> {
-  return postJSON<ComposeStack>(`/compose/${encodeURIComponent(id)}/deploy`, {});
+export function deployComposeStack(id: string) {
+  return postJSON(`/compose/${encodeURIComponent(id)}/deploy`);
 }
 
-export async function stopStack(id: string): Promise<ComposeStack> {
-  return postJSON<ComposeStack>(`/compose/${encodeURIComponent(id)}/stop`, {});
+export function stopComposeStack(id: string) {
+  return postJSON(`/compose/${encodeURIComponent(id)}/stop`);
 }
 
-export async function startStack(id: string): Promise<ComposeStack> {
-  return postJSON<ComposeStack>(`/compose/${encodeURIComponent(id)}/start`, {});
+export function startComposeStack(id: string) {
+  return postJSON(`/compose/${encodeURIComponent(id)}/start`);
 }
 
-export async function validateCompose(content: string): Promise<ValidateResult> {
-  return postJSON<ValidateResult>('/compose/validate', { content });
+export function getComposeStackStatus(id: string) {
+  return fetchJSON<StackStatusResponse>(`/compose/${encodeURIComponent(id)}/status`);
+}
+
+export function getComposeStackLogs(id: string, service?: string, tail?: number) {
+  const params = new URLSearchParams();
+  if (service) params.set('service', service);
+  if (tail !== undefined) params.set('tail', String(tail));
+  const qs = params.toString();
+  return fetchJSON<unknown>(`/compose/${encodeURIComponent(id)}/logs${qs ? `?${qs}` : ''}`);
 }

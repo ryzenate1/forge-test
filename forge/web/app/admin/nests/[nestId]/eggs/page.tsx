@@ -7,7 +7,7 @@ import {
   ArrowLeft, ChevronRight, Copy, Cpu, Download, FileCode, Plus, Settings, Tag, Terminal, Trash2,
 } from "lucide-react";
 import { type ApiEgg, fetchNest, fetchEggs, createEgg, updateEgg, deleteEgg } from "@/lib/api";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, SectionHeader, Textarea } from "@/components/admin/admin-ui";
+import { AdminPageLayout, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, SectionHeader, Textarea } from "@/components/admin/admin-ui";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -185,7 +185,7 @@ export default function NestEggsPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <AdminPageLayout>
       <nav className="flex items-center gap-1.5 text-xs text-slate-500">
         <button onClick={() => router.push("/admin/nests")} className="transition hover:text-slate-300" type="button">Nests</button>
         <ChevronRight size={12} className="text-slate-600" />
@@ -292,6 +292,6 @@ export default function NestEggsPage() {
         </Modal>
       ) : null}
 
-    </div>
+    </AdminPageLayout>
   );
 }

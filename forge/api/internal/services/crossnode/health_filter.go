@@ -34,7 +34,7 @@ type HealthFilter struct {
 	threshold   int
 	interval    time.Duration
 
-	reaperMu    sync.Mutex
+	reaperMu      sync.Mutex
 	reaperRunning bool
 	reaperStop    chan struct{}
 }
@@ -128,9 +128,9 @@ func (hf *HealthFilter) IsHealthy(host string, port int) bool {
 	key := backendKey(host, port)
 	entry, ok := hf.healthState[key]
 	if !ok {
-		return true
+		return false
 	}
-	return entry.Status == HealthHealthy || entry.Status == HealthUnknown
+	return entry.Status == HealthHealthy
 }
 
 func (hf *HealthFilter) FilterHealthy(backends []BackendAddr) []BackendAddr {

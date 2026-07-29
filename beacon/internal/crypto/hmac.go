@@ -10,8 +10,8 @@ import (
 
 // Sign returns the hex-encoded HMAC-SHA256 of data using the given secret.
 func Sign(secret string, data []byte) (string, error) {
-	if secret == "" {
-		return "", errors.New("HMAC secret must not be empty")
+	if len(secret) < 32 {
+		return "", errors.New("HMAC secret must contain at least 32 bytes")
 	}
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(data)
@@ -21,8 +21,8 @@ func Sign(secret string, data []byte) (string, error) {
 // SignB64 returns the URL-safe base64-encoded HMAC-SHA256 of data using the
 // given secret.
 func SignB64(secret string, data []byte) (string, error) {
-	if secret == "" {
-		return "", errors.New("HMAC secret must not be empty")
+	if len(secret) < 32 {
+		return "", errors.New("HMAC secret must contain at least 32 bytes")
 	}
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(data)

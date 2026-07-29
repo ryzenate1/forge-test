@@ -3,13 +3,13 @@ package http
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	stdruntime "runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -706,10 +706,6 @@ func NewServer(cfg Config) *fiber.App {
 		cfg.HealthService.AddCheck(health.NewQueueCheck("Queue Worker", runner.Health))
 	}
 
-	if cfg.TokenTTL > 0 {
-		tokenTTL = cfg.TokenTTL
-	}
-
 	// WebSocket ticket store (in-memory; tickets are short-lived and single-use).
 	wsTickets := newWSTicketStore(cfg)
 	fileDownloadTickets := newFileDownloadTicketStore()
@@ -726,7 +722,10 @@ func NewServer(cfg Config) *fiber.App {
 	app := fiber.New(fiber.Config{
 		AppName:           "modern-game-panel-api",
 		ReadTimeout:       cfg.ReadTimeout,
-		StreamRequestBody: true,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		BodyLimit:         32 * 1024 * 1024,
+		StreamRequestBody: false,
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
 			code := fiber.StatusInternalServerError
 			var e *fiber.Error
@@ -757,6 +756,9 @@ func NewServer(cfg Config) *fiber.App {
 			corsCfg.AllowCredentials = true
 			corsCfg.MaxAge = 86400
 		} else {
+			if cfg.AppEnv == "production" && cfg.Logger != nil {
+				cfg.Logger.Warn("API_CORS_ALLOWED_ORIGINS is not set; production CORS will block non-localhost origins")
+			}
 			corsCfg = DefaultCORSConfig()
 		}
 	}
@@ -773,7 +775,7 @@ func NewServer(cfg Config) *fiber.App {
 		app.Use(StructuredLogger(cfg.Logger))
 	}
 
-	registerSwaggerRoutes(app)
+	registerSwaggerRoutes(app, cfg.AppEnv)
 
 	registerWellKnownVerifyRoute(app, cfg.DomainService)
 
@@ -808,6 +810,44 @@ func NewServer(cfg Config) *fiber.App {
 	mtlsMw := MTLSAuthMiddleware(mtlsCfg)
 
 	v1 := app.Group("/api/v1", apiIPAccess, mtlsMw)
+	v1.Post("/csp-report", authLimiter, func(c *fiber.Ctx) error {
+		contentType := strings.ToLower(strings.TrimSpace(strings.SplitN(c.Get(fiber.HeaderContentType), ";", 2)[0]))
+		switch contentType {
+		case "application/csp-report", "application/reports+json", "application/json":
+		default:
+			return fiber.NewError(fiber.StatusUnsupportedMediaType, "unsupported report content type")
+		}
+		if len(c.Body()) > 64<<10 {
+			return fiber.NewError(fiber.StatusRequestEntityTooLarge, "CSP report is too large")
+		}
+		var report any
+		if err := json.Unmarshal(c.Body(), &report); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid CSP report")
+		}
+		return c.SendStatus(fiber.StatusNoContent)
+	})
+	v1.Post("/onboarding/exchange", authLimiter, func(c *fiber.Ctx) error {
+		if cfg.Store == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+		}
+		var req struct {
+			Token string `json:"token"`
+		}
+		if err := c.BodyParser(&req); err != nil || strings.TrimSpace(req.Token) == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		}
+		ctx, cancel := requestContext()
+		defer cancel()
+		nodeID, err := cfg.Store.ConsumeOnboardingToken(ctx, req.Token)
+		if err != nil {
+			return fiber.NewError(fiber.StatusUnauthorized, "invalid or expired onboarding token")
+		}
+		credential, err := cfg.Store.GetNodeDaemonCredential(ctx, nodeID)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "node credential is unavailable")
+		}
+		return c.JSON(fiber.Map{"nodeId": nodeID, "nodeToken": credential})
+	})
 	v1.Get("/panel/settings/public", func(c *fiber.Ctx) error {
 		settings := defaultPanelSettings()
 		if cfg.Store != nil {
@@ -897,7 +937,7 @@ func NewServer(cfg Config) *fiber.App {
 	v1.Get("/csrf-token", GetCSRFTokenHandler())
 	// Session exchange endpoint — exchanges a single-use code for a session token.
 	// Used after social auth redirects to avoid placing the token in the URL.
-	v1.Post("/auth/session/exchange", ExchangeCodeHandler())
+	v1.Post("/auth/session/exchange", ExchangeCodeHandler(cfg))
 
 	// Liveness only confirms that this API process can serve requests; it does
 	// not probe external dependencies and therefore remains safe for restarts.
@@ -954,15 +994,10 @@ func NewServer(cfg Config) *fiber.App {
 		})
 	}
 	v1.Get("/metrics", func(c *fiber.Ctx) error {
-		var mem stdruntime.MemStats
-		stdruntime.ReadMemStats(&mem)
-		redisEnabled := 0
-		if cfg.RedisEnabled {
-			redisEnabled = 1
-		}
-		postgresEnabled := 0
-		if cfg.Store != nil {
-			postgresEnabled = 1
+		token := strings.TrimSpace(os.Getenv("METRICS_TOKEN"))
+		expected := "Bearer " + token
+		if token == "" || subtle.ConstantTimeCompare([]byte(c.Get("Authorization")), []byte(expected)) != 1 {
+			return fiber.NewError(fiber.StatusUnauthorized, "authentication required")
 		}
 		c.Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		return c.SendString(
@@ -971,19 +1006,7 @@ func NewServer(cfg Config) *fiber.App {
 				"game_panel_api_up 1\n" +
 				"# HELP game_panel_api_uptime_seconds API process uptime.\n" +
 				"# TYPE game_panel_api_uptime_seconds gauge\n" +
-				"game_panel_api_uptime_seconds " + strconv.FormatFloat(time.Since(started).Seconds(), 'f', 3, 64) + "\n" +
-				"# HELP game_panel_api_redis_enabled Redis configuration status, 1 when enabled.\n" +
-				"# TYPE game_panel_api_redis_enabled gauge\n" +
-				"game_panel_api_redis_enabled " + strconv.Itoa(redisEnabled) + "\n" +
-				"# HELP game_panel_api_postgres_enabled Postgres configuration status, 1 when enabled.\n" +
-				"# TYPE game_panel_api_postgres_enabled gauge\n" +
-				"game_panel_api_postgres_enabled " + strconv.Itoa(postgresEnabled) + "\n" +
-				"# HELP game_panel_api_goroutines Current goroutine count.\n" +
-				"# TYPE game_panel_api_goroutines gauge\n" +
-				"game_panel_api_goroutines " + strconv.Itoa(stdruntime.NumGoroutine()) + "\n" +
-				"# HELP game_panel_api_memory_alloc_bytes Current Go heap allocation.\n" +
-				"# TYPE game_panel_api_memory_alloc_bytes gauge\n" +
-				"game_panel_api_memory_alloc_bytes " + strconv.FormatUint(mem.Alloc, 10) + "\n",
+				"game_panel_api_uptime_seconds " + strconv.FormatFloat(time.Since(started).Seconds(), 'f', 3, 64) + "\n",
 		)
 	})
 
@@ -1075,7 +1098,7 @@ func NewServer(cfg Config) *fiber.App {
 			})
 		}
 
-		token, err := issueToken(cfg.AuthSecret, user)
+		token, err := issueConfiguredToken(cfg, user)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not issue token")
 		}
@@ -1085,7 +1108,7 @@ func NewServer(cfg Config) *fiber.App {
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not generate CSRF token")
 		}
-		expires := time.Now().Add(tokenTTL)
+		expires := tokenExpiry(cfg)
 		setSessionCookies(c, token, csrfToken, expires)
 
 		return c.JSON(fiber.Map{
@@ -1124,7 +1147,7 @@ func NewServer(cfg Config) *fiber.App {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not retrieve user details")
 		}
 
-		token, err := issueToken(cfg.AuthSecret, user)
+		token, err := issueConfiguredToken(cfg, user)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not issue token")
 		}
@@ -1134,7 +1157,7 @@ func NewServer(cfg Config) *fiber.App {
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not generate CSRF token")
 		}
-		expires := time.Now().Add(tokenTTL)
+		expires := tokenExpiry(cfg)
 		setSessionCookies(c, token, csrfToken, expires)
 
 		return c.JSON(fiber.Map{
@@ -1159,15 +1182,18 @@ func NewServer(cfg Config) *fiber.App {
 		if err != nil {
 			return fiber.NewError(fiber.StatusUnauthorized, "invalid or revoked session")
 		}
-		newToken, err := issueToken(cfg.AuthSecret, store.User{ID: current.Sub, Email: current.Email, Role: current.Role, SessionVersion: current.SessionVersion})
+		newToken, err := issueConfiguredToken(cfg, store.User{ID: current.Sub, Email: current.Email, Role: current.Role, SessionVersion: current.SessionVersion})
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not issue session token")
+		}
+		if claims.JTI != "" {
+			_ = cfg.Store.RevokeJWT(ctx, claims.JTI, time.Unix(claims.Exp, 0))
 		}
 		csrfToken, err := generateCSRFToken()
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not generate CSRF token")
 		}
-		expires := time.Now().Add(tokenTTL)
+		expires := tokenExpiry(cfg)
 		setSessionCookies(c, newToken, csrfToken, expires)
 		return c.SendStatus(fiber.StatusNoContent)
 	})
@@ -1524,7 +1550,7 @@ func NewServer(cfg Config) *fiber.App {
 	v1.Post("/oauth/token", authLimiter, IssueOAuth2Token(cfg)) // alias
 
 	// Social authentication (Discord, Steam, Authentik)
-	registerSocialAuthRoutes(v1, cfg, mutationLimiter)
+	registerSocialAuthRoutes(v1, cfg, mutationLimiter, authLimiter)
 
 	// Git webhook endpoints (public, verified by HMAC signatures)
 	registerGitWebhookRoutes(v1, cfg)
@@ -1544,7 +1570,13 @@ func NewServer(cfg Config) *fiber.App {
 		sessMw = func(c *fiber.Ctx) error { return c.Next() }
 	}
 
-	protected := v1.Group("", authMiddleware(cfg.AuthSecret, cfg.Store), sessMw, requireTwoFactorAuthentication(cfg.Store), csrfMiddleware(LoadSessionCookieConfig()), readLimiter)
+	methodLimiter := func(c *fiber.Ctx) error {
+		if c.Method() == fiber.MethodGet || c.Method() == fiber.MethodHead {
+			return readLimiter(c)
+		}
+		return mutationLimiter(c)
+	}
+	protected := v1.Group("", authMiddleware(cfg.AuthSecret, cfg.Store), sessMw, requireTwoFactorAuthentication(cfg), csrfMiddleware(LoadSessionCookieConfig()), methodLimiter)
 	protected.Post("/servers/:id/ws/ticket", IssueWSTicket(cfg, wsTickets))
 	protected.Post("/servers/:id/files/download-ticket", mutationLimiter, issueFileDownloadTicket(cfg, fileDownloadTickets))
 	protected.Post("/servers/:id/backups/download-ticket", mutationLimiter, issueBackupDownloadTicket(cfg, fileDownloadTickets))
@@ -1648,7 +1680,7 @@ func NewServer(cfg Config) *fiber.App {
 		return c.JSON(mount)
 	})
 
-	protected.Get("/servers/:id/users/:userId", func(c *fiber.Ctx) error {
+	protected.Get("/servers/:id/users/:userId", requireRole("admin"), requireAdminScope("servers.read"), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
@@ -1679,10 +1711,10 @@ func NewServer(cfg Config) *fiber.App {
 	registerOrphanRemediationRoutes(protected, cfg, mutationLimiter, adminIPAccess)
 	registerAdminExtras(protected, cfg, nodeProbe)
 	registerObservabilityRoutes(protected, cfg, cfg.Observability, cfg.HeartbeatMonitor)
-	registerAlertRoutes(protected, cfg.AlertService, cfg.Observability)
-	registerNotificationRoutes(protected, cfg.NotificationService)
+	registerAlertRoutes(protected, cfg.AlertService, cfg.Observability, mutationLimiter)
+	registerNotificationRoutes(protected, cfg.NotificationService, mutationLimiter)
 	if cfg.EnhancedNotificationService != nil {
-		registerEnhancedNotificationRoutes(protected, cfg.EnhancedNotificationService)
+		registerEnhancedNotificationRoutes(protected, cfg.EnhancedNotificationService, mutationLimiter)
 	}
 	registerMailSettingsRoutes(protected, cfg, mutationLimiter, adminIPAccess)
 	registerSFTPRoutes(protected, cfg, mutationLimiter)
@@ -1711,7 +1743,7 @@ func NewServer(cfg Config) *fiber.App {
 	registerDatabaseServiceRoutes(protected, cfg, mutationLimiter)
 	registerManagedDatabaseRoutes(protected, cfg, mutationLimiter)
 	registerGitRoutes(protected, cfg, adminIPAccess, mutationLimiter)
-	RegisterGitDeploymentRoutes(protected, cfg)
+	RegisterGitDeploymentRoutes(protected, cfg, mutationLimiter)
 	registerBuildRoutes(protected, cfg, cfg.BuildService, mutationLimiter)
 	registerBuildpackRoutes(protected, cfg, cfg.BuildpackService, mutationLimiter)
 	registerZeroDowntimeRoutes(protected, cfg, cfg.ZeroDowntimeSvc, mutationLimiter)
@@ -1746,12 +1778,12 @@ func NewServer(cfg Config) *fiber.App {
 
 	// Cron job management
 	if cfg.CronJobService != nil {
-		registerCronJobRoutes(protected, cfg, cfg.CronJobService)
+		registerCronJobRoutes(protected, cfg, cfg.CronJobService, mutationLimiter)
 	}
 
 	// Procfile process management
 	if cfg.ProcessService != nil {
-		registerProcessRoutes(protected, cfg, cfg.ProcessService)
+		registerProcessRoutes(protected, cfg, cfg.ProcessService, mutationLimiter)
 	}
 
 	// Proxy domain management (reverse proxy level, distinct from per-server domains)
@@ -1762,11 +1794,11 @@ func NewServer(cfg Config) *fiber.App {
 
 	// Host management
 	registerHostRoutes(protected, cfg)
-	registerFirewallRoutes(protected, cfg)
+	registerFirewallRoutes(protected, cfg, mutationLimiter)
 
 	// Cluster membership + cleanup routes
-	registerClusterMembershipRoutes(protected, cfg.ClusterMembershipService)
-	registerCleanupRoutes(protected, cfg.CleanupService)
+	registerClusterMembershipRoutes(protected, cfg.ClusterMembershipService, mutationLimiter)
+	registerCleanupRoutes(protected, cfg.CleanupService, mutationLimiter)
 
 	// Cross-node routing and service discovery routes
 	registerServiceDiscoveryRoutes(protected, cfg, cfg.ServiceDiscovery, adminIPAccess, mutationLimiter)

@@ -85,12 +85,11 @@ func (s *Server) handleImagePush(w http.ResponseWriter, r *http.Request) {
 		cmd.Env = dockerEnv
 		cmd.SysProcAttr = getSysProcAttr()
 		cmd.Stdin = strings.NewReader(req.RegistryAuth.Password)
-		out, err := cmd.CombinedOutput()
+		_, err := cmd.CombinedOutput()
 		req.RegistryAuth.Password = ""
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{
 				"error": fmt.Sprintf("docker login failed: %v", err),
-				"log":   string(out),
 			})
 			return
 		}
@@ -276,9 +275,9 @@ func (s *Server) handleBuildStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	builds.mu.RLock()
-	job, ok := builds.active[buildID]
-	builds.mu.RUnlock()
+	s.builds.mu.RLock()
+	job, ok := s.builds.active[buildID]
+	s.builds.mu.RUnlock()
 
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "build not found"})

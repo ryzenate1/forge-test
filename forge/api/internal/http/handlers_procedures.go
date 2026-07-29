@@ -12,7 +12,7 @@ func registerProcedureRoutes(protected fiber.Router, cfg Config, svc *procedure.
 		return
 	}
 
-	proc := protected.Group("/procedures")
+	proc := protected.Group("/procedures", requireRole("admin"))
 
 	proc.Get("/", func(c *fiber.Ctx) error {
 		tenantID := c.Query("tenantId")

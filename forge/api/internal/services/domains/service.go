@@ -13,6 +13,8 @@ import (
 	"gamepanel/forge/internal/events"
 
 	"github.com/google/uuid"
+	"golang.org/x/net/idna"
+	"golang.org/x/net/publicsuffix"
 )
 
 type DomainRow struct {
@@ -174,7 +176,11 @@ func (s *Service) AddDomain(ctx context.Context, serverID, domain string) (*Doma
 		return nil, fmt.Errorf("domain is required")
 	}
 
-	domain = strings.TrimSpace(strings.ToLower(domain))
+	normalizedDomain, err := normalizeAndValidateDomain(domain)
+	if err != nil {
+		return nil, err
+	}
+	domain = normalizedDomain
 
 	exists, err := s.store.CheckServerExists(ctx, serverID)
 	if err != nil {
@@ -193,7 +199,6 @@ func (s *Service) AddDomain(ctx context.Context, serverID, domain string) (*Doma
 	}
 
 	wildcard := isWildcardDomain(domain)
-	normalizedDomain := normalizeDomain(domain)
 	token := uuid.NewString()
 
 	now := time.Now().UTC()
@@ -373,7 +378,8 @@ func (s *Service) verifyOwnership(ctx context.Context, record *DomainRecord) Ver
 		return result
 	}
 
-	checkURL := fmt.Sprintf("http://%s/.well-known/forge-verify", record.Domain)
+	verificationHost := strings.TrimPrefix(record.Domain, "*.")
+	checkURL := fmt.Sprintf("https://%s/.well-known/forge-verify", verificationHost)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", checkURL, nil)
 	if err != nil {
@@ -499,4 +505,25 @@ func normalizeDomain(domain string) string {
 		return domain
 	}
 	return strings.TrimRight(strings.ToLower(strings.TrimSpace(domain)), ".")
+}
+
+func normalizeAndValidateDomain(domain string) (string, error) {
+	domain = normalizeDomain(domain)
+	wildcard := isWildcardDomain(domain)
+	host := strings.TrimPrefix(domain, "*.")
+	ascii, err := idna.Lookup.ToASCII(host)
+	if err != nil {
+		return "", fmt.Errorf("invalid internationalized domain: %w", err)
+	}
+	ascii = normalizeDomain(ascii)
+	if net.ParseIP(ascii) != nil || strings.Contains(ascii, ":") {
+		return "", fmt.Errorf("domain must be a DNS hostname")
+	}
+	if _, err := publicsuffix.EffectiveTLDPlusOne(ascii); err != nil {
+		return "", fmt.Errorf("domain must include a registrable name")
+	}
+	if wildcard {
+		return "*." + ascii, nil
+	}
+	return ascii, nil
 }

@@ -25,7 +25,7 @@ func validateCronSchedule(schedule string) error {
 	return nil
 }
 
-func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *cronjobsvc.Service) {
+func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *cronjobsvc.Service, mutationLimiter fiber.Handler) {
 	protected.Get("/cron-jobs", requireRole("admin"), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
@@ -48,7 +48,7 @@ func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *c
 		return c.JSON(result)
 	})
 
-	protected.Post("/cron-jobs", requireRole("admin"), func(c *fiber.Ctx) error {
+	protected.Post("/cron-jobs", mutationLimiter, requireRole("admin"), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
@@ -120,7 +120,7 @@ func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *c
 		return c.JSON(job)
 	})
 
-	protected.Put("/cron-jobs/:id", requireRole("admin"), func(c *fiber.Ctx) error {
+	protected.Put("/cron-jobs/:id", mutationLimiter, requireRole("admin"), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
@@ -172,7 +172,7 @@ func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *c
 		return c.JSON(job)
 	})
 
-	protected.Delete("/cron-jobs/:id", requireRole("admin"), func(c *fiber.Ctx) error {
+	protected.Delete("/cron-jobs/:id", mutationLimiter, requireRole("admin"), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
@@ -185,7 +185,7 @@ func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *c
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 
-	protected.Post("/cron-jobs/:id/execute", requireRole("admin"), func(c *fiber.Ctx) error {
+	protected.Post("/cron-jobs/:id/execute", mutationLimiter, requireRole("admin"), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
@@ -198,7 +198,7 @@ func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *c
 		return c.JSON(execution)
 	})
 
-	protected.Post("/cron-jobs/:id/toggle", requireRole("admin"), func(c *fiber.Ctx) error {
+	protected.Post("/cron-jobs/:id/toggle", mutationLimiter, requireRole("admin"), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}

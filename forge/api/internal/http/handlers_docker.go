@@ -7,8 +7,20 @@ import (
 
 	"gamepanel/forge/internal/daemon"
 
+	"github.com/distribution/reference"
 	"github.com/gofiber/fiber/v2"
 )
+
+func validateContainerImageReference(image string) error {
+	image = strings.TrimSpace(image)
+	if image == "" || len(image) > 512 {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid image reference")
+	}
+	if _, err := reference.ParseNormalizedNamed(image); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid image reference")
+	}
+	return nil
+}
 
 func registerDockerRoutes(protected fiber.Router, cfg Config, mutationLimiter fiber.Handler, adminIPAccess fiber.Handler) {
 	if cfg.Store == nil || cfg.Daemon == nil {
@@ -278,6 +290,9 @@ func dockerPullImage(cfg Config) fiber.Handler {
 		image := body.Image
 		if body.Tag != "" && !strings.Contains(image, ":") {
 			image = image + ":" + body.Tag
+		}
+		if err := validateContainerImageReference(image); err != nil {
+			return err
 		}
 		var target *nodeAdminRequest
 		var err error
@@ -561,6 +576,9 @@ func dockerBuildImage(cfg Config) fiber.Handler {
 		if err := c.BodyParser(&body); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 		}
+		if err := validateContainerImageReference(body.Tag); err != nil {
+			return err
+		}
 		target, err := resolveDockerNode(cfg, c)
 		if err != nil {
 			return err
@@ -577,6 +595,9 @@ func dockerBuildImage(cfg Config) fiber.Handler {
 func dockerPushImage(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		imageRef := c.Params("id")
+		if err := validateContainerImageReference(imageRef); err != nil {
+			return err
+		}
 		var body struct {
 			RegistryAuth *daemon.RegistryAuth `json:"registryAuth,omitempty"`
 		}
@@ -604,6 +625,9 @@ func dockerTagImage(cfg Config) fiber.Handler {
 		}
 		if err := c.BodyParser(&body); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		}
+		if err := validateContainerImageReference(body.Repo + ":" + body.Tag); err != nil {
+			return err
 		}
 		target, err := resolveDockerNode(cfg, c)
 		if err != nil {

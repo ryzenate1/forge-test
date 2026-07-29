@@ -370,7 +370,8 @@ export async function upsertServerUser(
 
 // Crash detection
 export async function fetchServerCrashHistory(serverId: string): Promise<CrashEvent[]> {
-  return fetchJSON<CrashEvent[]>(`/admin/crash-detection/servers/${encodeURIComponent(serverId)}`);
+  const res = await fetchJSON<{ events: CrashEvent[] }>(`/admin/crash-detection/servers/${encodeURIComponent(serverId)}`);
+  return res.events ?? [];
 }
 
 export async function resetServerCrashState(serverId: string): Promise<{ ok: boolean }> {

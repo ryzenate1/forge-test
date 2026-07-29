@@ -6,15 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -49,21 +53,20 @@ type firewallState struct {
 }
 
 type firewallData struct {
-	mu       sync.RWMutex
-	initOnce sync.Once
-	initErr  error
-	state    firewallState
+	mu        sync.RWMutex
+	initOnce  sync.Once
+	initErr   error
+	statePath string
+	state     firewallState
 }
 
-var fwd = &firewallData{state: firewallState{
-	Enabled:  true,
-	Rules:    make(map[string]FirewallRule),
-	Forwards: make(map[string]PortForward),
-}}
-
 var firewallExec = runFirewallCommand
+var firewallRestore = runFirewallRestore
 
-func firewallStatePath() string {
+func (d *firewallData) path() string {
+	if d.statePath != "" {
+		return d.statePath
+	}
 	if configured := strings.TrimSpace(os.Getenv("BEACON_FIREWALL_STATE_PATH")); configured != "" {
 		return configured
 	}
@@ -86,6 +89,19 @@ func runFirewallCommand(ctx context.Context, name string, args ...string) error 
 			return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, message)
 		}
 		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+func runFirewallRestore(ctx context.Context, rules string) error {
+	commandCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(commandCtx, "iptables-restore", "--wait", "10", "--noflush")
+	cmd.Stdin = strings.NewReader(rules)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("apply firewall transaction: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }
@@ -113,15 +129,38 @@ func validateFirewallAction(action string) (string, error) {
 func validateFirewallSource(source string) error {
 	source = strings.TrimSpace(source)
 	if source == "" {
+		return errors.New("source IP or CIDR is required; unrestricted rules are not allowed")
+	}
+	if ip := net.ParseIP(source); ip != nil {
+		if !safeFirewallSourceIP(ip) {
+			return fmt.Errorf("source IP %q is not a permitted public unicast address", source)
+		}
 		return nil
 	}
-	if net.ParseIP(source) != nil {
-		return nil
-	}
-	if _, _, err := net.ParseCIDR(source); err == nil {
+	if ip, network, err := net.ParseCIDR(source); err == nil {
+		ones, _ := network.Mask.Size()
+		if ones == 0 || !ip.Equal(network.IP) || !safeFirewallSourceIP(ip) {
+			return fmt.Errorf("source CIDR %q is unrestricted, non-canonical, or non-public", source)
+		}
 		return nil
 	}
 	return fmt.Errorf("invalid source IP or CIDR %q", source)
+}
+
+func canonicalFirewallSource(source string) string {
+	source = strings.TrimSpace(source)
+	if ip := net.ParseIP(source); ip != nil {
+		return ip.String()
+	}
+	_, network, _ := net.ParseCIDR(source)
+	if network != nil {
+		return network.String()
+	}
+	return source
+}
+
+func safeFirewallSourceIP(ip net.IP) bool {
+	return ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast()
 }
 
 func validateForwardIP(ip string) error {
@@ -129,6 +168,25 @@ func validateForwardIP(ip string) error {
 		return fmt.Errorf("invalid forward IP address %q", ip)
 	}
 	return nil
+}
+
+func validFirewallRuleID(id, prefix string) bool {
+	value := strings.TrimPrefix(id, prefix)
+	if value == id || value == "" || len(value) > 64 {
+		return false
+	}
+	for _, char := range value {
+		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' ||
+			char >= '0' && char <= '9' || char == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func auditFirewall(action, objectID string) {
+	log.Printf("[security-audit] firewall action=%s object=%s", action, objectID)
 }
 
 func (d *firewallData) initialize(ctx context.Context) error {
@@ -151,7 +209,7 @@ func (d *firewallData) initialize(ctx context.Context) error {
 }
 
 func (d *firewallData) load() error {
-	data, err := os.ReadFile(firewallStatePath())
+	data, err := os.ReadFile(d.path())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -168,12 +226,38 @@ func (d *firewallData) load() error {
 	if state.Forwards == nil {
 		state.Forwards = make(map[string]PortForward)
 	}
+	for id, rule := range state.Rules {
+		if !validFirewallRuleID(id, "rule-") || rule.ID != id || rule.Port <= 0 || rule.Port > 65535 {
+			return fmt.Errorf("invalid persisted firewall rule %q", id)
+		}
+		if _, err := validateFirewallProtocol(rule.Protocol); err != nil {
+			return err
+		}
+		if _, err := validateFirewallAction(rule.Action); err != nil {
+			return err
+		}
+		if err := validateFirewallSource(rule.SourceIP); err != nil {
+			return err
+		}
+	}
+	for id, forward := range state.Forwards {
+		if !validFirewallRuleID(id, "fwd-") || forward.ID != id ||
+			forward.FromPort <= 0 || forward.FromPort > 65535 || forward.ToPort <= 0 || forward.ToPort > 65535 {
+			return fmt.Errorf("invalid persisted port forward %q", id)
+		}
+		if _, err := validateFirewallProtocol(forward.Protocol); err != nil {
+			return err
+		}
+		if err := validateForwardIP(forward.ToIP); err != nil {
+			return err
+		}
+	}
 	d.state = state
 	return nil
 }
 
 func (d *firewallData) persistLocked() error {
-	path := firewallStatePath()
+	path := d.path()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create firewall state directory: %w", err)
 	}
@@ -205,7 +289,7 @@ func (d *firewallData) persistLocked() error {
 	if err := os.Rename(tempName, path); err != nil {
 		return fmt.Errorf("replace firewall state: %w", err)
 	}
-	return nil
+	return syncDirectory(filepath.Dir(path))
 }
 
 func commandExists(ctx context.Context, table, chain string) bool {
@@ -275,12 +359,6 @@ func forwardArgs(operation string, forward PortForward) []string {
 }
 
 func (d *firewallData) reconcile(ctx context.Context) error {
-	if err := firewallExec(ctx, "iptables", "-w", "-F", firewallFilterChain); err != nil {
-		return err
-	}
-	if err := firewallExec(ctx, "iptables", "-w", "-t", "nat", "-F", firewallNATChain); err != nil {
-		return err
-	}
 	if d.state.Enabled {
 		if err := ensureHook(ctx, "filter", "INPUT", firewallFilterChain); err != nil {
 			return err
@@ -296,21 +374,43 @@ func (d *firewallData) reconcile(ctx context.Context) error {
 			return err
 		}
 	}
-	for _, rule := range d.state.Rules {
-		if err := firewallExec(ctx, "iptables", ruleArgs("-A", rule)...); err != nil {
-			return err
-		}
+	var filterRules strings.Builder
+	filterRules.WriteString("*filter\n:")
+	filterRules.WriteString(firewallFilterChain)
+	filterRules.WriteString(" - [0:0]\n")
+	ruleIDs := make([]string, 0, len(d.state.Rules))
+	for id := range d.state.Rules {
+		ruleIDs = append(ruleIDs, id)
 	}
-	for _, forward := range d.state.Forwards {
-		if err := firewallExec(ctx, "iptables", forwardArgs("-A", forward)...); err != nil {
-			return err
-		}
+	sort.Strings(ruleIDs)
+	for _, id := range ruleIDs {
+		rule := d.state.Rules[id]
+		fmt.Fprintf(&filterRules, "-A %s -p %s --dport %d -s %s -m comment --comment forge:%s -j ACCEPT\n",
+			firewallFilterChain, rule.Protocol, rule.Port, rule.SourceIP, rule.ID)
 	}
-	return nil
+	filterRules.WriteString("COMMIT\n")
+
+	var natRules strings.Builder
+	natRules.WriteString("*nat\n:")
+	natRules.WriteString(firewallNATChain)
+	natRules.WriteString(" - [0:0]\n")
+	forwardIDs := make([]string, 0, len(d.state.Forwards))
+	for id := range d.state.Forwards {
+		forwardIDs = append(forwardIDs, id)
+	}
+	sort.Strings(forwardIDs)
+	for _, id := range forwardIDs {
+		forward := d.state.Forwards[id]
+		fmt.Fprintf(&natRules, "-A %s -p %s --dport %d -m comment --comment forge:%s -j DNAT --to-destination %s\n",
+			firewallNATChain, forward.Protocol, forward.FromPort, forward.ID,
+			net.JoinHostPort(forward.ToIP, fmt.Sprint(forward.ToPort)))
+	}
+	natRules.WriteString("COMMIT\n")
+	return firewallRestore(ctx, filterRules.String()+natRules.String())
 }
 
-func requireFirewall(w http.ResponseWriter, r *http.Request) bool {
-	if err := fwd.initialize(r.Context()); err != nil {
+func (s *Server) requireFirewall(w http.ResponseWriter, r *http.Request) bool {
+	if err := s.firewall.initialize(r.Context()); err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return false
 	}
@@ -318,57 +418,59 @@ func requireFirewall(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (s *Server) handleFirewallStatus(w http.ResponseWriter, r *http.Request) {
-	if !requireFirewall(w, r) {
+	if !s.requireFirewall(w, r) {
 		return
 	}
-	fwd.mu.RLock()
-	enabled := fwd.state.Enabled
-	fwd.mu.RUnlock()
+	s.firewall.mu.RLock()
+	enabled := s.firewall.state.Enabled
+	s.firewall.mu.RUnlock()
 	writeJSON(w, http.StatusOK, map[string]any{"enabled": enabled, "backend": "iptables"})
 }
 
-func setFirewallEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
-	if !requireFirewall(w, r) {
+func (s *Server) setFirewallEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
+	if !s.requireFirewall(w, r) {
 		return
 	}
-	fwd.mu.Lock()
-	previous := fwd.state.Enabled
-	fwd.state.Enabled = enabled
-	if err := fwd.reconcile(r.Context()); err != nil {
-		fwd.state.Enabled = previous
-		fwd.mu.Unlock()
+	s.firewall.mu.Lock()
+	previous := s.firewall.state.Enabled
+	s.firewall.state.Enabled = enabled
+	if err := s.firewall.reconcile(r.Context()); err != nil {
+		s.firewall.state.Enabled = previous
+		s.firewall.mu.Unlock()
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	if err := fwd.persistLocked(); err != nil {
-		fwd.state.Enabled = previous
-		_ = fwd.reconcile(r.Context())
-		fwd.mu.Unlock()
+	if err := s.firewall.persistLocked(); err != nil {
+		s.firewall.state.Enabled = previous
+		_ = s.firewall.reconcile(r.Context())
+		s.firewall.mu.Unlock()
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	fwd.mu.Unlock()
+	s.firewall.mu.Unlock()
+	auditFirewall("set-enabled", fmt.Sprint(enabled))
 	writeJSON(w, http.StatusOK, map[string]any{"enabled": enabled})
 }
 
 func (s *Server) handleFirewallEnable(w http.ResponseWriter, r *http.Request) {
-	setFirewallEnabled(w, r, true)
+	s.setFirewallEnabled(w, r, true)
 }
 
 func (s *Server) handleFirewallDisable(w http.ResponseWriter, r *http.Request) {
-	setFirewallEnabled(w, r, false)
+	s.setFirewallEnabled(w, r, false)
 }
 
 func (s *Server) handleFirewallListRules(w http.ResponseWriter, r *http.Request) {
-	if !requireFirewall(w, r) {
+	if !s.requireFirewall(w, r) {
 		return
 	}
-	fwd.mu.RLock()
-	rules := make([]FirewallRule, 0, len(fwd.state.Rules))
-	for _, rule := range fwd.state.Rules {
+	s.firewall.mu.RLock()
+	rules := make([]FirewallRule, 0, len(s.firewall.state.Rules))
+	for _, rule := range s.firewall.state.Rules {
 		rules = append(rules, rule)
 	}
-	fwd.mu.RUnlock()
+	s.firewall.mu.RUnlock()
+	sort.Slice(rules, func(i, j int) bool { return rules[i].ID < rules[j].ID })
 	writeJSON(w, http.StatusOK, rules)
 }
 
@@ -393,12 +495,12 @@ func decodeFirewallRule(r *http.Request) (FirewallRule, error) {
 	}
 	rule.Protocol = protocol
 	rule.Action = action
-	rule.SourceIP = strings.TrimSpace(rule.SourceIP)
+	rule.SourceIP = canonicalFirewallSource(rule.SourceIP)
 	return rule, nil
 }
 
 func (s *Server) handleFirewallAddRule(w http.ResponseWriter, r *http.Request) {
-	if !requireFirewall(w, r) {
+	if !s.requireFirewall(w, r) {
 		return
 	}
 	rule, err := decodeFirewallRule(r)
@@ -406,56 +508,57 @@ func (s *Server) handleFirewallAddRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	rule.ID = fmt.Sprintf("rule-%d", time.Now().UnixNano())
+	rule.ID = "rule-" + uuid.NewString()
 	rule.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	s.firewall.mu.Lock()
+	defer s.firewall.mu.Unlock()
 	if err := firewallExec(r.Context(), "iptables", ruleArgs("-A", rule)...); err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	fwd.mu.Lock()
-	fwd.state.Rules[rule.ID] = rule
-	if err := fwd.persistLocked(); err != nil {
-		delete(fwd.state.Rules, rule.ID)
+	s.firewall.state.Rules[rule.ID] = rule
+	if err := s.firewall.persistLocked(); err != nil {
+		delete(s.firewall.state.Rules, rule.ID)
 		_ = firewallExec(r.Context(), "iptables", ruleArgs("-D", rule)...)
-		fwd.mu.Unlock()
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	fwd.mu.Unlock()
+	auditFirewall("add-rule", rule.ID)
 	writeJSON(w, http.StatusCreated, rule)
 }
 
 func (s *Server) handleFirewallDeleteRule(w http.ResponseWriter, r *http.Request) {
-	if !requireFirewall(w, r) {
+	if !s.requireFirewall(w, r) {
 		return
 	}
 	id := r.PathValue("id")
-	fwd.mu.Lock()
-	rule, ok := fwd.state.Rules[id]
+	s.firewall.mu.Lock()
+	rule, ok := s.firewall.state.Rules[id]
 	if !ok {
-		fwd.mu.Unlock()
+		s.firewall.mu.Unlock()
 		writeError(w, http.StatusNotFound, "rule not found")
 		return
 	}
 	if err := firewallExec(r.Context(), "iptables", ruleArgs("-D", rule)...); err != nil {
-		fwd.mu.Unlock()
+		s.firewall.mu.Unlock()
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	delete(fwd.state.Rules, id)
-	if err := fwd.persistLocked(); err != nil {
-		fwd.state.Rules[id] = rule
+	delete(s.firewall.state.Rules, id)
+	if err := s.firewall.persistLocked(); err != nil {
+		s.firewall.state.Rules[id] = rule
 		_ = firewallExec(r.Context(), "iptables", ruleArgs("-A", rule)...)
-		fwd.mu.Unlock()
+		s.firewall.mu.Unlock()
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	fwd.mu.Unlock()
+	s.firewall.mu.Unlock()
+	auditFirewall("delete-rule", id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleFirewallUpdateRule(w http.ResponseWriter, r *http.Request) {
-	if !requireFirewall(w, r) {
+	if !s.requireFirewall(w, r) {
 		return
 	}
 	id := r.PathValue("id")
@@ -464,36 +567,37 @@ func (s *Server) handleFirewallUpdateRule(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	fwd.mu.Lock()
-	previous, ok := fwd.state.Rules[id]
+	s.firewall.mu.Lock()
+	previous, ok := s.firewall.state.Rules[id]
 	if !ok {
-		fwd.mu.Unlock()
+		s.firewall.mu.Unlock()
 		writeError(w, http.StatusNotFound, "rule not found")
 		return
 	}
 	updated.ID = id
 	updated.CreatedAt = previous.CreatedAt
 	if err := firewallExec(r.Context(), "iptables", ruleArgs("-D", previous)...); err != nil {
-		fwd.mu.Unlock()
+		s.firewall.mu.Unlock()
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
 	if err := firewallExec(r.Context(), "iptables", ruleArgs("-A", updated)...); err != nil {
 		_ = firewallExec(r.Context(), "iptables", ruleArgs("-A", previous)...)
-		fwd.mu.Unlock()
+		s.firewall.mu.Unlock()
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	fwd.state.Rules[id] = updated
-	if err := fwd.persistLocked(); err != nil {
-		fwd.state.Rules[id] = previous
+	s.firewall.state.Rules[id] = updated
+	if err := s.firewall.persistLocked(); err != nil {
+		s.firewall.state.Rules[id] = previous
 		_ = firewallExec(r.Context(), "iptables", ruleArgs("-D", updated)...)
 		_ = firewallExec(r.Context(), "iptables", ruleArgs("-A", previous)...)
-		fwd.mu.Unlock()
+		s.firewall.mu.Unlock()
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	fwd.mu.Unlock()
+	s.firewall.mu.Unlock()
+	auditFirewall("update-rule", id)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -502,20 +606,21 @@ func (s *Server) handleFirewallPort(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFirewallListForwards(w http.ResponseWriter, r *http.Request) {
-	if !requireFirewall(w, r) {
+	if !s.requireFirewall(w, r) {
 		return
 	}
-	fwd.mu.RLock()
-	forwards := make([]PortForward, 0, len(fwd.state.Forwards))
-	for _, forward := range fwd.state.Forwards {
+	s.firewall.mu.RLock()
+	forwards := make([]PortForward, 0, len(s.firewall.state.Forwards))
+	for _, forward := range s.firewall.state.Forwards {
 		forwards = append(forwards, forward)
 	}
-	fwd.mu.RUnlock()
+	s.firewall.mu.RUnlock()
+	sort.Slice(forwards, func(i, j int) bool { return forwards[i].ID < forwards[j].ID })
 	writeJSON(w, http.StatusOK, forwards)
 }
 
 func (s *Server) handleFirewallAddForward(w http.ResponseWriter, r *http.Request) {
-	if !requireFirewall(w, r) {
+	if !s.requireFirewall(w, r) {
 		return
 	}
 	var forward PortForward
@@ -537,51 +642,52 @@ func (s *Server) handleFirewallAddForward(w http.ResponseWriter, r *http.Request
 		return
 	}
 	forward.Protocol = protocol
-	forward.ToIP = strings.TrimSpace(forward.ToIP)
-	forward.ID = fmt.Sprintf("fwd-%d", time.Now().UnixNano())
+	forward.ToIP = net.ParseIP(strings.TrimSpace(forward.ToIP)).String()
+	forward.ID = "fwd-" + uuid.NewString()
 	forward.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	s.firewall.mu.Lock()
+	defer s.firewall.mu.Unlock()
 	if err := firewallExec(r.Context(), "iptables", forwardArgs("-A", forward)...); err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	fwd.mu.Lock()
-	fwd.state.Forwards[forward.ID] = forward
-	if err := fwd.persistLocked(); err != nil {
-		delete(fwd.state.Forwards, forward.ID)
+	s.firewall.state.Forwards[forward.ID] = forward
+	if err := s.firewall.persistLocked(); err != nil {
+		delete(s.firewall.state.Forwards, forward.ID)
 		_ = firewallExec(r.Context(), "iptables", forwardArgs("-D", forward)...)
-		fwd.mu.Unlock()
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	fwd.mu.Unlock()
+	auditFirewall("add-forward", forward.ID)
 	writeJSON(w, http.StatusCreated, forward)
 }
 
 func (s *Server) handleFirewallDeleteForward(w http.ResponseWriter, r *http.Request) {
-	if !requireFirewall(w, r) {
+	if !s.requireFirewall(w, r) {
 		return
 	}
 	id := r.PathValue("id")
-	fwd.mu.Lock()
-	forward, ok := fwd.state.Forwards[id]
+	s.firewall.mu.Lock()
+	forward, ok := s.firewall.state.Forwards[id]
 	if !ok {
-		fwd.mu.Unlock()
+		s.firewall.mu.Unlock()
 		writeError(w, http.StatusNotFound, "forward not found")
 		return
 	}
 	if err := firewallExec(r.Context(), "iptables", forwardArgs("-D", forward)...); err != nil {
-		fwd.mu.Unlock()
+		s.firewall.mu.Unlock()
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	delete(fwd.state.Forwards, id)
-	if err := fwd.persistLocked(); err != nil {
-		fwd.state.Forwards[id] = forward
+	delete(s.firewall.state.Forwards, id)
+	if err := s.firewall.persistLocked(); err != nil {
+		s.firewall.state.Forwards[id] = forward
 		_ = firewallExec(r.Context(), "iptables", forwardArgs("-A", forward)...)
-		fwd.mu.Unlock()
+		s.firewall.mu.Unlock()
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	fwd.mu.Unlock()
+	s.firewall.mu.Unlock()
+	auditFirewall("delete-forward", id)
 	w.WriteHeader(http.StatusNoContent)
 }

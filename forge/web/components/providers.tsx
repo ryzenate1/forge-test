@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/primitives";
 import { ToastProvider, useToast } from "@/components/ui/toast";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
+import { TranslationProvider } from "@/components/TranslationProvider";
 
 const SESSION_KEEPALIVE_MS = 10 * 60 * 1000;
 const PROTECTED_PATH_PREFIXES = ["/servers", "/server", "/account", "/admin"];
@@ -65,5 +66,5 @@ function SessionLoader({ children }: { children: ReactNode }) {
 
 export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, gcTime: 5 * 60_000, refetchOnWindowFocus: false, retry: 1 }, mutations: { retry: false } } }));
-  return <ThemeProvider><QueryClientProvider client={queryClient}><ToastProvider><BrandingProvider><ErrorBoundary><SessionLoader>{children}</SessionLoader></ErrorBoundary></BrandingProvider></ToastProvider></QueryClientProvider></ThemeProvider>;
+  return <ThemeProvider><QueryClientProvider client={queryClient}><ToastProvider><BrandingProvider><ErrorBoundary><TranslationProvider><SessionLoader>{children}</SessionLoader></TranslationProvider></ErrorBoundary></BrandingProvider></ToastProvider></QueryClientProvider></ThemeProvider>;
 }

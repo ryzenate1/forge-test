@@ -60,12 +60,11 @@ func (s *wsTicketStore) put(t wsTicket) {
 	s.mu.Lock()
 	s.tickets[t.Subject] = t
 	s.mu.Unlock()
-	go func() {
-		time.Sleep(time.Until(t.ExpiresAt) + 30*time.Second)
+	time.AfterFunc(time.Until(t.ExpiresAt)+30*time.Second, func() {
 		s.mu.Lock()
 		delete(s.tickets, t.Subject)
 		s.mu.Unlock()
-	}()
+	})
 }
 
 func (s *wsTicketStore) consume(subject string) (wsTicket, bool) {
@@ -177,6 +176,7 @@ func verifyWSTicketSignature(cfg Config, token string) (string, bool) {
 	}
 	subject, sig := parts[0], parts[1]
 	mac := hmac.New(sha256.New, []byte(cfg.AuthSecret))
+	mac.Write([]byte("forge:ws-ticket:v1\x00"))
 	mac.Write([]byte(subject))
 	expected := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	return subject, hmac.Equal([]byte(sig), []byte(expected))
@@ -222,6 +222,7 @@ func (s *wsTicketStore) Peek(token string) (wsTicket, bool) {
 // signature is the URL-safe base64 of HMAC-SHA256(secret, subject).
 func signTicket(secret, subject string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte("forge:ws-ticket:v1\x00"))
 	mac.Write([]byte(subject))
 	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	return subject + "." + sig

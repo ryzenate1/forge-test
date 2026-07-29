@@ -67,7 +67,11 @@ func isTLSDatabaseURL(databaseURL string) bool {
 	if err != nil {
 		return false
 	}
-	switch strings.ToLower(parsed.Query().Get("sslmode")) {
+	values, present := parsed.Query()["sslmode"]
+	if !present || len(values) != 1 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(values[0])) {
 	case "require", "verify-ca", "verify-full":
 		return true
 	default:

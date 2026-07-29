@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Database, Plus, Trash2, RotateCcw, Archive, Eye,
 } from "lucide-react";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
+import { AdminTabs, AdminSelect, AdminFormSection, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
 import { useToast } from "@/components/ui/toast";
 import {
   listDatabaseServices,
@@ -50,24 +50,11 @@ export default function AdminDatabaseServicesPage() {
 
   return (
     <div>
-      <div className="mb-6 flex items-center gap-1 rounded-lg bg-[#161b28] p-1 w-fit">
-        {([
+      <div className="mb-6">
+        <AdminTabs active={activeTab} label="Database service sections" onChange={(id) => setActiveTab(id as Tab)} tabs={([
           { key: "services" as Tab, label: "Database Services" },
           { key: "templates" as Tab, label: "Service Templates" },
-        ]).map((tab) => (
-          <button
-            key={tab.key}
-            className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-              activeTab === tab.key
-                ? "bg-[#1e2536] text-slate-100 shadow-sm"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-            onClick={() => setActiveTab(tab.key)}
-            type="button"
-          >
-            {tab.label}
-          </button>
-        ))}
+        ]).map((tab) => ({ id: tab.key, label: tab.label }))} />
       </div>
 
       {activeTab === "services" ? (
@@ -108,7 +95,7 @@ function ServicesTab({
     queryKey: ["database-services"],
     queryFn: listDatabaseServices,
   });
-  const services = servicesQuery.data ?? [];
+  const services = useMemo(() => servicesQuery.data ?? [], [servicesQuery.data]);
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["database-services"] });
 
@@ -143,9 +130,9 @@ function ServicesTab({
               <Btn size="sm" tone="ghost" onClick={() => void servicesQuery.refetch()}>Retry</Btn>
             </div>
           </div>
-        ) : services.length === 0 ? (
+        ) : Array.isArray(services) && services.length === 0 ? (
           <EmptyState icon={Database} message="No database services. Provision one to get started." />
-        ) : (
+        ) : Array.isArray(services) ? (
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-white/[0.06] text-left text-xs text-slate-500 uppercase tracking-wider">
@@ -161,7 +148,7 @@ function ServicesTab({
               {services.map((svc) => (
                 <tr key={svc.id} className="hover:bg-white/[0.02]">
                   <td className="px-4 py-3 font-medium text-slate-200">{svc.name || svc.id.slice(0, 8)}</td>
-                  <td className="px-4 py-3"><Pill tone="blue">{engineLabels[svc.type] || svc.type} {svc.version}</Pill></td>
+                  <td className="px-4 py-3"><Pill tone="neutral">{engineLabels[svc.type] || svc.type} {svc.version}</Pill></td>
                   <td className="px-4 py-3"><Pill tone={statusTone[svc.status] || "neutral"}>{svc.status}</Pill></td>
                   <td className="px-4 py-3 text-xs text-slate-400">{svc.memoryMb}MB</td>
                   <td className="px-4 py-3 text-xs text-slate-500">{svc.serverId ? svc.serverId.slice(0, 8) : "-"}</td>
@@ -176,7 +163,7 @@ function ServicesTab({
               ))}
             </tbody>
           </table>
-        )}
+        ) : null}
       </Card>
 
       {showProvision && <ProvisionModal onClose={onCloseProvision} onCreated={invalidate} />}
@@ -197,9 +184,9 @@ function ProvisionModal({ onClose, onCreated }: { onClose: () => void; onCreated
     queryFn: listServiceTemplates,
   });
 
-  const versionsForType = (templatesQuery.data ?? [])
-    .filter((t) => t.type === type)
-    .map((t) => t.version);
+  const versionsForType = useMemo(() => Array.isArray(templatesQuery.data)
+    ? templatesQuery.data.filter((t) => t.type === type).map((t) => t.version)
+    : [], [templatesQuery.data, type]);
 
   const createMut = useMutation({
     mutationFn: () => provisionDatabaseService({
@@ -218,22 +205,24 @@ function ProvisionModal({ onClose, onCreated }: { onClose: () => void; onCreated
 
   return (
     <Modal title="Provision Database Service" onClose={onClose} wide>
-      <div className="grid gap-4 md:grid-cols-2">
-        <Input label="Name (optional)" value={name} onChange={setName} placeholder="my-database" />
-        <div>
-          <label className="block text-sm font-medium text-slate-300 mb-1.5">Type</label>
-          <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100 text-sm" value={type} onChange={(e) => { setType(e.target.value); const vs = versionsForType; if (vs.length > 0) setVersion(vs[vs.length - 1]); }}>
-            {Object.entries(engineLabels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-          </select>
+      <AdminFormSection title="Service Configuration">
+        <div className="grid gap-4 md:grid-cols-2">
+          <Input label="Name (optional)" value={name} onChange={setName} placeholder="my-database" />
+          <AdminSelect
+            label="Type"
+            value={type}
+            onChange={(v) => { setType(v); const vs = versionsForType; if (Array.isArray(vs) && vs.length > 0) setVersion(vs[vs.length - 1]); }}
+            options={Object.entries(engineLabels).map(([k, v]) => ({ value: k, label: v }))}
+          />
+          <AdminSelect
+            label="Version"
+            value={version}
+            onChange={setVersion}
+            options={Array.isArray(versionsForType) ? versionsForType.map((v) => ({ value: v, label: v })) : []}
+          />
+          <Input label="Memory (MB)" value={memoryMb} onChange={setMemoryMb} type="number" placeholder="256" />
         </div>
-        <div>
-          <label className="block text-sm font-medium text-slate-300 mb-1.5">Version</label>
-          <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100 text-sm" value={version} onChange={(e) => setVersion(e.target.value)}>
-            {versionsForType.map((v) => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </div>
-        <Input label="Memory (MB)" value={memoryMb} onChange={setMemoryMb} type="number" placeholder="256" />
-      </div>
+      </AdminFormSection>
       {createMut.isError && (
         <div className="mt-4 flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-xs text-red-200">
           <span>{createMut.error?.message || "An unexpected error occurred."}</span>
@@ -264,10 +253,14 @@ function DetailModal({ serviceId, onClose }: { serviceId: string; onClose: () =>
     queryFn: () => listServiceBackups(serviceId),
   });
 
+  const backups = useMemo(() => backupsQuery.data ?? [], [backupsQuery.data]);
+
   const credsQuery = useQuery({
     queryKey: ["service-credentials", serviceId],
     queryFn: () => listServiceCredentials(serviceId),
   });
+
+  const creds = useMemo(() => credsQuery.data ?? [], [credsQuery.data]);
 
   const logsQuery = useQuery({
     queryKey: ["service-logs", serviceId],
@@ -341,7 +334,7 @@ function DetailModal({ serviceId, onClose }: { serviceId: string; onClose: () =>
           <div className="rounded-lg bg-[#161b28]">
             {backupsQuery.isLoading ? (
               <div className="p-3 text-xs text-slate-500">Loading...</div>
-            ) : (backupsQuery.data ?? []).length === 0 ? (
+            ) : !Array.isArray(backups) || backups.length === 0 ? (
               <div className="p-3 text-xs text-slate-500">No backups</div>
             ) : (
               <table className="w-full text-xs">
@@ -354,7 +347,7 @@ function DetailModal({ serviceId, onClose }: { serviceId: string; onClose: () =>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/[0.04]">
-                  {(backupsQuery.data ?? []).map((b) => (
+                  {Array.isArray(backups) && backups.map((b) => (
                     <tr key={b.id}>
                       <td className="px-3 py-2"><Pill tone={b.status === "completed" ? "green" : b.status === "failed" ? "red" : "yellow"}>{b.status}</Pill></td>
                       <td className="px-3 py-2 text-slate-400">{b.sizeBytes > 0 ? `${(b.sizeBytes / 1024 / 1024).toFixed(1)}MB` : "-"}</td>
@@ -380,7 +373,7 @@ function DetailModal({ serviceId, onClose }: { serviceId: string; onClose: () =>
           <div className="rounded-lg bg-[#161b28]">
             {credsQuery.isLoading ? (
               <div className="p-3 text-xs text-slate-500">Loading...</div>
-            ) : (credsQuery.data ?? []).length === 0 ? (
+            ) : !Array.isArray(creds) || creds.length === 0 ? (
               <div className="p-3 text-xs text-slate-500">No credentials</div>
             ) : (
               <table className="w-full text-xs">
@@ -394,7 +387,7 @@ function DetailModal({ serviceId, onClose }: { serviceId: string; onClose: () =>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/[0.04]">
-                  {(credsQuery.data ?? []).map((c) => (
+                  {Array.isArray(creds) && creds.map((c) => (
                     <tr key={c.id}>
                       <td className="px-3 py-2 font-mono text-slate-200">{c.username}</td>
                       <td className="px-3 py-2 text-slate-400">{c.databaseName}</td>
@@ -416,18 +409,22 @@ function DetailModal({ serviceId, onClose }: { serviceId: string; onClose: () =>
         {showNewCred && (
           <div className="rounded-lg border border-white/10 bg-[#1e2536] p-4 space-y-3">
             <h4 className="text-sm font-semibold text-slate-300">New Credential</h4>
-            <div className="grid gap-3 md:grid-cols-2">
-              <Input label="Username" value={newUser} onChange={setNewUser} placeholder="db_user" />
-              <Input label="Password" value={newPass} onChange={setNewPass} type="password" placeholder="password" />
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">Permissions</label>
-                <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100 text-sm" value={newPerms} onChange={(e) => setNewPerms(e.target.value)}>
-                  <option value="read-only">Read Only</option>
-                  <option value="read-write">Read Write</option>
-                  <option value="admin">Admin</option>
-                </select>
+            <AdminFormSection title="Credential Details">
+              <div className="grid gap-3 md:grid-cols-2">
+                <Input label="Username" value={newUser} onChange={setNewUser} placeholder="db_user" />
+                <Input label="Password" value={newPass} onChange={setNewPass} type="password" placeholder="password" />
+                <AdminSelect
+                  label="Permissions"
+                  value={newPerms}
+                  onChange={setNewPerms}
+                  options={[
+                    { value: "read-only", label: "Read Only" },
+                    { value: "read-write", label: "Read Write" },
+                    { value: "admin", label: "Admin" },
+                  ]}
+                />
               </div>
-            </div>
+            </AdminFormSection>
             <div className="flex justify-end gap-2">
               <Btn size="sm" tone="ghost" onClick={() => setShowNewCred(false)}>Cancel</Btn>
               <Btn size="sm" disabled={!newUser || !newPass || createCredMut.isPending} onClick={() => createCredMut.mutate()}>
@@ -461,7 +458,7 @@ function TemplatesTab({ showCreate, onShowCreate, onClose }: { showCreate: boole
     queryKey: ["service-templates"],
     queryFn: listServiceTemplates,
   });
-  const templates = templatesQuery.data ?? [];
+  const templates = useMemo(() => templatesQuery.data ?? [], [templatesQuery.data]);
 
   const [newType, setNewType] = useState("postgresql");
   const [newVersion, setNewVersion] = useState("");
@@ -493,9 +490,9 @@ function TemplatesTab({ showCreate, onShowCreate, onClose }: { showCreate: boole
         <CardHeader title="Templates" icon={Database} />
         {templatesQuery.isLoading ? (
           <div className="py-10 text-center text-sm text-slate-500">Loading</div>
-        ) : templates.length === 0 ? (
+        ) : Array.isArray(templates) && templates.length === 0 ? (
           <EmptyState icon={Database} message="No service templates defined." />
-        ) : (
+        ) : Array.isArray(templates) ? (
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-white/[0.06] text-left text-xs text-slate-500 uppercase tracking-wider">
@@ -507,7 +504,7 @@ function TemplatesTab({ showCreate, onShowCreate, onClose }: { showCreate: boole
               </tr>
             </thead>
             <tbody className="divide-y divide-white/[0.04]">
-              {templates.map((t) => (
+              {Array.isArray(templates) && templates.map((t) => (
                 <tr key={t.id} className="hover:bg-white/[0.02]">
                   <td className="px-4 py-3"><Pill tone="blue">{engineLabels[t.type] || t.type}</Pill></td>
                   <td className="px-4 py-3 font-mono text-xs text-slate-200">{t.version}</td>
@@ -518,23 +515,25 @@ function TemplatesTab({ showCreate, onShowCreate, onClose }: { showCreate: boole
               ))}
             </tbody>
           </table>
-        )}
+        ) : null}
       </Card>
 
       {showCreate && (
         <Modal title="Add Service Template" onClose={onClose} wide>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div>
-              <label className="block text-sm font-medium text-slate-300 mb-1.5">Type</label>
-              <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100 text-sm" value={newType} onChange={(e) => setNewType(e.target.value)}>
-                {Object.entries(engineLabels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-              </select>
+          <AdminFormSection title="Template Details">
+            <div className="grid gap-4 md:grid-cols-2">
+              <AdminSelect
+                label="Type"
+                value={newType}
+                onChange={setNewType}
+                options={Object.entries(engineLabels).map(([k, v]) => ({ value: k, label: v }))}
+              />
+              <Input label="Version" value={newVersion} onChange={setNewVersion} placeholder="16" />
+              <Input label="Docker Image" value={newImage} onChange={setNewImage} placeholder="postgres:16" />
+              <Input label="Default Port" value={newPort} onChange={setNewPort} type="number" placeholder="5432" />
+              <Input label="Min Memory (MB)" value={newMinMem} onChange={setNewMinMem} type="number" placeholder="256" />
             </div>
-            <Input label="Version" value={newVersion} onChange={setNewVersion} placeholder="16" />
-            <Input label="Docker Image" value={newImage} onChange={setNewImage} placeholder="postgres:16" />
-            <Input label="Default Port" value={newPort} onChange={setNewPort} type="number" placeholder="5432" />
-            <Input label="Min Memory (MB)" value={newMinMem} onChange={setNewMinMem} type="number" placeholder="256" />
-          </div>
+          </AdminFormSection>
           <ModalFooter
             onCancel={onClose}
             onConfirm={() => createMut.mutate()}

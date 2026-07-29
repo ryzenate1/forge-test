@@ -1,8 +1,6 @@
 package http
 
 import (
-	"time"
-
 	"gamepanel/forge/internal/services/webauthn"
 
 	"github.com/gofiber/fiber/v2"
@@ -125,7 +123,7 @@ func registerWebAuthnRoutes(protected fiber.Router, cfg Config, mutationLimiter 
 			return fiber.NewError(fiber.StatusInternalServerError, "user not found")
 		}
 
-		token, err := issueToken(cfg.AuthSecret, user)
+		token, err := issueConfiguredToken(cfg, user)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not issue token")
 		}
@@ -134,7 +132,7 @@ func registerWebAuthnRoutes(protected fiber.Router, cfg Config, mutationLimiter 
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not generate csrf token")
 		}
-		expires := time.Now().Add(tokenTTL)
+		expires := tokenExpiry(cfg)
 		setSessionCookies(c, token, csrfToken, expires)
 
 		return c.JSON(fiber.Map{

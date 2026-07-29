@@ -134,8 +134,6 @@ type systemInfo struct {
 	Capabilities   []string `json:"capabilities"`
 }
 
-var beaconStart = time.Now()
-
 // postUpdate accepts a full or partial Wings config payload. To move closer to
 // Wings' maturity model we persist the pushed payload to disk so the daemon has
 // an auditable, recoverable copy of the latest panel-managed daemon
@@ -230,14 +228,14 @@ func (s *Server) getSystem(w http.ResponseWriter, r *http.Request) {
 	var mem goruntime.MemStats
 	goruntime.ReadMemStats(&mem)
 	info := systemInfo{
-		Version:        "beacon-dev",
+		Version:        s.version,
 		OS:             goruntime.GOOS,
 		Architecture:   goruntime.GOARCH,
 		CPUThreads:     goruntime.NumCPU(),
 		MemoryMB:       mem.Alloc / (1024 * 1024),
 		GoVersion:      goruntime.Version(),
 		Goroutines:     goruntime.NumGoroutine(),
-		UptimeSeconds:  int64(time.Since(beaconStart).Seconds()),
+		UptimeSeconds:  int64(time.Since(s.started).Seconds()),
 		DockerStatus:   s.dockerStatus(),
 		ActiveSessions: s.sessions().count(),
 		Capabilities:   []string{"docker", "sftp", "backups", "transfers", "stats", "console", "files"},

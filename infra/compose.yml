@@ -16,8 +16,8 @@ services:
       VERSION: "1"
       PING: "1"
       POST: "1"
-      BUILD: "1"
-      EXEC: "1"
+      BUILD: "0"
+      EXEC: "0"
       AUTH: "0"
       SECRETS: "0"
       SERVICES: "0"
@@ -212,6 +212,7 @@ services:
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
       REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
       DAEMON_NODE_TOKEN: "${DAEMON_NODE_TOKEN:?Set DAEMON_NODE_TOKEN in infra/.env}"
+      METRICS_TOKEN: "${METRICS_TOKEN:?Set METRICS_TOKEN in infra/.env}"
       PANEL_URL: ${PANEL_URL:-http://localhost:3000}
       API_SEED_DEMO: "${API_SEED_DEMO:-false}"
       LOAD_BALANCER_ENABLED: ${LOAD_BALANCER_ENABLED:-false}
@@ -279,11 +280,14 @@ services:
       BEACON_DATABASE_PATH: ${BEACON_DATABASE_PATH:-/srv/game-panel/servers/.beacon/beacon.db}
       DAEMON_NODE_ID: "${DAEMON_NODE_ID:?Set DAEMON_NODE_ID in infra/.env}"
       DAEMON_NODE_TOKEN: "${DAEMON_NODE_TOKEN:?Set DAEMON_NODE_TOKEN in infra/.env}"
-      PANEL_API_URL: ${PANEL_API_URL:-http://api:8080/api/v1}
-      DAEMON_SFTP_ADDR: ${DAEMON_SFTP_ADDR:-:2022}
+      DAEMON_SFTP_HOST_KEY_PASSPHRASE: "${DAEMON_SFTP_HOST_KEY_PASSPHRASE:?Set DAEMON_SFTP_HOST_KEY_PASSPHRASE in infra/.env}"
+      DAEMON_UPGRADE_PUBLIC_KEY: "${DAEMON_UPGRADE_PUBLIC_KEY:-}"
+      PANEL_API_URL: "${PANEL_API_URL:?Set an HTTPS PANEL_API_URL in infra/.env}"
+      DAEMON_SFTP_ADDR: ${DAEMON_SFTP_ADDR:-127.0.0.1:2022}
       DAEMON_SFTP_BIND_ADDR: ${DAEMON_SFTP_BIND_ADDR:-127.0.0.1:2022}
       DAEMON_ALLOW_MOCK_RUNTIME: ${DAEMON_ALLOW_MOCK_RUNTIME:-false}
       DAEMON_ALLOW_INSECURE_NO_AUTH: "false"
+      METRICS_TOKEN: "${METRICS_TOKEN:?Set METRICS_TOKEN in infra/.env}"
       BACKUP_ADAPTER: ${BACKUP_ADAPTER:-local}
       S3_BUCKET: ${S3_BUCKET:-}
       S3_REGION: ${S3_REGION:-}
@@ -313,7 +317,7 @@ services:
       resources:
         limits:
           cpus: "2"
-          memory: 256M
+          memory: 1G
         reservations:
           cpus: "0.5"
           memory: 256M
@@ -352,6 +356,7 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ${METRICS_TOKEN_FILE:-./.metrics-token}:/run/secrets/metrics_token:ro
       - prometheus-data:/prometheus
     depends_on:
       api:

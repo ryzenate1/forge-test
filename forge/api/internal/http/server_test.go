@@ -127,11 +127,13 @@ func TestProductionHealthContracts(t *testing.T) {
 }
 
 func TestMetrics(t *testing.T) {
+	t.Setenv("METRICS_TOKEN", "0123456789abcdef0123456789abcdef")
 	app := NewServer(Config{ReadTimeout: time.Second, AuthSecret: "secret"})
 	req, err := http.NewRequest(http.MethodGet, "/api/v1/metrics", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Header.Set("Authorization", "Bearer 0123456789abcdef0123456789abcdef")
 
 	res, err := app.Test(req)
 	if err != nil {

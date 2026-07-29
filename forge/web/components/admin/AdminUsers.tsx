@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, Plus, Save, Shield, Trash2, Users } from "lucide-react";
 import { type ApiUser, assignUserRoles, createUser, deleteUser, fetchRoles, fetchServers, fetchUserRoles, fetchUsers, removeUserRoles, updateUser } from "@/lib/api";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, StatsRow } from "./admin-ui";
+import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, StatsRow, AdminSelect, AdminFormSection } from "./admin-ui";
 import { Skeleton } from "@/components/ui/loading-skeleton";
 import { UserLimitsGrid } from "./user-limits";
 
@@ -102,9 +102,9 @@ export function AdminUsers() {
  setSelectedUser(null);
  },
  });
- const bulkMut = useMutation({
- mutationFn: async (action: "role-admin" | "role-user" | "delete") => {
- for (const user of users.filter((item) => selectedIds.includes(item.id))) {
+  const bulkMut = useMutation({
+  mutationFn: async (action: "role-admin" | "role-user" | "delete") => {
+  for (const user of (Array.isArray(users) ? users : []).filter((item) => selectedIds.includes(item.id))) {
  if (action === "delete") {
  if (ownedCount(user) === 0) await deleteUser(user.id);
  } else {
@@ -175,7 +175,7 @@ export function AdminUsers() {
  <StatsRow items={[
  { label: "Total Users", value: users.length, icon: Users, tone: "neutral" },
  { label: "Administrators", value: admins.length, icon: Shield, tone: "red" },
- { label: "Standard", value: users.length - admins.length, icon: Users, tone: "blue" },
+  { label: "Standard", value: users.length - admins.length, icon: Users, tone: "neutral" },
  ]} />
 
  <div className="mb-4 grid gap-3 md:grid-cols-[1fr_180px]">
@@ -192,7 +192,7 @@ export function AdminUsers() {
  <div className="flex flex-wrap gap-2">
  <Btn size="sm" tone="ghost" onClick={() => bulkMut.mutate("role-user")} disabled={bulkMut.isPending}>Set User</Btn>
  <Btn size="sm" tone="ghost" onClick={() => bulkMut.mutate("role-admin")} disabled={bulkMut.isPending}>Set Admin</Btn>
- <Btn size="sm" tone="danger" onClick={() => { if (confirm("Delete selected users without owned servers?")) bulkMut.mutate("delete"); }} disabled={bulkMut.isPending || users.filter((user) => selectedIds.includes(user.id)).some((user) => !ownershipKnown(user) || ownedCount(user) > 0)}>Delete Safe</Btn>
+  <Btn size="sm" tone="danger" onClick={() => { if (confirm("Delete selected users without owned servers?")) bulkMut.mutate("delete"); }} disabled={bulkMut.isPending || (Array.isArray(users) ? users : []).filter((user) => selectedIds.includes(user.id)).some((user) => !ownershipKnown(user) || ownedCount(user) > 0)}>Delete Safe</Btn>
  </div>
  </div>
  ) : null}
@@ -234,7 +234,7 @@ export function AdminUsers() {
  </div>
  </td>
  <td className="px-4 py-3">
- <Pill tone={user.role === "admin" ? "red" : "blue"}>{user.role}</Pill>
+  <Pill tone={user.role === "admin" ? "red" : "neutral"}>{user.role}</Pill>
  </td>
  <td className="px-4 py-3 text-xs text-slate-400">{ownedCount(user)}</td>
  <td className="px-4 py-3 font-mono text-xs text-slate-500">{user.id.slice(0, 8)}...</td>
@@ -254,26 +254,24 @@ export function AdminUsers() {
  </div>
  </div>
 
- {selectedUser ? (
- <Modal title="User Details" onClose={() => setSelectedUser(null)} wide>
- <div className="grid gap-4 md:grid-cols-2">
- <Input label="Email Address" value={editEmail} onChange={setEditEmail} type="email" />
- <div>
- <label className="mb-1.5 block text-sm font-medium text-slate-300">Role</label>
- <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100" value={editRole} onChange={(event) => setEditRole(event.target.value as "admin" | "user")}>
- <option value="user">User</option>
- <option value="admin">Administrator</option>
- </select>
- </div>
- <Input label="New Password" value={editPassword} onChange={setEditPassword} placeholder="Leave blank to keep current password" type="password" />
- <div className="rounded-lg border border-white/[0.06] bg-[#161b28] p-3 text-sm text-slate-300">
- <p className="text-xs uppercase tracking-wide text-slate-500">Owned Servers</p>
- <p className="mt-1 text-2xl font-bold text-slate-100">{ownedCount(selectedUser)}</p>
- </div>
- </div>
- <div className="mt-4"><UserRoleAssignments userId={selectedUser.id} /></div>
- <div className="mt-4">
- <UserLimitsGrid
+  {selectedUser ? (
+  <Modal title="User Details" onClose={() => setSelectedUser(null)} wide>
+  <div className="grid gap-4 md:grid-cols-2">
+  <AdminFormSection title="Account">
+  <Input label="Email Address" value={editEmail} onChange={setEditEmail} type="email" />
+  <AdminSelect label="Role" value={editRole} onChange={(v) => setEditRole(v as "admin" | "user")} options={[{ value: "user", label: "User" }, { value: "admin", label: "Administrator" }]} />
+  <Input label="New Password" value={editPassword} onChange={setEditPassword} placeholder="Leave blank to keep current password" type="password" />
+  </AdminFormSection>
+  <AdminFormSection title="Owned Servers">
+  <div className="rounded-lg border border-white/[0.06] bg-[#161b28] p-3 text-sm text-slate-300">
+  <p className="text-xs uppercase tracking-wide text-slate-500">Owned Servers</p>
+  <p className="mt-1 text-2xl font-bold text-slate-100">{ownedCount(selectedUser)}</p>
+  </div>
+  </AdminFormSection>
+  </div>
+  <div className="mt-4"><UserRoleAssignments userId={selectedUser.id} /></div>
+  <AdminFormSection title="Resource Limits">
+  <UserLimitsGrid
  serverLimit={eServerLimit} onServerLimit={setEServerLimit}
  cpuLimit={eCPULimit} onCpuLimit={setECpuLimit}
  memLimit={eMemLimit} onMemLimit={setEMemLimit}
@@ -283,37 +281,30 @@ export function AdminUsers() {
  allocationLimit={eAllocationLimit} onAllocationLimit={setEAllocationLimit}
  subuserLimit={eSubuserLimit} onSubuserLimit={setESubuserLimit}
  scheduleLimit={eScheduleLimit} onScheduleLimit={setEScheduleLimit}
- />
- </div>
- <div className="mt-5 flex flex-wrap justify-between gap-2 border-t border-white/[0.06] pt-4">
- <Btn tone="danger" disabled={!ownershipKnown(selectedUser) || ownedCount(selectedUser) > 0 || deleteMut.isPending} onClick={() => { if (confirm("Delete this user?")) deleteMut.mutate(selectedUser.id); }}>
- <Trash2 size={13} /> Delete
- </Btn>
- <div className="flex gap-2">
- <Btn tone="ghost" onClick={() => setSelectedUser(null)}>Close</Btn>
- <Btn disabled={editEmail.trim() === "" || updateMut.isPending} onClick={() => updateMut.mutate()}><Save size={13} /> Save User</Btn>
- </div>
- </div>
- </Modal>
- ) : null}
+  />
+  </AdminFormSection>
+  <div className="mt-5 flex flex-wrap justify-between gap-2 border-t border-white/[0.06] pt-4">
+  <Btn tone="danger" disabled={!ownershipKnown(selectedUser) || ownedCount(selectedUser) > 0 || deleteMut.isPending} onClick={() => { if (confirm("Delete this user?")) deleteMut.mutate(selectedUser.id); }}>
+  <Trash2 size={13} /> Delete
+  </Btn>
+  <div className="flex gap-2">
+  <Btn tone="ghost" onClick={() => setSelectedUser(null)}>Close</Btn>
+  <Btn disabled={editEmail.trim() === "" || updateMut.isPending} onClick={() => updateMut.mutate()}><Save size={13} /> Save User</Btn>
+  </div>
+  </div>
+  </Modal>
+  ) : null}
 
- {modal ? (
- <Modal title="Create User" onClose={() => setModal(false)}>
- <div className="grid gap-4">
- <Input label="Email Address" value={email} onChange={setEmail} placeholder="user@example.com" type="email" />
- <Input label="Password" value={password} onChange={setPassword} placeholder="********" type="password" />
- <div>
- <label className="block text-sm font-medium text-slate-300 mb-1.5">Role</label>
- <select
- className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100 text-sm"
- value={role}
- onChange={(e) => setRole(e.target.value as "admin" | "user")}
- >
- <option value="user">User</option>
- <option value="admin">Administrator</option>
- </select>
- </div>
- <UserLimitsGrid
+  {modal ? (
+  <Modal title="Create User" onClose={() => setModal(false)}>
+  <div className="grid gap-4">
+  <AdminFormSection title="Account">
+  <Input label="Email Address" value={email} onChange={setEmail} placeholder="user@example.com" type="email" />
+  <Input label="Password" value={password} onChange={setPassword} placeholder="********" type="password" />
+  <AdminSelect label="Role" value={role} onChange={(v) => setRole(v as "admin" | "user")} options={[{ value: "user", label: "User" }, { value: "admin", label: "Administrator" }]} />
+  </AdminFormSection>
+  <AdminFormSection title="Resource Limits">
+  <UserLimitsGrid
  serverLimit={cServerLimit} onServerLimit={setCServerLimit}
  cpuLimit={cCPULimit} onCpuLimit={setCCpuLimit}
  memLimit={cMemLimit} onMemLimit={setCMemLimit}
@@ -321,11 +312,12 @@ export function AdminUsers() {
  backupLimit={cBackupLimit} onBackupLimit={setCBackupLimit}
  databaseLimit={cDatabaseLimit} onDatabaseLimit={setCDatabaseLimit}
  allocationLimit={cAllocationLimit} onAllocationLimit={setCAllocationLimit}
- subuserLimit={cSubuserLimit} onSubuserLimit={setCSubuserLimit}
- scheduleLimit={cScheduleLimit} onScheduleLimit={setCScheduleLimit}
- />
- </div>
- <ModalFooter
+  subuserLimit={cSubuserLimit} onSubuserLimit={setCSubuserLimit}
+  scheduleLimit={cScheduleLimit} onScheduleLimit={setCScheduleLimit}
+  />
+  </AdminFormSection>
+  </div>
+  <ModalFooter
  onCancel={() => setModal(false)}
  onConfirm={() => createMut.mutate()}
   disabled={email.trim() === "" || password.length < 8 || createMut.isPending}
@@ -338,13 +330,15 @@ export function AdminUsers() {
 }
 
 function UserRoleAssignments({ userId }: { userId: string }) {
- const qc = useQueryClient();
- const rolesQuery = useQuery({ queryKey: ["admin-roles"], queryFn: fetchRoles });
- const assignedQuery = useQuery({ queryKey: ["user-roles", userId], queryFn: () => fetchUserRoles(userId) });
- const assigned = new Set(assignedQuery.data ?? []);
- const refresh = () => void qc.invalidateQueries({ queryKey: ["user-roles", userId] });
- const assignMut = useMutation({ mutationFn: (roleKey: string) => assignUserRoles(userId, [roleKey]), onSuccess: refresh });
- const removeMut = useMutation({ mutationFn: (roleKey: string) => removeUserRoles(userId, [roleKey]), onSuccess: refresh });
+  const qc = useQueryClient();
+  const rolesQuery = useQuery({ queryKey: ["admin-roles"], queryFn: fetchRoles });
+  const assignedQuery = useQuery({ queryKey: ["user-roles", userId], queryFn: () => fetchUserRoles(userId) });
+  const roles = useMemo(() => rolesQuery.data ?? [], [rolesQuery.data]);
+  const assignedKeys = useMemo(() => assignedQuery.data ?? [], [assignedQuery.data]);
+  const assigned = useMemo(() => new Set(Array.isArray(assignedKeys) ? assignedKeys : []), [assignedKeys]);
+  const refresh = () => void qc.invalidateQueries({ queryKey: ["user-roles", userId] });
+  const assignMut = useMutation({ mutationFn: (roleKey: string) => assignUserRoles(userId, [roleKey]), onSuccess: refresh });
+  const removeMut = useMutation({ mutationFn: (roleKey: string) => removeUserRoles(userId, [roleKey]), onSuccess: refresh });
   if (rolesQuery.isError || assignedQuery.isError) return <div className="flex items-start justify-between gap-3 rounded-lg border border-red-500/20 bg-red-950/10 p-2 text-xs text-red-200"><span>Additional roles could not be loaded{rolesQuery.isError ? `: ${rolesQuery.error.message}` : assignedQuery.isError ? `: ${assignedQuery.error.message}` : ""}</span><Btn size="sm" tone="ghost" onClick={() => { void rolesQuery.refetch(); void assignedQuery.refetch(); }}>Retry</Btn></div>;
- return <div className="rounded-lg border border-white/[0.06] bg-[#161b28] p-3"><p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Additional Roles</p>{(rolesQuery.data ?? []).length === 0 ? <p className="text-xs text-slate-400">No additional roles configured.</p> : <div className="flex flex-wrap gap-2">{(rolesQuery.data ?? []).map((role) => <label className="flex items-center gap-2 rounded border border-white/10 px-2 py-1 text-xs text-slate-300" key={role.id}><input type="checkbox" checked={assigned.has(role.key)} disabled={assignMut.isPending || removeMut.isPending} onChange={(event) => event.target.checked ? assignMut.mutate(role.key) : removeMut.mutate(role.key)}/>{role.name}</label>)}</div>}</div>;
+  return <div className="rounded-lg border border-white/[0.06] bg-[#161b28] p-3"><p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Additional Roles</p>{!Array.isArray(roles) || roles.length === 0 ? <p className="text-xs text-slate-400">No additional roles configured.</p> : <div className="flex flex-wrap gap-2">{Array.isArray(roles) && roles.map((role) => <label className="flex items-center gap-2 rounded border border-white/10 px-2 py-1 text-xs text-slate-300" key={role.id}><input type="checkbox" checked={assigned.has(role.key)} disabled={assignMut.isPending || removeMut.isPending} onChange={(event) => event.target.checked ? assignMut.mutate(role.key) : removeMut.mutate(role.key)}/>{role.name}</label>)}</div>}</div>;
 }

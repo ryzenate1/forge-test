@@ -7,20 +7,26 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
 // SlackService handles Slack notifications
 type SlackService struct {
-	client   *http.Client
+	client  *http.Client
 	baseURL string
 }
 
 // NewSlackService creates a new Slack service
 func NewSlackService() *SlackService {
 	return &SlackService{
-		client:   &http.Client{Timeout: 15 * time.Second},
+		client: &http.Client{
+			Timeout: 15 * time.Second,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		baseURL: "https://hooks.slack.com/services",
 	}
 }
@@ -56,12 +62,12 @@ type SlackField struct {
 
 // SlackBlock represents a Slack message block
 type SlackBlock struct {
-	Type     string      `json:"type"`
-	Text     *SlackText  `json:"text,omitempty"`
-	Fields   []SlackField `json:"fields,omitempty"`
+	Type     string        `json:"type"`
+	Text     *SlackText    `json:"text,omitempty"`
+	Fields   []SlackField  `json:"fields,omitempty"`
 	Elements []interface{} `json:"elements,omitempty"`
-	ImageURL string      `json:"image_url,omitempty"`
-	AltText  string      `json:"alt_text,omitempty"`
+	ImageURL string        `json:"image_url,omitempty"`
+	AltText  string        `json:"alt_text,omitempty"`
 }
 
 // SlackText represents text in a Slack block
@@ -79,6 +85,9 @@ type SlackResponse struct {
 
 // Send sends a message to Slack
 func (s *SlackService) Send(ctx context.Context, webhookURL string, message SlackMessage) error {
+	if err := s.ValidateWebhookURL(webhookURL); err != nil {
+		return err
+	}
 	// Marshal the message
 	body, err := json.Marshal(message)
 	if err != nil {
@@ -199,18 +208,25 @@ func (s *SlackService) SendEventNotification(ctx context.Context, webhookURL, ev
 
 // getSlackColorForEvent returns a color for the given event type
 func getSlackColorForEvent(eventType string) string {
+	parts := strings.FieldsFunc(strings.ToLower(eventType), func(r rune) bool {
+		return r == '.' || r == '_' || r == '-' || r == '/'
+	})
+	has := func(values ...string) bool {
+		for _, part := range parts {
+			for _, value := range values {
+				if part == value {
+					return true
+				}
+			}
+		}
+		return false
+	}
 	switch {
-	case strings.Contains(eventType, "failed"),
-		strings.Contains(eventType, "crash"),
-		strings.Contains(eventType, "down"),
-		strings.Contains(eventType, "error"):
+	case has("failed", "failure", "crash", "crashed", "down", "error"):
 		return "#F44336" // Red
-	case strings.Contains(eventType, "warning"):
+	case has("warning", "warn"):
 		return "#FFC107" // Amber
-	case strings.Contains(eventType, "complete"),
-		strings.Contains(eventType, "success"),
-		strings.Contains(eventType, "up"),
-		strings.Contains(eventType, "online"):
+	case has("complete", "completed", "success", "succeeded", "up", "online"):
 		return "#4CAF50" // Green
 	default:
 		return "#2196F3" // Blue
@@ -244,8 +260,8 @@ func (s *SlackService) SendRichNotification(ctx context.Context, webhookURL, tit
 		{
 			Type: "header",
 			Text: &SlackText{
-				Type: "plain_text",
-				Text: title,
+				Type:  "plain_text",
+				Text:  title,
 				Emoji: true,
 			},
 		},
@@ -297,12 +313,9 @@ func (s *SlackService) ValidateWebhookURL(webhookURL string) error {
 		return fmt.Errorf("webhook URL is required")
 	}
 
-	// Check if it starts with the expected base URL
-	if !strings.HasPrefix(webhookURL, "https://hooks.slack.com/services/") {
-		// Allow custom Slack-compatible endpoints
-		if !strings.Contains(webhookURL, "hooks.slack.com") && !strings.Contains(webhookURL, "slack.com") {
-			return fmt.Errorf("invalid Slack webhook URL format")
-		}
+	parsed, err := url.Parse(webhookURL)
+	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Hostname(), "hooks.slack.com") || parsed.User != nil || !strings.HasPrefix(parsed.EscapedPath(), "/services/") {
+		return fmt.Errorf("invalid Slack webhook URL format")
 	}
 
 	return nil

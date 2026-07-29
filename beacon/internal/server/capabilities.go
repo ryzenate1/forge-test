@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os/exec"
 	stdruntime "runtime"
-	"sync"
+	"strconv"
+	"strings"
 	"time"
 
 	"gamepanel/beacon/internal/runtime"
@@ -158,12 +160,12 @@ func (s *Server) collectCapabilities() CapabilityReport {
 	}
 
 	return CapabilityReport{
-		BeaconVersion: "beacon-dev",
+		BeaconVersion: s.version,
 		OS:            stdruntime.GOOS,
 		Architecture:  stdruntime.GOARCH,
 		CPUThreads:    stdruntime.NumCPU(),
 		MemoryMB:      mem.Alloc / (1024 * 1024),
-		UptimeSeconds: int64(time.Since(beaconStart).Seconds()),
+		UptimeSeconds: int64(time.Since(s.started).Seconds()),
 		Capabilities:  capabilities,
 		RuntimeInfo:   &RuntimeCapability{DockerAvailable: runtimeAvailable, DockerStatus: runtimeStatus, RuntimeProvider: runtimeProvider},
 		BuildInfo:     buildInfo,
@@ -192,11 +194,6 @@ type CapabilityDelta struct {
 	Unchanged []CapabilityEntry `json:"unchanged,omitempty"`
 	FetchedAt string            `json:"fetchedAt"`
 }
-
-var (
-	previousCapabilities *CapabilityReport
-	capDeltaMu           sync.Mutex
-)
 
 func (s *Server) handlePostCapabilitiesHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -234,15 +231,15 @@ func (s *Server) computeCapabilityDeltaFromExternal(current CapabilityReport) Ca
 		FetchedAt: current.FetchedAt,
 	}
 
-	capDeltaMu.Lock()
-	if previousCapabilities == nil {
-		previousCapabilities = &current
-		capDeltaMu.Unlock()
+	s.capabilitiesMu.Lock()
+	if s.previousCaps == nil {
+		s.previousCaps = &current
+		s.capabilitiesMu.Unlock()
 		delta.Added = current.Capabilities
 		return delta
 	}
-	prev := *previousCapabilities
-	capDeltaMu.Unlock()
+	prev := *s.previousCaps
+	s.capabilitiesMu.Unlock()
 
 	prevMap := make(map[CapabilityType]CapabilityEntry)
 	for _, c := range prev.Capabilities {
@@ -267,9 +264,9 @@ func (s *Server) computeCapabilityDeltaFromExternal(current CapabilityReport) Ca
 		}
 	}
 
-	capDeltaMu.Lock()
-	previousCapabilities = &current
-	capDeltaMu.Unlock()
+	s.capabilitiesMu.Lock()
+	s.previousCaps = &current
+	s.capabilitiesMu.Unlock()
 
 	return delta
 }
@@ -283,15 +280,17 @@ type VersionCompatibility struct {
 }
 
 func CheckVersionCompatibility(beaconVersion, apiVersion string) VersionCompatibility {
-	minBeacon := "1.0.0"
-	compatible := true
+	minBeacon := "0.1.0"
+	compatible := false
 	var message string
 	if beaconVersion == "" {
-		compatible = false
 		message = "beacon version is unknown"
-	} else if apiVersion != "" && beaconVersion < minBeacon {
-		compatible = false
+	} else if comparison, err := compareReleaseVersions(beaconVersion, minBeacon); err != nil {
+		message = fmt.Sprintf("beacon version %q is invalid", beaconVersion)
+	} else if comparison < 0 {
 		message = fmt.Sprintf("beacon version %s is below minimum %s", beaconVersion, minBeacon)
+	} else {
+		compatible = true
 	}
 	return VersionCompatibility{
 		BeaconVersion:    beaconVersion,
@@ -300,4 +299,42 @@ func CheckVersionCompatibility(beaconVersion, apiVersion string) VersionCompatib
 		MinBeaconVersion: minBeacon,
 		Message:          message,
 	}
+}
+
+func compareReleaseVersions(left, right string) (int, error) {
+	parse := func(value string) ([3]int, error) {
+		var result [3]int
+		value = strings.TrimPrefix(strings.TrimSpace(value), "v")
+		value = strings.SplitN(value, "+", 2)[0]
+		value = strings.SplitN(value, "-", 2)[0]
+		parts := strings.Split(value, ".")
+		if len(parts) != 3 {
+			return result, errors.New("version must contain three numeric components")
+		}
+		for index, part := range parts {
+			number, err := strconv.Atoi(part)
+			if err != nil || number < 0 || part == "" || len(part) > 1 && part[0] == '0' {
+				return result, errors.New("invalid version component")
+			}
+			result[index] = number
+		}
+		return result, nil
+	}
+	a, err := parse(left)
+	if err != nil {
+		return 0, err
+	}
+	b, err := parse(right)
+	if err != nil {
+		return 0, err
+	}
+	for index := range a {
+		if a[index] < b[index] {
+			return -1, nil
+		}
+		if a[index] > b[index] {
+			return 1, nil
+		}
+	}
+	return 0, nil
 }

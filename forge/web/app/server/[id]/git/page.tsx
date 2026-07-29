@@ -36,6 +36,9 @@ export default function GitDeployPage() {
   const [deployments, setDeployments] = useState<GitDeployment[]>([]);
   const [hooks, setHooks] = useState<GitDeploymentHook[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [deployError, setDeployError] = useState<string | null>(null);
+  const [hookError, setHookError] = useState<string | null>(null);
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("main");
   const params = useParams();
@@ -43,6 +46,7 @@ export default function GitDeployPage() {
 
   const fetchData = useCallback(async (sid: string) => {
     try {
+      setFetchError(null);
       const [deployments, hooks] = await Promise.all([
         fetchJSON<GitDeployment[]>(`/git/servers/${sid}/deployments`),
         fetchJSON<GitDeploymentHook[]>(`/git/servers/${sid}/hooks`),
@@ -50,7 +54,7 @@ export default function GitDeployPage() {
       setDeployments(Array.isArray(deployments) ? deployments : []);
       setHooks(Array.isArray(hooks) ? hooks : []);
     } catch (err) {
-      console.error("Failed to load git data:", errorMessage(err, ""));
+      setFetchError(errorMessage(err, "Failed to load git data"));
     } finally {
       setLoading(false);
     }
@@ -65,32 +69,35 @@ export default function GitDeployPage() {
   const triggerDeploy = async () => {
     if (!serverId || !repoUrl) return;
     try {
+      setDeployError(null);
       await postJSON(`/git/servers/${serverId}/deployments`, { repoUrl, branch });
       setRepoUrl("");
       setBranch("main");
       fetchData(serverId);
     } catch (err) {
-      console.error("Deploy failed:", errorMessage(err, ""));
+      setDeployError(errorMessage(err, "Deploy failed"));
     }
   };
 
   const createHook = async () => {
     if (!serverId) return;
     try {
+      setHookError(null);
       await postJSON(`/git/servers/${serverId}/hooks`, { events: ["push"] });
       fetchData(serverId);
     } catch (err) {
-      console.error("Failed to create hook:", errorMessage(err, ""));
+      setHookError(errorMessage(err, "Failed to create hook"));
     }
   };
 
   const deleteHook = async (hookId: string) => {
     if (!serverId) return;
     try {
+      setHookError(null);
       await deleteJSON(`/git/servers/${serverId}/hooks/${hookId}`);
       fetchData(serverId);
     } catch (err) {
-      console.error("Failed to delete hook:", errorMessage(err, ""));
+      setHookError(errorMessage(err, "Failed to delete hook"));
     }
   };
 
@@ -109,8 +116,19 @@ export default function GitDeployPage() {
         <div className="p-6 space-y-8">
           <h2 className="text-2xl font-bold text-slate-100">Git Deployments</h2>
 
+          {fetchError && (
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200" role="alert">
+              {fetchError}
+            </div>
+          )}
+
           <div className="bg-[#1e2536] rounded-lg p-4 space-y-4">
             <h3 className="text-lg font-semibold text-slate-100">Trigger Deployment</h3>
+            {deployError && (
+              <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200" role="alert">
+                {deployError}
+              </div>
+            )}
             <div className="flex gap-3">
               <input
                 type="text"
@@ -173,6 +191,11 @@ export default function GitDeployPage() {
                 Create Hook
               </button>
             </div>
+            {hookError && (
+              <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200" role="alert">
+                {hookError}
+              </div>
+            )}
             {hooks.length === 0 ? (
               <p className="text-slate-500">No hooks configured.</p>
             ) : (

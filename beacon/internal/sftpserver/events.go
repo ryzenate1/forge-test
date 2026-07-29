@@ -1,7 +1,9 @@
 package sftpserver
 
 import (
+	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"gamepanel/beacon/internal/activity"
@@ -70,28 +72,66 @@ func (m *MultiPublisher) PublishEvent(event Event) {
 
 // ActivityDBPublisher publishes events to the activity database.
 type ActivityDBPublisher struct {
-	db *activity.Database
+	db     *activity.Database
+	queue  chan Event
+	mu     sync.RWMutex
+	closed bool
 }
 
 func NewActivityDBPublisher(db *activity.Database) *ActivityDBPublisher {
-	return &ActivityDBPublisher{db: db}
+	publisher := &ActivityDBPublisher{db: db}
+	if db != nil {
+		publisher.queue = make(chan Event, 1024)
+		go publisher.run()
+	}
+	return publisher
 }
 
 func (p *ActivityDBPublisher) PublishEvent(event Event) {
-	if p == nil || p.db == nil {
+	if p == nil || p.db == nil || p.queue == nil {
 		return
 	}
-	_ = p.db.Record(nil, activity.Activity{
-		Event:    string(event.Action),
-		User:     event.UserID,
-		ServerID: event.ServerID,
-		IP:       event.IP,
-		Timestamp: event.Timestamp,
-		Metadata: map[string]interface{}{
-			"path":      event.Path,
-			"target":    event.Target,
-			"client":    event.Client,
-			"sessionId": event.SessionID,
-		},
-	})
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return
+	}
+	select {
+	case p.queue <- event:
+	default:
+		// SFTP I/O must never block on telemetry. The bounded queue prevents
+		// unbounded goroutine growth when the activity database is unavailable.
+	}
+}
+
+func (p *ActivityDBPublisher) Close() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.closed && p.queue != nil {
+		p.closed = true
+		close(p.queue)
+	}
+}
+
+func (p *ActivityDBPublisher) run() {
+	for event := range p.queue {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = p.db.Record(ctx, activity.Activity{
+			Event:     string(event.Action),
+			User:      event.UserID,
+			ServerID:  event.ServerID,
+			IP:        event.IP,
+			Timestamp: event.Timestamp,
+			Metadata: map[string]interface{}{
+				"path":      event.Path,
+				"target":    event.Target,
+				"client":    event.Client,
+				"sessionId": event.SessionID,
+			},
+		})
+		cancel()
+	}
 }

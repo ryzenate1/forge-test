@@ -296,9 +296,9 @@ func (c *Coordinator) FindRecoveryTargets(ctx context.Context, source store.Node
 		return domain.PlacementDecision{}, errors.New("scheduler unavailable")
 	}
 	req := domain.PlacementRequest{
-		MemoryMB:       server.MemoryMB,
-		CPU:            server.CPUShares,
-		DiskMB:         server.DiskMB,
+		MemoryMB:        server.MemoryMB,
+		CPU:             server.CPUShares,
+		DiskMB:          server.DiskMB,
 		SkipReservation: true,
 	}
 	if source.RegionID != nil {
@@ -351,8 +351,14 @@ func (c *Coordinator) ExecutePlan(ctx context.Context, planID string) (store.Rec
 		return c.store.UpdateRecoveryPlanStatus(ctx, plan.ID, store.RecoveryPlanStatusCompleted, "no recovery migrations to execute")
 	}
 	for _, item := range plan.Items {
-		if item.Status != string(store.RecoveryItemStatusExecuting) {
+		if item.Status != string(store.RecoveryItemStatusPlanned) && item.Status != string(store.RecoveryItemStatusExecuting) {
 			continue
+		}
+		if item.Status == string(store.RecoveryItemStatusPlanned) {
+			if _, err := c.store.UpdateRecoveryItemStatus(ctx, item.ID, store.RecoveryItemStatusExecuting, ""); err != nil {
+				return store.RecoveryPlan{}, fmt.Errorf("mark item executing: %w", err)
+			}
+			item.Status = string(store.RecoveryItemStatusExecuting)
 		}
 		if err := restoreExecutor.VerifyAndRestore(ctx, item); err != nil {
 			_, _ = c.store.UpdateRecoveryItemStatus(ctx, item.ID, store.RecoveryItemStatusFailed, "backup restore failed: "+err.Error())
@@ -633,14 +639,12 @@ func (c *Coordinator) planServer(ctx context.Context, planID string, source stor
 	if err != nil {
 		return store.RecoveryItem{}, err
 	}
+	previousGeneration := server.Generation
+	previousLeaseExpiry := server.WorkloadLeaseExpiry
 	server.Generation++
 	leaseExpiry := time.Now().UTC().Add(1 * time.Hour)
 	server.WorkloadLeaseExpiry = &leaseExpiry
 	fenceGeneration := server.Generation
-	// WARNING: generation bump is not transactional with subsequent operations.
-	// If CreateReservations or CreateRecoveryItem fail after this point, the
-	// generation has already been bumped with no rollback. This is a known
-	// limitation since the store does not support cross-table transactions.
 	if err := c.store.UpdateServerGeneration(ctx, server.ID, server.Generation, &leaseExpiry); err != nil {
 		return store.RecoveryItem{}, err
 	}
@@ -648,9 +652,10 @@ func (c *Coordinator) planServer(ctx context.Context, planID string, source stor
 	// needs the source daemon and must never be attempted for this plan.
 	reservation, err := c.CreateReservations(ctx, server, decision.NodeID, "")
 	if err != nil {
-		return store.RecoveryItem{}, err
+		rollbackErr := c.store.UpdateServerGeneration(ctx, server.ID, previousGeneration, previousLeaseExpiry)
+		return store.RecoveryItem{}, errors.Join(err, rollbackErr)
 	}
-	return c.store.CreateRecoveryItem(ctx, planID, store.RecoveryItem{
+	item, err := c.store.CreateRecoveryItem(ctx, planID, store.RecoveryItem{
 		ServerID:             server.ID,
 		SourceNodeID:         source.ID,
 		TargetNodeID:         decision.NodeID,
@@ -662,6 +667,15 @@ func (c *Coordinator) planServer(ctx context.Context, planID string, source stor
 		Reason:               "planned verified backup recovery target",
 		FenceGeneration:      fenceGeneration,
 	})
+	if err != nil {
+		var rollbackErr error
+		if c.reservations != nil {
+			_, rollbackErr = c.reservations.CancelReservation(ctx, reservation.ID)
+		}
+		generationErr := c.store.UpdateServerGeneration(ctx, server.ID, previousGeneration, previousLeaseExpiry)
+		return store.RecoveryItem{}, errors.Join(err, rollbackErr, generationErr)
+	}
+	return item, nil
 }
 
 func (c *Coordinator) failPlan(ctx context.Context, planID, reason string) (store.RecoveryPlan, error) {

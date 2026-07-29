@@ -92,7 +92,7 @@ stop_process_by_port() {
     
     if [ -n "$pids" ]; then
         for pid in $pids; do
-            kill -9 $pid 2>/dev/null || true
+            kill "$pid" 2>/dev/null || true
         done
     fi
 }
@@ -203,18 +203,22 @@ fi
 write_header "Starting Go API"
 
 echo "  Building API..."
+API_BUILD_LOG=$(mktemp)
 (cd "$ROOT/forge/api" && \
     if [ ! -f "go.mod" ]; then
         echo -e "  ${RED}API go.mod not found!${NC}"
         exit 1
     fi
     
-    go build -o "$ROOT/forge/api/api" ./cmd/api > /dev/null 2>&1)
+    go build -o "$ROOT/forge/api/api" ./cmd/api > /dev/null 2>"$API_BUILD_LOG")
 
 if [ $? -ne 0 ]; then
     echo -e "  ${RED}API build failed!${NC}"
+    cat "$API_BUILD_LOG" 2>/dev/null
+    rm -f "$API_BUILD_LOG"
     exit 1
 fi
+rm -f "$API_BUILD_LOG"
 
 # Start API in background FROM ITS OWN DIRECTORY (required for relative migration paths)
 (cd "$ROOT/forge/api" && nohup ./api > "$ROOT/api-dev.log" 2> "$ROOT/api-dev.err.log" &)
@@ -257,18 +261,22 @@ write_status "[ok]" "Frontend on http://localhost:${FRONTEND_PORT} (PID: $FE_PID
 write_header "Starting Beacon Daemon (launchd)"
 
 echo "  Building Beacon..."
+BEACON_BUILD_LOG=$(mktemp)
 (cd "$ROOT/beacon" && \
     if [ ! -f "go.mod" ]; then
         echo -e "  ${RED}Beacon go.mod not found!${NC}"
         exit 1
     fi
     
-    go build -o "$ROOT/beacon/daemon" ./cmd/daemon > /dev/null 2>&1)
+    go build -o "$ROOT/beacon/daemon" ./cmd/daemon > /dev/null 2>"$BEACON_BUILD_LOG")
 
 if [ $? -ne 0 ]; then
     echo -e "  ${RED}Beacon build failed!${NC}"
+    cat "$BEACON_BUILD_LOG" 2>/dev/null
+    rm -f "$BEACON_BUILD_LOG"
     exit 1
 fi
+rm -f "$BEACON_BUILD_LOG"
 
 # Create beacon data directory
 mkdir -p /tmp/beacon-data

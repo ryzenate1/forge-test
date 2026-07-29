@@ -27,4 +27,5 @@ function Badge({ className, variant = "default", ...props }: BadgeProps) {
   );
 }
 
+Badge.displayName = "Badge";
 export { Badge, badgeVariants };

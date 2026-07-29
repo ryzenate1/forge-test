@@ -31,6 +31,10 @@ func requestContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 5*time.Second)
 }
 
+func longRequestContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 5*time.Minute)
+}
+
 // verifyRemoteHMAC checks X-Panel-Signature and X-Panel-Timestamp when present.
 // When HMAC headers are absent (legacy daemon), authentication falls through to
 // the bearer token check.  When present, both checks must pass.

@@ -207,6 +207,8 @@ type mountTestRuntime struct {
 	reconcileCalled bool
 }
 
+func (*mountTestRuntime) Close() error { return nil }
+
 func (r *mountTestRuntime) Provider() string { return runtime.ProviderDocker }
 
 func (r *mountTestRuntime) Inspect(context.Context, string) (runtime.ContainerState, error) {

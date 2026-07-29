@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -50,6 +51,7 @@ type Manager struct {
 	metrics      Metrics
 	stopCh       chan struct{}
 	started      atomic.Bool
+	appLocks     [64]sync.Mutex
 }
 
 type CreateAppRequest struct {
@@ -138,12 +140,16 @@ func (m *Manager) CreateApp(ctx context.Context, req CreateAppRequest) (store.Re
 }
 
 func (m *Manager) DeployApp(ctx context.Context, appID string) error {
+	unlock := m.lockApp(appID)
+	defer unlock()
 	app, err := m.store.GetReplicaApp(ctx, appID)
 	if err != nil {
 		return err
 	}
 
-	_, _ = m.store.UpdateReplicaAppStatus(ctx, appID, string(AppDeploymentStatusDeploying))
+	if _, err := m.store.UpdateReplicaAppStatus(ctx, appID, string(AppDeploymentStatusDeploying)); err != nil {
+		return fmt.Errorf("mark app deploying: %w", err)
+	}
 
 	gen, err := m.store.IncrementReplicaAppGeneration(ctx, appID)
 	if err != nil {
@@ -270,7 +276,7 @@ func (m *Manager) deployReplicas(ctx context.Context, app store.ReplicaApplicati
 			)
 		}
 
-		commandID := instanceCommandID(inst.ID, StartInstanceCommand, generation)
+		commandID := instanceCommandID(inst.ID, StartInstanceCommand, generation, operationID)
 
 		// Enqueue a versioned Beacon command for this instance.
 		// This logs to store.BeaconCommandLog and dispatches via BeaconClient.
@@ -302,20 +308,24 @@ func (m *Manager) deployReplicas(ctx context.Context, app store.ReplicaApplicati
 			continue
 		}
 
-		_, err = m.dispatcher.StartInstance(ctx, StartInstanceRequest{
-			AppID:           app.ID,
-			InstanceID:      inst.ID,
-			NodeID:          nodeID,
-			Index:           reason.Index,
-			CPU:             app.CPU,
-			MemoryMB:        app.MemoryMB,
-			DiskMB:          app.DiskMB,
-			RuntimeProvider: app.RuntimeProvider,
-			CommandID:       cmdID,
-			OperationID:     operationID,
-			Generation:      generation,
-			Image:           app.Image,
-		})
+		// BeaconClient and InstanceCommandDispatcher are alternative delivery
+		// backends. Calling both provisions the same instance twice.
+		if m.beaconClient == nil {
+			_, err = m.dispatcher.StartInstance(ctx, StartInstanceRequest{
+				AppID:           app.ID,
+				InstanceID:      inst.ID,
+				NodeID:          nodeID,
+				Index:           reason.Index,
+				CPU:             app.CPU,
+				MemoryMB:        app.MemoryMB,
+				DiskMB:          app.DiskMB,
+				RuntimeProvider: app.RuntimeProvider,
+				CommandID:       cmdID,
+				OperationID:     operationID,
+				Generation:      generation,
+				Image:           app.Image,
+			})
+		}
 		if err != nil {
 			m.mu.Lock()
 			m.metrics.DispatchErrors++
@@ -348,6 +358,8 @@ func (m *Manager) deployReplicas(ctx context.Context, app store.ReplicaApplicati
 }
 
 func (m *Manager) ScaleApp(ctx context.Context, appID string, targetReplicas int) error {
+	unlock := m.lockApp(appID)
+	defer unlock()
 	app, err := m.store.GetReplicaApp(ctx, appID)
 	if err != nil {
 		return err
@@ -396,9 +408,9 @@ func (m *Manager) ScaleApp(ctx context.Context, appID string, targetReplicas int
 			return fmt.Errorf("all %d scale-up replicas failed", failed)
 		}
 		m.publish(ctx, events.EventAppScaledUp, appID, map[string]any{
-			"appId":  appID,
-			"from":   activeCount,
-			"to":     targetReplicas,
+			"appId": appID,
+			"from":  activeCount,
+			"to":    targetReplicas,
 		})
 		return nil
 	}
@@ -449,7 +461,7 @@ func (m *Manager) safeStopReplicas(ctx context.Context, app store.ReplicaApplica
 
 		_, _ = m.store.UpdateInstanceStatus(ctx, inst.ID, "stopping")
 
-		commandID := instanceCommandID(inst.ID, StopInstanceCommand, currentApp.Generation)
+		commandID := instanceCommandID(inst.ID, StopInstanceCommand, currentApp.Generation, operationID)
 		m.logBeaconCommand(ctx, commandID, operationID, inst.NodeID, inst.ID, string(StopInstanceCommand), "dispatched", map[string]any{
 			"instanceId": inst.ID,
 			"nodeId":     inst.NodeID,
@@ -486,6 +498,8 @@ func (m *Manager) safeStopReplicas(ctx context.Context, app store.ReplicaApplica
 }
 
 func (m *Manager) DeleteApp(ctx context.Context, appID string) error {
+	unlock := m.lockApp(appID)
+	defer unlock()
 	instances, err := m.store.ListInstancesByApp(ctx, appID)
 	if err != nil {
 		return err
@@ -501,7 +515,7 @@ func (m *Manager) DeleteApp(ctx context.Context, appID string) error {
 		if inst.Status != "removing" && inst.Status != "failed" {
 			_, _ = m.store.UpdateInstanceStatus(ctx, inst.ID, "stopping")
 
-			commandID := instanceCommandID(inst.ID, StopInstanceCommand, app.Generation)
+			commandID := instanceCommandID(inst.ID, StopInstanceCommand, app.Generation, operationID)
 			m.logBeaconCommand(ctx, commandID, operationID, inst.NodeID, inst.ID, string(StopInstanceCommand), "dispatched", map[string]any{
 				"instanceId": inst.ID,
 				"nodeId":     inst.NodeID,
@@ -535,7 +549,21 @@ func (m *Manager) DeleteApp(ctx context.Context, appID string) error {
 	return nil
 }
 
+func (m *Manager) lockApp(appID string) func() {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(appID))
+	lock := &m.appLocks[int(hash.Sum32())%len(m.appLocks)]
+	lock.Lock()
+	return lock.Unlock
+}
+
 func (m *Manager) ReplaceInstance(ctx context.Context, instanceID string) (*domain.PlacementReason, error) {
+	currentInstance, err := m.store.GetInstance(ctx, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	unlock := m.lockApp(currentInstance.AppID)
+	defer unlock()
 	reason, err := m.scheduler.ReplaceFailedInstance(ctx, domain.ReplaceFailedInstanceRequest{
 		InstanceID: instanceID,
 	})
@@ -548,14 +576,14 @@ func (m *Manager) ReplaceInstance(ctx context.Context, instanceID string) (*doma
 	m.mu.Unlock()
 
 	if reason.Accepted {
-		inst, err := m.store.GetInstance(ctx, instanceID)
-		if err == nil {
+		inst := currentInstance
+		{
 			app, err := m.store.GetReplicaApp(ctx, inst.AppID)
 			if err == nil {
 				gen, err := m.store.IncrementReplicaAppGeneration(ctx, app.ID)
 				if err == nil {
 					operationID := newOperationID()
-					commandID := instanceCommandID(inst.ID, StartInstanceCommand, gen)
+					commandID := instanceCommandID(inst.ID, StartInstanceCommand, gen, operationID)
 
 					payload := map[string]any{
 						"appId":           app.ID,
@@ -581,7 +609,7 @@ func (m *Manager) ReplaceInstance(ctx context.Context, instanceID string) (*doma
 							"nodeId", reason.NodeID,
 							"error", err,
 						)
-					} else {
+					} else if m.beaconClient == nil {
 						_, err = m.dispatcher.StartInstance(ctx, StartInstanceRequest{
 							AppID:           app.ID,
 							InstanceID:      inst.ID,
@@ -722,6 +750,21 @@ func (m *Manager) reconcile(ctx context.Context) {
 		hasProvisioning := false
 
 		for _, inst := range instances {
+			if inst.Status == "running" {
+				if verifier, ok := m.beaconClient.(interface {
+					VerifyInstance(context.Context, string, string) error
+				}); ok {
+					verifyCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+					verifyErr := verifier.VerifyInstance(verifyCtx, inst.NodeID, inst.ID)
+					cancel()
+					if verifyErr != nil {
+						_, _ = m.store.UpdateInstanceStatus(ctx, inst.ID, "failed")
+						inst.Status = "failed"
+						m.logger.WarnContext(ctx, "Beacon instance verification failed",
+							"appId", app.ID, "instanceId", inst.ID, "nodeId", inst.NodeID, "error", verifyErr)
+					}
+				}
+			}
 			switch inst.Status {
 			case "running":
 				runningCount++
@@ -787,7 +830,9 @@ func (m *Manager) computeAppStatus(ctx context.Context, appID string, running, d
 // target node, logs it to store.BeaconCommandLog, and returns the command ID.
 func (m *Manager) dispatchBeaconCommand(ctx context.Context, commandID, operationID, nodeID, serverID string, commandType InstanceCommandType, payload map[string]any) (string, error) {
 	if m.beaconClient != nil {
-		if err := m.beaconClient.DispatchCommand(ctx, nodeID, commandID, commandType, payload); err != nil {
+		dispatchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if err := m.beaconClient.DispatchCommand(dispatchCtx, nodeID, commandID, commandType, payload); err != nil {
 			return commandID, err
 		}
 	}

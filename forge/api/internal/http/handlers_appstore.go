@@ -100,7 +100,9 @@ func registerAppStoreRoutes(protected fiber.Router, cfg Config, svc *appstore.Se
 		var req struct {
 			RegistryURL string `json:"registryUrl"`
 		}
-		_ = c.BodyParser(&req)
+		if err := c.BodyParser(&req); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		}
 		if err := svc.SyncFromRemote(c.Context(), req.RegistryURL); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 		}

@@ -38,17 +38,17 @@ func TestHealth(t *testing.T) {
 	}
 }
 
-func TestMetricsArePublicWhenTokenConfigured(t *testing.T) {
+func TestMetricsRequireAuthenticationWhenTokenConfigured(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()
 
 	newTestHandler(t, "secret").ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "game_panel_daemon_uptime_seconds") {
-		t.Fatalf("expected daemon metrics, got %q", rec.Body.String())
+	if strings.Contains(rec.Body.String(), "game_panel_daemon_uptime_seconds") {
+		t.Fatalf("unauthenticated response leaked daemon metrics: %q", rec.Body.String())
 	}
 }
 
@@ -89,14 +89,74 @@ func TestSignedRequestReachesUnavailableRuntime(t *testing.T) {
 	body := []byte(`{"serverId":"` + testServerID + `","image":"busybox"}`)
 	req := httptest.NewRequest(http.MethodPost, "/servers", bytes.NewReader(body))
 	timestamp := time.Now().UTC().Format(time.RFC3339)
+	nonce := "0123456789abcdef0123456789abcdef"
 	req.Header.Set("X-Panel-Timestamp", timestamp)
-	req.Header.Set("X-Panel-Signature", sign("secret", req.Method, req.URL.RequestURI(), timestamp, body))
+	req.Header.Set("X-Panel-Nonce", nonce)
+	req.Header.Set("X-Panel-Signature", sign("secret", req.Method, req.URL.RequestURI(), timestamp, body, nonce))
 	rec := httptest.NewRecorder()
 
 	newTestHandler(t, "secret").ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected status 503, got %d", rec.Code)
+	}
+}
+
+func TestSignedRequestNonceCannotBeReplayed(t *testing.T) {
+	body := []byte(`{"serverId":"` + testServerID + `","image":"busybox"}`)
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	nonce := "abcdef0123456789abcdef0123456789"
+	handler := newTestHandler(t, "secret")
+	send := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/servers", bytes.NewReader(body))
+		req.Header.Set("X-Panel-Timestamp", timestamp)
+		req.Header.Set("X-Panel-Nonce", nonce)
+		req.Header.Set("X-Panel-Signature", sign("secret", req.Method, req.URL.RequestURI(), timestamp, body, nonce))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if status := send(); status == http.StatusUnauthorized {
+		t.Fatalf("first signed request was rejected as replay")
+	}
+	if status := send(); status != http.StatusUnauthorized {
+		t.Fatalf("replayed signed request status = %d, want 401", status)
+	}
+}
+
+func TestWebSocketOriginValidation(t *testing.T) {
+	previous := allowedWebSocketOrigins
+	allowedWebSocketOrigins = []string{"https://panel.example"}
+	t.Cleanup(func() { allowedWebSocketOrigins = previous })
+	for origin, want := range map[string]bool{
+		"":                      true,
+		"https://panel.example": true,
+		"https://evil.example":  false,
+		"://invalid":            false,
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if got := websocketUpgrader.CheckOrigin(req); got != want {
+			t.Errorf("origin %q accepted=%t, want %t", origin, got, want)
+		}
+	}
+}
+
+func TestContainerExecRejectsInterpreterBeforeDockerAccess(t *testing.T) {
+	body := []byte(`{"cmd":["python","-c","print(1)"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/containers/example/exec", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	nonce := "11111111111111111111111111111111"
+	req.Header.Set("X-Panel-Timestamp", timestamp)
+	req.Header.Set("X-Panel-Nonce", nonce)
+	req.Header.Set("X-Panel-Signature", sign("secret", req.Method, req.URL.RequestURI(), timestamp, body, nonce))
+	rec := httptest.NewRecorder()
+	newTestHandler(t, "secret").ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("interpreter exec status = %d, want 403; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

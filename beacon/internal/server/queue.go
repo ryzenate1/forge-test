@@ -384,11 +384,36 @@ func (q *OperationQueue) EnqueueCommandWithTTL(ctx context.Context, commandID, s
 	q.mu.Unlock()
 	select {
 	case <-ctx.Done():
-		return &result, ctx.Err()
+		q.removeUnqueued(op)
+		return nil, ctx.Err()
 	case q.ch <- op:
 		return &result, nil
 	default:
-		return &result, ErrQueueFull
+		q.removeUnqueued(op)
+		return nil, ErrQueueFull
+	}
+}
+
+func (q *OperationQueue) removeUnqueued(op *Operation) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	current := q.operations[op.ID]
+	if current != op || current.Status != StatusPending {
+		return
+	}
+	delete(q.operations, op.ID)
+	ids := q.serverOps[op.ServerID]
+	for index, id := range ids {
+		if id == op.ID {
+			q.serverOps[op.ServerID] = append(ids[:index], ids[index+1:]...)
+			break
+		}
+	}
+	if len(q.serverOps[op.ServerID]) == 0 {
+		delete(q.serverOps, op.ServerID)
+	}
+	if q.db != nil {
+		_, _ = q.db.Exec(`DELETE FROM beacon_operations WHERE id = ? AND status = ?`, op.ID, string(StatusPending))
 	}
 }
 

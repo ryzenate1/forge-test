@@ -57,13 +57,19 @@ func (s *Store) ListAcmeAccounts(ctx context.Context) ([]AcmeAccount, error) {
 
 func (s *Store) GetAcmeAccount(ctx context.Context, id string) (AcmeAccount, error) {
 	var a AcmeAccount
+	var privateKeyEncrypted string
 	err := s.db.QueryRow(ctx, `
-		SELECT id::text, email, COALESCE(private_key,''), COALESCE(ca_url,'https://acme-v02.api.letsencrypt.org/directory'),
+		SELECT id::text, email, COALESCE(private_key,''), COALESCE(private_key_encrypted, ''),
+		       COALESCE(ca_url,'https://acme-v02.api.letsencrypt.org/directory'),
 		       is_default, created_at, updated_at
 		FROM acme_accounts WHERE id::text = $1
-	`, id).Scan(&a.ID, &a.Email, &a.PrivateKey, &a.CAURL, &a.IsDefault, &a.CreatedAt, &a.UpdatedAt)
+	`, id).Scan(&a.ID, &a.Email, &a.PrivateKey, &privateKeyEncrypted, &a.CAURL, &a.IsDefault, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return AcmeAccount{}, errors.New("acme account not found")
+	}
+	a.PrivateKey, err = s.decryptSecret(privateKeyEncrypted, a.PrivateKey, secretAAD("acme_accounts", a.ID, "private_key"))
+	if err != nil {
+		return AcmeAccount{}, err
 	}
 	return a, nil
 }
@@ -77,10 +83,14 @@ func (s *Store) CreateAcmeAccount(ctx context.Context, req CreateAcmeAccountRequ
 	if req.CAURL == "" {
 		req.CAURL = "https://acme-v02.api.letsencrypt.org/directory"
 	}
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO acme_accounts (id, email, private_key, ca_url, is_default, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, id, req.Email, req.PrivateKey, req.CAURL, false, now, now)
+	privateKeyEncrypted, err := s.encryptSecret(req.PrivateKey, secretAAD("acme_accounts", id, "private_key"))
+	if err != nil {
+		return AcmeAccount{}, err
+	}
+	_, err = s.db.Exec(ctx, `
+		INSERT INTO acme_accounts (id, email, private_key, private_key_encrypted, ca_url, is_default, created_at, updated_at)
+		VALUES ($1, $2, '', $3, $4, $5, $6, $7)
+	`, id, req.Email, privateKeyEncrypted, req.CAURL, false, now, now)
 	if err != nil {
 		return AcmeAccount{}, err
 	}
@@ -98,8 +108,12 @@ func (s *Store) UpdateAcmeAccount(ctx context.Context, id string, req UpdateAcme
 		args = append(args, *req.Email)
 	}
 	if req.PrivateKey != nil {
-		updates = append(updates, "private_key = $"+itoa(len(args)+1))
-		args = append(args, *req.PrivateKey)
+		privateKeyEncrypted, err := s.encryptSecret(*req.PrivateKey, secretAAD("acme_accounts", id, "private_key"))
+		if err != nil {
+			return AcmeAccount{}, err
+		}
+		updates = append(updates, "private_key = '', private_key_encrypted = $"+itoa(len(args)+1))
+		args = append(args, privateKeyEncrypted)
 	}
 	if req.CAURL != nil {
 		updates = append(updates, "ca_url = $"+itoa(len(args)+1))

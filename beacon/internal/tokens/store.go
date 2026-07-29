@@ -30,8 +30,19 @@ func (ts *TokenStore) IsValid(uniqueID string) bool {
 		return false
 	}
 
-	delete(ts.tokens, uniqueID)
 	return true
+}
+
+// Consume validates and atomically removes a one-time token.
+func (ts *TokenStore) Consume(uniqueID string) bool {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	expiry, exists := ts.tokens[uniqueID]
+	if !exists {
+		return false
+	}
+	delete(ts.tokens, uniqueID)
+	return time.Now().Before(expiry)
 }
 
 func (ts *TokenStore) Add(uniqueID string, expiry time.Time) {

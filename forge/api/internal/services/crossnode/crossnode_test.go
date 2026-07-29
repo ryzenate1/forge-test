@@ -149,10 +149,10 @@ func TestWebSocketDetection(t *testing.T) {
 	}
 }
 
-func TestHealthFilter_HealthyByDefault(t *testing.T) {
+func TestHealthFilter_UnknownIsNotHealthy(t *testing.T) {
 	filter := NewHealthFilter(2, 30*time.Second)
-	if !filter.IsHealthy("10.0.0.1", 8080) {
-		t.Fatal("backend should be healthy by default")
+	if filter.IsHealthy("10.0.0.1", 8080) {
+		t.Fatal("unknown backend must not be reported healthy")
 	}
 }
 
@@ -214,8 +214,8 @@ func TestHealthFilter_Clear(t *testing.T) {
 	}
 
 	filter.Clear("10.0.0.1", 8080)
-	if !filter.IsHealthy("10.0.0.1", 8080) {
-		t.Fatal("backend should be healthy after clear")
+	if filter.IsHealthy("10.0.0.1", 8080) {
+		t.Fatal("cleared backend should return to unknown, not healthy")
 	}
 }
 
@@ -732,7 +732,7 @@ func TestConcurrentIngressSync(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-	syncer.SetRules([]*trafficmanager.RoutingRule{
+			syncer.SetRules([]*trafficmanager.RoutingRule{
 				{
 					ID:         fmt.Sprintf("svc-%d", idx),
 					Domain:     fmt.Sprintf("svc%d.example.com", idx),

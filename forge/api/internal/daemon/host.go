@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 func (c *Client) hostGet(ctx context.Context, nodeToken, url string) (json.RawMessage, error) {
-	req, err := c.newRequest(ctx, nodeToken, http.MethodGet, url, nil)
+	hostCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	req, err := c.newRequest(hostCtx, nodeToken, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}

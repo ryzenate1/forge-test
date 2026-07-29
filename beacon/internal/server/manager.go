@@ -15,7 +15,6 @@ import (
 	"gamepanel/beacon/internal/remote"
 	"gamepanel/beacon/internal/rootfs"
 	"gamepanel/beacon/internal/runtime"
-	"gamepanel/beacon/internal/transfer"
 )
 
 type PowerState string
@@ -156,7 +155,8 @@ func (m *ServerManager) State(serverID string) *ServerState {
 		StopTimeout:            30 * time.Second,
 		Suspended:              false,
 	})
-	return value.(*ServerState)
+	state, _ := value.(*ServerState)
+	return state
 }
 
 func (m *ServerManager) MarkInstalling(serverID string, installing bool) {
@@ -659,16 +659,4 @@ func (m *ServerManager) HandleContainerEvent(ctx context.Context, event runtime.
 func isExitEvent(action string) bool {
 	action = strings.ToLower(action)
 	return action == "die" || action == "oom" || action == "stop"
-}
-
-var (
-	transferManager     *transfer.Manager
-	transferManagerOnce sync.Once
-)
-
-func getTransferManager() *transfer.Manager {
-	transferManagerOnce.Do(func() {
-		transferManager = transfer.NewManager()
-	})
-	return transferManager
 }

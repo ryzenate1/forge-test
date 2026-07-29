@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 const ts = require('typescript');
 const p = require('path');
 const c = ts.readConfigFile('tsconfig.json', ts.sys.readFile);

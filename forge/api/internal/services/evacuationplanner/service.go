@@ -595,14 +595,6 @@ func (s *Service) evaluateNode(ctx context.Context, nodeID string, preview bool)
 			continue
 		}
 		selected, impact, reason := s.findCandidates(ctx, server, source, nodes, reserved)
-		if selected.ID != "" && !preview {
-			server.Generation++
-			leaseExpiry := time.Now().UTC().Add(1 * time.Hour)
-			server.WorkloadLeaseExpiry = &leaseExpiry
-			if err := s.store.UpdateServerGeneration(ctx, server.ID, server.Generation, &leaseExpiry); err != nil {
-				return PlanResult{}, err
-			}
-		}
 		item := PlanItem{
 			EvacuationItem: store.EvacuationItem{
 				ServerID:     server.ID,

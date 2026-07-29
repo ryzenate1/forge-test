@@ -1,9 +1,12 @@
 package http
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -12,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -139,9 +143,9 @@ func getSessionTokenFromCookie(r *http.Request, secure bool) (string, bool) {
 
 // exchangeCodeEntry holds a session token that can be claimed once via a short-lived code.
 type exchangeCodeEntry struct {
-	token     string
-	csrfToken string
-	expiresAt time.Time
+	Token     string    `json:"token"`
+	CSRFToken string    `json:"csrfToken"`
+	ExpiresAt time.Time `json:"expiresAt"`
 }
 
 // exchangeCodeStore is an in-memory store for single-use session exchange codes.
@@ -164,7 +168,7 @@ func (s *exchangeCodeStore) issue(token, csrfToken string) (string, error) {
 	}
 	code := hex.EncodeToString(raw)
 	s.mu.Lock()
-	s.data[code] = &exchangeCodeEntry{token: token, csrfToken: csrfToken, expiresAt: time.Now().Add(60 * time.Second)}
+	s.data[code] = &exchangeCodeEntry{Token: token, CSRFToken: csrfToken, ExpiresAt: time.Now().Add(60 * time.Second)}
 	s.mu.Unlock()
 	return code, nil
 }
@@ -176,12 +180,12 @@ func (s *exchangeCodeStore) claim(code string) (string, string, bool) {
 	if !ok {
 		return "", "", false
 	}
-	if time.Now().After(entry.expiresAt) {
+	if time.Now().After(entry.ExpiresAt) {
 		delete(s.data, code)
 		return "", "", false
 	}
 	delete(s.data, code)
-	return entry.token, entry.csrfToken, true
+	return entry.Token, entry.CSRFToken, true
 }
 
 func (s *exchangeCodeStore) cleanup() {
@@ -189,16 +193,68 @@ func (s *exchangeCodeStore) cleanup() {
 	defer s.mu.Unlock()
 	now := time.Now()
 	for code, entry := range s.data {
-		if now.After(entry.expiresAt) {
+		if now.After(entry.ExpiresAt) {
 			delete(s.data, code)
 		}
 	}
 }
 
+const exchangeCodeTTL = 60 * time.Second
+
+func exchangeCodeKey(code string) string {
+	sum := sha256.Sum256([]byte(code))
+	return "forge:session-exchange:" + hex.EncodeToString(sum[:])
+}
+
+func issueSharedExchangeCode(ctx context.Context, cfg Config, token, csrfToken string) (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	code := hex.EncodeToString(raw)
+	entry, err := json.Marshal(exchangeCodeEntry{
+		Token:     token,
+		CSRFToken: csrfToken,
+		ExpiresAt: time.Now().Add(exchangeCodeTTL),
+	})
+	if err != nil {
+		return "", err
+	}
+	if err := cfg.Redis.Set(ctx, exchangeCodeKey(code), entry, exchangeCodeTTL).Err(); err != nil {
+		return "", err
+	}
+	return code, nil
+}
+
+func claimExchangeCode(ctx context.Context, cfg Config, code string) (string, string, bool, error) {
+	if cfg.Redis != nil && cfg.RedisEnabled {
+		data, err := cfg.Redis.GetDel(ctx, exchangeCodeKey(code)).Bytes()
+		if err != nil {
+			if errors.Is(err, redis.Nil) {
+				return "", "", false, nil
+			}
+			return "", "", false, err
+		}
+		var entry exchangeCodeEntry
+		if err := json.Unmarshal(data, &entry); err != nil {
+			return "", "", false, err
+		}
+		if entry.Token == "" || entry.CSRFToken == "" || time.Now().After(entry.ExpiresAt) {
+			return "", "", false, nil
+		}
+		return entry.Token, entry.CSRFToken, true, nil
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.AppEnv), "production") {
+		return "", "", false, errors.New("shared exchange-code storage is required in production")
+	}
+	token, csrfToken, ok := globalExchangeCodes.claim(code)
+	return token, csrfToken, ok, nil
+}
+
 // ExchangeCodeHandler exchanges a single-use code for the session token and
 // sets HttpOnly cookies directly, so the client never receives the raw JWT.
 // Used by social auth callbacks to avoid placing the session token in the redirect URL.
-func ExchangeCodeHandler() fiber.Handler {
+func ExchangeCodeHandler(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		var req struct {
 			Code string `json:"code"`
@@ -209,17 +265,26 @@ func ExchangeCodeHandler() fiber.Handler {
 		if req.Code == "" {
 			return fiber.NewError(fiber.StatusBadRequest, "code is required")
 		}
-		token, csrfToken, ok := globalExchangeCodes.claim(req.Code)
+		token, csrfToken, ok, err := claimExchangeCode(c.Context(), cfg, req.Code)
+		if err != nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "exchange code storage unavailable")
+		}
 		if !ok {
 			return fiber.NewError(fiber.StatusNotFound, "invalid or expired exchange code")
 		}
-		expires := time.Now().Add(tokenTTL)
+		expires := tokenExpiry(cfg)
 		setSessionCookies(c, token, csrfToken, expires)
 		return c.JSON(fiber.Map{"ok": true})
 	}
 }
 
 // issueExchangeCode creates a single-use code for the given session token.
-func issueExchangeCode(token, csrfToken string) (string, error) {
+func issueExchangeCode(ctx context.Context, cfg Config, token, csrfToken string) (string, error) {
+	if cfg.Redis != nil && cfg.RedisEnabled {
+		return issueSharedExchangeCode(ctx, cfg, token, csrfToken)
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.AppEnv), "production") {
+		return "", errors.New("shared exchange-code storage is required in production")
+	}
 	return globalExchangeCodes.issue(token, csrfToken)
 }

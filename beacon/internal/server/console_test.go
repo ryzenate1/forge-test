@@ -59,6 +59,8 @@ type consoleRuntime struct {
 	attaches map[string]int
 }
 
+func (*consoleRuntime) Close() error { return nil }
+
 func newConsoleRuntime() *consoleRuntime {
 	return &consoleRuntime{sessions: make(map[string][]*fakeConsoleSession), attaches: make(map[string]int)}
 }

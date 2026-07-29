@@ -41,8 +41,8 @@ type DBContainer struct {
 	Engine           string          `json:"engine"`
 	Version          string          `json:"version"`
 	ContainerID      string          `json:"containerId"`
-	ConnectionString string          `json:"connectionString"`
-	Credentials      json.RawMessage `json:"credentials,omitempty"`
+	ConnectionString string          `json:"-"`
+	Credentials      json.RawMessage `json:"-"`
 	Status           string          `json:"status"`
 	Port             int             `json:"port"`
 	VolumeID         string          `json:"volumeId"`
@@ -147,14 +147,19 @@ func formatDBContainerTime(v any) string {
 func (s *Store) GetDBContainer(ctx context.Context, id string) (DBContainer, error) {
 	var db DBContainer
 	var updatedAt, createdAt any
+	var connectionEncrypted, credentialsEncrypted string
 	err := s.db.QueryRow(ctx, `
 		SELECT id, server_id, engine, version, container_id, connection_string,
-		       credentials, status, port, volume_id, memory_mb, cpu_shares, created_at, updated_at
+		       credentials, status, port, volume_id, memory_mb, cpu_shares, created_at, updated_at,
+		       COALESCE(connection_string_encrypted, ''), COALESCE(credentials_encrypted, '')
 		FROM db_containers WHERE id = $1
 	`, id).Scan(&db.ID, &db.ServerID, &db.Engine, &db.Version, &db.ContainerID,
 		&db.ConnectionString, &db.Credentials, &db.Status, &db.Port, &db.VolumeID,
-		&db.MemoryMB, &db.CPUShares, &createdAt, &updatedAt)
+		&db.MemoryMB, &db.CPUShares, &createdAt, &updatedAt, &connectionEncrypted, &credentialsEncrypted)
 	if err != nil {
+		return DBContainer{}, err
+	}
+	if err := s.decryptDBContainerSecrets(&db, connectionEncrypted, credentialsEncrypted); err != nil {
 		return DBContainer{}, err
 	}
 	db.CreatedAt = formatDBContainerTime(createdAt)
@@ -225,17 +230,33 @@ func (s *Store) SetDBContainerStatus(ctx context.Context, id, containerID, statu
 	if containerID == "" {
 		connectionString = ""
 	}
-	_, err := s.db.Exec(ctx, `
+	connectionEncrypted, err := s.encryptSecret(connectionString, secretAAD("db_containers", id, "connection_string"))
+	if err != nil {
+		return err
+	}
+	var credentialsEncrypted string
+	if credentials != nil {
+		if !json.Valid(credentials) {
+			return errors.New("database credentials must be valid JSON")
+		}
+		credentialsEncrypted, err = s.encryptSecret(string(credentials), secretAAD("db_containers", id, "credentials"))
+		if err != nil {
+			return err
+		}
+	}
+	_, err = s.db.Exec(ctx, `
 		UPDATE db_containers SET
 		    container_id = COALESCE(NULLIF($2, ''), container_id),
 		    status = $3,
 		    port = $4,
 		    volume_id = COALESCE(NULLIF($5, ''), volume_id),
-		    connection_string = COALESCE(NULLIF($6, ''), connection_string),
-		    credentials = CASE WHEN $7::jsonb IS NOT NULL THEN $7 ELSE credentials END,
+		    connection_string = CASE WHEN $6 <> '' THEN '' ELSE connection_string END,
+		    credentials = CASE WHEN $7 <> '' THEN '{}'::jsonb ELSE credentials END,
+		    connection_string_encrypted = COALESCE(NULLIF($6, ''), connection_string_encrypted),
+		    credentials_encrypted = COALESCE(NULLIF($7, ''), credentials_encrypted),
 		    updated_at = NOW()
 		WHERE id = $1
-	`, id, containerID, status, port, volumeID, connectionString, credentials)
+	`, id, containerID, status, port, volumeID, connectionEncrypted, credentialsEncrypted)
 	if err != nil {
 		return err
 	}
@@ -250,13 +271,41 @@ func (s *Store) DeleteDBContainer(ctx context.Context, id string) error {
 func (s *Store) GetDBContainerCredentials(ctx context.Context, id string) (json.RawMessage, string, error) {
 	var credentials json.RawMessage
 	var connectionString string
+	var credentialsEncrypted, connectionEncrypted string
 	err := s.db.QueryRow(ctx, `
-		SELECT credentials, connection_string FROM db_containers WHERE id = $1
-	`, id).Scan(&credentials, &connectionString)
+		SELECT credentials, connection_string,
+		       COALESCE(credentials_encrypted, ''), COALESCE(connection_string_encrypted, '')
+		FROM db_containers WHERE id = $1
+	`, id).Scan(&credentials, &connectionString, &credentialsEncrypted, &connectionEncrypted)
 	if err != nil {
 		return nil, "", err
 	}
+	db := DBContainer{ID: id, Credentials: credentials, ConnectionString: connectionString}
+	if err := s.decryptDBContainerSecrets(&db, connectionEncrypted, credentialsEncrypted); err != nil {
+		return nil, "", err
+	}
+	credentials, connectionString = db.Credentials, db.ConnectionString
 	return credentials, connectionString, nil
+}
+
+func (s *Store) decryptDBContainerSecrets(db *DBContainer, connectionEncrypted, credentialsEncrypted string) error {
+	connection, err := s.decryptSecret(connectionEncrypted, db.ConnectionString, secretAAD("db_containers", db.ID, "connection_string"))
+	if err != nil {
+		return err
+	}
+	credentials, err := s.decryptSecret(credentialsEncrypted, string(db.Credentials), secretAAD("db_containers", db.ID, "credentials"))
+	if err != nil {
+		return err
+	}
+	if credentials == "" {
+		credentials = "{}"
+	}
+	if !json.Valid([]byte(credentials)) {
+		return errors.New("stored database credentials are invalid")
+	}
+	db.ConnectionString = connection
+	db.Credentials = json.RawMessage(credentials)
+	return nil
 }
 
 // DBContainerBackupTarget contains the info needed to run a database backup

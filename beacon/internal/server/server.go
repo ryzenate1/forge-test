@@ -8,6 +8,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -62,6 +63,8 @@ type Server struct {
 	allowedMounts     []string
 	allowedMountsMu   sync.RWMutex
 	token             string
+	metricsToken      string
+	version           string
 	started           time.Time
 	backups           backup.BackupInterface
 	backupMu          sync.Mutex
@@ -72,12 +75,24 @@ type Server struct {
 	consoles          *consoleManager
 	pullClientFactory func(context.Context, *url.URL) (*http.Client, error)
 	transferProtocol  *transfer.Engine
+	transfers         *transfer.Manager
 	operations        *OperationQueue
 	tokenGenerator    *tokens.Generator
 	composeStacks     *composeStack
 	enrollmentMgr     *EnrollmentManager
+	edgeAgent         *EdgeAgent
+	edgeMu            sync.RWMutex
+	upgradeMgr        *UpgradeManager
+	upgradeMu         sync.Mutex
+	builds            *buildManager
+	firewall          *firewallData
+	capabilitiesMu    sync.Mutex
+	previousCaps      *CapabilityReport
 	ctx               context.Context
 	cancel            context.CancelFunc
+	shutdownOnce      sync.Once
+	nonceMu           sync.Mutex
+	seenNonces        map[string]time.Time
 }
 
 // SetPanelClient wires the remote panel client so that install-status
@@ -86,9 +101,19 @@ func (s *Server) SetPanelClient(c remote.Client) {
 	s.panelClient = c
 }
 
+func (s *Server) SetEdgeAgent(agent *EdgeAgent) {
+	s.edgeMu.Lock()
+	s.edgeAgent = agent
+	s.edgeMu.Unlock()
+}
+
 // SetTokenGenerator wires the JWT token generator for direct download tokens.
 func (s *Server) SetTokenGenerator(g *tokens.Generator) {
 	s.tokenGenerator = g
+}
+
+func (s *Server) SetMetricsToken(token string) {
+	s.metricsToken = strings.TrimSpace(token)
 }
 
 // SetAllowedMounts configures the host paths that panel-supplied mounts may
@@ -220,6 +245,7 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 		manager:           manager,
 		dataDir:           dataDir,
 		token:             token,
+		version:           "beacon-dev",
 		started:           time.Now(),
 		backups:           backups,
 		sessionsReg:       newSessionRegistry(),
@@ -227,10 +253,21 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 		eventBus:          events.NewBus(),
 		pullClientFactory: securePullClient,
 		transferProtocol:  protocol,
+		transfers:         transfer.NewManager(),
 		composeStacks:     newComposeStackManager(dataDir),
 		enrollmentMgr:     NewEnrollmentManager(filepath.Join(dataDir, ".beacon", "enrollment")),
 		ctx:               serverCtx,
 		cancel:            cancel,
+		seenNonces:        make(map[string]time.Time),
+		builds:            &buildManager{active: make(map[string]*buildJob)},
+		firewall: &firewallData{
+			statePath: filepath.Join(dataDir, ".beacon", "firewall.json"),
+			state: firewallState{
+				Enabled:  true,
+				Rules:    make(map[string]FirewallRule),
+				Forwards: make(map[string]PortForward),
+			},
+		},
 	}
 	server.consoles = newConsoleManager(serverCtx, rt)
 	manager.SetConsoleCommand(server.consoles.Write)
@@ -254,6 +291,7 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 	}
 	server.operations = operationQueue
 	server.operations.Start(serverCtx)
+	server.startBuildReaper(serverCtx)
 	// Start automatic expiry cleanup for commands with TTL
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
@@ -436,7 +474,70 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 	mux.HandleFunc("POST /v1/firewall/forward", server.handleFirewallAddForward)
 	mux.HandleFunc("DELETE /v1/firewall/forward/{id}", server.handleFirewallDeleteForward)
 
-	return server, requestTimeout(server.authenticate(mux))
+	return server, sanitizeInternalErrors(securityHeaders(requestTimeout(server.authenticate(mux))))
+}
+
+type sanitizingResponseWriter struct {
+	http.ResponseWriter
+	internal bool
+	wrote    bool
+}
+
+func (w *sanitizingResponseWriter) WriteHeader(status int) {
+	if w.wrote {
+		return
+	}
+	w.wrote = true
+	if status >= http.StatusInternalServerError {
+		w.internal = true
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Del("Content-Length")
+		w.ResponseWriter.WriteHeader(status)
+		_, _ = io.WriteString(w.ResponseWriter, "internal server error\n")
+		return
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *sanitizingResponseWriter) Write(body []byte) (int, error) {
+	if !w.wrote {
+		w.WriteHeader(http.StatusOK)
+	}
+	if w.internal {
+		return len(body), nil
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *sanitizingResponseWriter) Flush() {
+	if !w.wrote {
+		w.WriteHeader(http.StatusOK)
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *sanitizingResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func sanitizeInternalErrors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if websocket.IsWebSocketUpgrade(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(&sanitizingResponseWriter{ResponseWriter: w}, r)
+	})
+}
+
+// SetVersion sets the build version reported by every Beacon endpoint and
+// used by the upgrade manager. Release builds inject this value from main.
+func (s *Server) SetVersion(version string) {
+	if strings.TrimSpace(version) != "" {
+		s.version = version
+	}
 }
 
 // ReconstructServer restores a panel-returned server into the in-memory
@@ -465,12 +566,20 @@ func (s *Server) Shutdown() {
 	if s == nil {
 		return
 	}
-	s.cancel()
-	if s.operations != nil {
-		s.operations.Shutdown()
-	}
-	s.consoles.Close()
-	s.eventBus.Destroy()
+	s.shutdownOnce.Do(func() {
+		s.cancel()
+		if s.operations != nil {
+			s.operations.Shutdown()
+		}
+		if s.transfers != nil {
+			_ = s.transfers.Close()
+		}
+		s.consoles.Close()
+		s.eventBus.Destroy()
+		if s.runtime != nil {
+			_ = s.runtime.Close()
+		}
+	})
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -1453,7 +1562,29 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := s.backups.Restore(r.Context(), serverID, body.Name, root, body.Truncate); err != nil {
+	// A restore is destructive even when truncate is false because archive
+	// entries replace live files. Persist a complete recovery point first and
+	// serialize it with all other backup operations for this daemon.
+	rollbackName := "pre-restore-" + time.Now().UTC().Format("20060102T150405.000000000Z") + ".zip"
+	s.backupMu.Lock()
+	_, snapshotErr := s.backups.Create(r.Context(), root, serverID, rollbackName, nil)
+	if snapshotErr == nil {
+		err = s.backups.Restore(r.Context(), serverID, body.Name, root, body.Truncate)
+	}
+	if err != nil {
+		rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Minute)
+		rollbackErr := s.backups.Restore(rollbackCtx, serverID, rollbackName, root, true)
+		cancelRollback()
+		if rollbackErr != nil {
+			err = errors.Join(err, fmt.Errorf("automatic rollback failed: %w", rollbackErr))
+		}
+	}
+	s.backupMu.Unlock()
+	if snapshotErr != nil {
+		http.Error(w, "pre-restore snapshot failed: "+snapshotErr.Error(), backupErrorStatus(snapshotErr))
+		return
+	}
+	if err != nil {
 		if s.panelClient != nil {
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1482,7 +1613,10 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": body.Name, "status": "restored"})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "name": body.Name, "status": "restored",
+		"rollbackBackup": rollbackName,
+	})
 }
 
 func (s *Server) deleteBackup(w http.ResponseWriter, r *http.Request) {
@@ -2527,7 +2661,7 @@ func (s *Server) startTransfer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	transferMgr := getTransferManager()
+	transferMgr := s.transfers
 	transfer, err := transferMgr.Start(r.Context(), serverID, "local", body.TargetNode, serverRoot, body.TargetURL, s.token, 0)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2538,7 +2672,7 @@ func (s *Server) startTransfer(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getTransferStatus(w http.ResponseWriter, r *http.Request) {
 	transferID := r.PathValue("transferId")
-	transferMgr := getTransferManager()
+	transferMgr := s.transfers
 	transfer, ok := transferMgr.Get(transferID)
 	if !ok {
 		http.Error(w, "transfer not found", http.StatusNotFound)
@@ -2549,7 +2683,7 @@ func (s *Server) getTransferStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) cancelTransfer(w http.ResponseWriter, r *http.Request) {
 	transferID := r.PathValue("transferId")
-	transferMgr := getTransferManager()
+	transferMgr := s.transfers
 	if err := transferMgr.Cancel(transferID); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -2818,12 +2952,12 @@ func safeBackupName(name string) bool {
 	return true
 }
 
-func randomHex(size int) string {
+func randomHex(size int) (string, error) {
 	buf := make([]byte, size)
 	if _, err := rand.Read(buf); err != nil {
-		return time.Now().UTC().Format("20060102150405")
+		return "", fmt.Errorf("secure random source unavailable: %w", err)
 	}
-	return hex.EncodeToString(buf)
+	return hex.EncodeToString(buf), nil
 }
 
 func formatFloat(value float64) string {
@@ -3166,50 +3300,150 @@ func configureWebSocket(conn *websocket.Conn) {
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// /health and /metrics are intentionally exempt from the panel HMAC auth
-		// even when a token is configured. This is a deliberate, reviewed choice:
-		//   - /health returns only {ok, service, runtime-available} — no secrets,
-		//     hostnames, container names, or resource data.
-		//   - /metrics (see (*Server).metrics) exposes only process-level Prometheus
-		//     counters/gauges: daemon uptime, whether the Docker runtime is enabled,
-		//     goroutine count, and Go heap allocation bytes. None of this identifies
-		//     the host, tenants, or running containers.
-		// Because the payloads carry no sensitive data, keeping them unauthenticated
-		// preserves compatibility with common scrape/liveness setups (Prometheus,
-		// load balancer health checks) that can't attach a signed request. If a
-		// future change adds sensitive fields to either endpoint, this exemption
-		// must be revisited.
-		if s.token == "" || r.URL.Path == "/health" || r.URL.Path == "/metrics" || r.URL.Path == "/download/backup" || isScopedTokenRoute(r.URL.Path) || (strings.HasPrefix(r.URL.Path, "/api/v1/transfers/") && r.URL.Path != "/api/v1/transfers/credentials") {
+		if r.Method == http.MethodGet && r.URL.Path == "/metrics" {
+			expected := "Bearer " + s.metricsToken
+			if s.metricsToken == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(expected)) != 1 {
+				http.Error(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
-		var body []byte
-		var err error
-		if isStreamingUpload(r) {
-			body = nil
-		} else {
-			body, err = io.ReadAll(io.LimitReader(r.Body, 1024*1024))
-		}
-		if err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+		// Only the exact GET health route is public. Metrics contain operational
+		// information and require the same signed authentication as other API
+		// routes.
+		if s.token == "" || (r.Method == http.MethodGet && r.URL.Path == "/health") || r.URL.Path == "/download/backup" || isScopedTokenRoute(r.URL.Path) || (strings.HasPrefix(r.URL.Path, "/api/v1/transfers/") && r.URL.Path != "/api/v1/transfers/credentials") {
+			next.ServeHTTP(w, r)
 			return
 		}
-		if !isStreamingUpload(r) {
-			_ = r.Body.Close()
-			r.Body = io.NopCloser(bytes.NewReader(body))
-		}
-
 		timestamp := r.Header.Get("X-Panel-Timestamp")
+		nonce := r.Header.Get("X-Panel-Nonce")
 		signature := r.Header.Get("X-Panel-Signature")
 		parsed, err := time.Parse(time.RFC3339, timestamp)
-		if err != nil || time.Since(parsed) > 5*time.Minute || time.Until(parsed) > 5*time.Minute {
+		if err != nil || time.Since(parsed) > 5*time.Minute || time.Until(parsed) > 5*time.Minute || !validRequestNonce(nonce) {
 			http.Error(w, "invalid signature timestamp", http.StatusUnauthorized)
 			return
 		}
-		expected := sign(s.token, r.Method, r.URL.RequestURI(), timestamp, body)
-		if !hmac.Equal([]byte(signature), []byte(expected)) {
-			http.Error(w, "invalid signature", http.StatusUnauthorized)
+		var body []byte
+		if isStreamingUpload(r) {
+			spooled, expected, err := s.spoolSignedRequest(r, timestamp, nonce)
+			if err != nil {
+				http.Error(w, "invalid streaming request body", http.StatusBadRequest)
+				return
+			}
+			if !hmac.Equal([]byte(signature), []byte(expected)) {
+				_ = spooled.Close()
+				http.Error(w, "invalid signature", http.StatusUnauthorized)
+				return
+			}
+			r.Body = spooled
+			defer spooled.Close()
+		} else {
+			body, err = io.ReadAll(io.LimitReader(r.Body, 1024*1024+1))
+			if err != nil || len(body) > 1024*1024 {
+				http.Error(w, "invalid request body", http.StatusBadRequest)
+				return
+			}
+			_ = r.Body.Close()
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			expected := sign(s.token, r.Method, r.URL.RequestURI(), timestamp, body, nonce)
+			if !hmac.Equal([]byte(signature), []byte(expected)) {
+				http.Error(w, "invalid signature", http.StatusUnauthorized)
+				return
+			}
+		}
+		if !s.acceptRequestNonce(nonce, parsed) {
+			http.Error(w, "replayed request", http.StatusUnauthorized)
 			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func validRequestNonce(nonce string) bool {
+	if len(nonce) != 32 {
+		return false
+	}
+	_, err := hex.DecodeString(nonce)
+	return err == nil
+}
+
+func (s *Server) acceptRequestNonce(nonce string, timestamp time.Time) bool {
+	s.nonceMu.Lock()
+	defer s.nonceMu.Unlock()
+	now := time.Now()
+	for value, expires := range s.seenNonces {
+		if !expires.After(now) {
+			delete(s.seenNonces, value)
+		}
+	}
+	if _, exists := s.seenNonces[nonce]; exists {
+		return false
+	}
+	s.seenNonces[nonce] = timestamp.Add(5 * time.Minute)
+	return true
+}
+
+const maxSignedStreamingBodyBytes = int64(50 << 30)
+
+type removeFileReadCloser struct {
+	*os.File
+	path string
+}
+
+func (r *removeFileReadCloser) Close() error {
+	closeErr := r.File.Close()
+	removeErr := os.Remove(r.path)
+	return errors.Join(closeErr, removeErr)
+}
+
+func (s *Server) spoolSignedRequest(r *http.Request, timestamp, nonce string) (*removeFileReadCloser, string, error) {
+	dir := filepath.Join(s.dataDir, ".beacon", "request-spool")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, "", err
+	}
+	file, err := os.CreateTemp(dir, ".signed-body-*")
+	if err != nil {
+		return nil, "", err
+	}
+	cleanup := func() {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	}
+	if err := file.Chmod(0o600); err != nil {
+		cleanup()
+		return nil, "", err
+	}
+	mac := hmac.New(sha256.New, []byte(s.token))
+	_, _ = io.WriteString(mac, r.Method+"\n"+r.URL.RequestURI()+"\n"+timestamp+"\n"+nonce+"\n")
+	written, err := io.Copy(io.MultiWriter(file, mac), io.LimitReader(r.Body, maxSignedStreamingBodyBytes+1))
+	_ = r.Body.Close()
+	if err != nil || written > maxSignedStreamingBodyBytes {
+		cleanup()
+		if err != nil {
+			return nil, "", err
+		}
+		return nil, "", errors.New("streaming request body exceeds size limit")
+	}
+	if err := file.Sync(); err != nil {
+		cleanup()
+		return nil, "", err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, "", err
+	}
+	return &removeFileReadCloser{File: file, path: file.Name()}, hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		if r.TLS != nil {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -3328,55 +3562,50 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 
 // ---- Edge Agent Handlers ----
 
-var edgeAgent *EdgeAgent
-var edgeAgentMu sync.Mutex
-var upgradeMgr *UpgradeManager
-var upgradeMu sync.Mutex
-
 func (s *Server) handleEdgeStatus(w http.ResponseWriter, r *http.Request) {
-	edgeAgentMu.Lock()
-	if edgeAgent == nil {
-		edgeAgentMu.Unlock()
+	s.edgeMu.RLock()
+	agent := s.edgeAgent
+	s.edgeMu.RUnlock()
+	if agent == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"state": "not-started"})
 		return
 	}
-	state := edgeAgent.State()
-	edgeAgentMu.Unlock()
+	state := agent.State()
 	writeJSON(w, http.StatusOK, map[string]any{"state": string(state), "service": "edge-agent"})
 }
 
 func (s *Server) handleEdgeStats(w http.ResponseWriter, r *http.Request) {
-	edgeAgentMu.Lock()
-	if edgeAgent == nil {
-		edgeAgentMu.Unlock()
+	s.edgeMu.RLock()
+	agent := s.edgeAgent
+	s.edgeMu.RUnlock()
+	if agent == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"state": "not-started"})
 		return
 	}
-	stats := edgeAgent.Stats()
-	edgeAgentMu.Unlock()
+	stats := agent.Stats()
 	writeJSON(w, http.StatusOK, stats)
 }
 
 func (s *Server) handleEdgeConnect(w http.ResponseWriter, r *http.Request) {
-	edgeAgentMu.Lock()
-	if edgeAgent == nil {
-		edgeAgentMu.Unlock()
+	s.edgeMu.RLock()
+	agent := s.edgeAgent
+	s.edgeMu.RUnlock()
+	if agent == nil {
 		writeError(w, http.StatusServiceUnavailable, "edge agent not initialized")
 		return
 	}
-	edgeAgent.ConnectNow()
-	edgeAgentMu.Unlock()
+	agent.ConnectNow()
 	writeJSON(w, http.StatusOK, map[string]any{"connected": true})
 }
 
 func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	diag := s.RunConnectivityDiagnostics(r.Context(), os.Getenv("PANEL_API_URL"))
 	diag.EdgeState = string(EdgeStateDisconnected)
-	edgeAgentMu.Lock()
-	if edgeAgent != nil {
-		diag.EdgeState = string(edgeAgent.State())
+	s.edgeMu.RLock()
+	if s.edgeAgent != nil {
+		diag.EdgeState = string(s.edgeAgent.State())
 	}
-	edgeAgentMu.Unlock()
+	s.edgeMu.RUnlock()
 	diag.AgentConnected = s.runtime != nil
 	writeJSON(w, http.StatusOK, diag)
 }
@@ -3489,25 +3718,25 @@ type VersionInventory struct {
 
 func (s *Server) handleVersionInventory(w http.ResponseWriter, r *http.Request) {
 	inv := VersionInventory{
-		BeaconVersion: "beacon-dev",
+		BeaconVersion: s.version,
 		GoVersion:     stdruntime.Version(),
 		OS:            stdruntime.GOOS,
 		Architecture:  stdruntime.GOARCH,
 		Capabilities:  []string{"docker", "sftp", "backups", "transfers", "stats", "console", "files", "compose", "build", "edge-agent", "upgrade"},
-		UptimeSeconds: int64(time.Since(beaconStart).Seconds()),
+		UptimeSeconds: int64(time.Since(s.started).Seconds()),
 		EdgeState:     "unknown",
 	}
-	edgeAgentMu.Lock()
-	if edgeAgent != nil {
-		inv.EdgeState = string(edgeAgent.State())
+	s.edgeMu.RLock()
+	if s.edgeAgent != nil {
+		inv.EdgeState = string(s.edgeAgent.State())
 	}
-	edgeAgentMu.Unlock()
-	upgradeMu.Lock()
-	if upgradeMgr != nil {
-		status := upgradeMgr.Status()
+	s.edgeMu.RUnlock()
+	s.upgradeMu.Lock()
+	if s.upgradeMgr != nil {
+		status := s.upgradeMgr.Status()
 		inv.Upgrades = &status
 	}
-	upgradeMu.Unlock()
+	s.upgradeMu.Unlock()
 	writeJSON(w, http.StatusOK, inv)
 }
 
@@ -3521,68 +3750,73 @@ func (s *Server) handleUpgradeBegin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "version and downloadUrl are required")
 		return
 	}
-	upgradeMu.Lock()
-	if upgradeMgr == nil {
+	s.upgradeMu.Lock()
+	if s.upgradeMgr == nil {
 		binPath, _ := os.Executable()
-		upgradeMgr = NewUpgradeManager("beacon-dev", binPath, s.dataDir)
+		s.upgradeMgr = NewUpgradeManager(s.version, binPath, s.dataDir)
 	}
-	upgradeMu.Unlock()
-	if err := upgradeMgr.Begin(r.Context(), payload); err != nil {
+	manager := s.upgradeMgr
+	s.upgradeMu.Unlock()
+	if err := manager.Begin(r.Context(), payload); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusAccepted, upgradeMgr.Status())
+	writeJSON(w, http.StatusAccepted, manager.Status())
 }
 
 func (s *Server) handleUpgradeStatus(w http.ResponseWriter, r *http.Request) {
-	upgradeMu.Lock()
-	if upgradeMgr == nil {
-		upgradeMu.Unlock()
+	s.upgradeMu.Lock()
+	manager := s.upgradeMgr
+	s.upgradeMu.Unlock()
+	if manager == nil {
 		writeJSON(w, http.StatusOK, UpgradeStatus{State: UpgradeStateIdle})
 		return
 	}
-	status := upgradeMgr.Status()
-	upgradeMu.Unlock()
+	status := manager.Status()
 	writeJSON(w, http.StatusOK, status)
 }
 
 func (s *Server) handleUpgradeApply(w http.ResponseWriter, r *http.Request) {
-	upgradeMu.Lock()
-	if upgradeMgr == nil {
-		upgradeMu.Unlock()
+	s.upgradeMu.Lock()
+	manager := s.upgradeMgr
+	s.upgradeMu.Unlock()
+	if manager == nil {
 		writeError(w, http.StatusBadRequest, "no upgrade in progress")
 		return
 	}
-	upgradeMu.Unlock()
-	if err := upgradeMgr.Apply(r.Context()); err != nil {
+	if err := manager.Apply(r.Context()); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, upgradeMgr.Status())
+	writeJSON(w, http.StatusOK, manager.Status())
 }
 
 func (s *Server) handleUpgradeRollback(w http.ResponseWriter, r *http.Request) {
-	upgradeMu.Lock()
-	if upgradeMgr == nil {
-		upgradeMu.Unlock()
+	s.upgradeMu.Lock()
+	manager := s.upgradeMgr
+	s.upgradeMu.Unlock()
+	if manager == nil {
 		writeError(w, http.StatusBadRequest, "no upgrade to roll back")
 		return
 	}
-	upgradeMu.Unlock()
-	if err := upgradeMgr.Rollback(r.Context()); err != nil {
+	if err := manager.Rollback(r.Context()); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, upgradeMgr.Status())
+	writeJSON(w, http.StatusOK, manager.Status())
 }
 
-func sign(token, method, requestURI, timestamp string, body []byte) string {
+func sign(token, method, requestURI, timestamp string, body []byte, nonce ...string) string {
 	mac := hmac.New(sha256.New, []byte(token))
 	_, _ = mac.Write([]byte(method))
 	_, _ = mac.Write([]byte("\n"))
 	_, _ = mac.Write([]byte(requestURI))
 	_, _ = mac.Write([]byte("\n"))
 	_, _ = mac.Write([]byte(timestamp))
+	_, _ = mac.Write([]byte("\n"))
+	if len(nonce) > 0 {
+		_, _ = mac.Write([]byte(nonce[0]))
+	}
 	_, _ = mac.Write([]byte("\n"))
 	_, _ = mac.Write(body)
 	return hex.EncodeToString(mac.Sum(nil))

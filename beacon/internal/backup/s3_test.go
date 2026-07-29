@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,7 +91,7 @@ func TestS3DownloadRejectsChecksumMismatchAndCleansStaging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &mockS3{getBody: []byte("archive"), getMetadata: map[string]string{checksumMetadataKey: "wrong"}}
+	client := &mockS3{getBody: []byte("archive"), getMetadata: map[string]string{checksumMetadataKey: strings.Repeat("0", 64)}}
 	adapter := &S3Backup{config: &S3Config{Bucket: "bucket"}, client: client, local: local}
 	_, err = adapter.Download("server-one", "backup.zip")
 	if !errors.Is(err, ErrChecksumMismatch) {

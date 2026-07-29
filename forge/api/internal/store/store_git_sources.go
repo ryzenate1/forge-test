@@ -11,25 +11,25 @@ import (
 )
 
 type GitSource struct {
-	ID               string          `json:"id"`
-	UserID           string          `json:"userId"`
-	CredentialID     *string         `json:"credentialId,omitempty"`
-	ProviderTokenID  *string         `json:"providerTokenId,omitempty"`
-	Provider         string          `json:"provider"`
-	RepositoryURL    string          `json:"repositoryUrl"`
-	RepositoryName   string          `json:"repositoryName"`
-	RepositoryOwner  string          `json:"repositoryOwner"`
-	Branch           string          `json:"branch"`
-	AutoDeploy       bool            `json:"autoDeploy"`
-	WebhookSecret    string          `json:"webhookSecret,omitempty"`
-	WebhookID        string          `json:"webhookId"`
-	WebhookURL       string          `json:"webhookUrl"`
-	LastCommitSHA    string          `json:"lastCommitSha"`
-	LastCommitMsg    string          `json:"lastCommitMessage"`
-	LastCommitAuthor string          `json:"lastCommitAuthor"`
-	LastDeployedAt   *time.Time      `json:"lastDeployedAt,omitempty"`
-	CreatedAt        time.Time       `json:"createdAt"`
-	UpdatedAt        time.Time       `json:"updatedAt"`
+	ID               string     `json:"id"`
+	UserID           string     `json:"userId"`
+	CredentialID     *string    `json:"credentialId,omitempty"`
+	ProviderTokenID  *string    `json:"providerTokenId,omitempty"`
+	Provider         string     `json:"provider"`
+	RepositoryURL    string     `json:"repositoryUrl"`
+	RepositoryName   string     `json:"repositoryName"`
+	RepositoryOwner  string     `json:"repositoryOwner"`
+	Branch           string     `json:"branch"`
+	AutoDeploy       bool       `json:"autoDeploy"`
+	WebhookSecret    string     `json:"webhookSecret,omitempty"`
+	WebhookID        string     `json:"webhookId"`
+	WebhookURL       string     `json:"webhookUrl"`
+	LastCommitSHA    string     `json:"lastCommitSha"`
+	LastCommitMsg    string     `json:"lastCommitMessage"`
+	LastCommitAuthor string     `json:"lastCommitAuthor"`
+	LastDeployedAt   *time.Time `json:"lastDeployedAt,omitempty"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
 }
 
 type CreateGitSourceRequest struct {
@@ -204,6 +204,20 @@ func (s *Store) GetGitSourceByServerID(ctx context.Context, serverID string) (Gi
 		return s.GetGitSource(ctx, gsID)
 	}
 	return s.GetGitSource(ctx, serverID)
+}
+
+// GetGitSourceByServerIDUnmasked is restricted to internal webhook processing.
+// API responses must continue to use GetGitSourceByServerID, which redacts the
+// signing secret.
+func (s *Store) GetGitSourceByServerIDUnmasked(ctx context.Context, serverID string) (GitSource, error) {
+	server, err := s.GetServer(ctx, serverID)
+	if err != nil {
+		return GitSource{}, err
+	}
+	if gsID, ok := server.DockerLabels["git_source_id"]; ok && gsID != "" {
+		return s.getGitSourceInternal(ctx, gsID)
+	}
+	return s.getGitSourceInternal(ctx, serverID)
 }
 
 func (s *Store) DeleteGitSource(ctx context.Context, id string) error {

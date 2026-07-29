@@ -195,7 +195,7 @@ func (s *Service) CreateTargetGroup(ctx context.Context, group *TargetGroup) err
 	if err := validateTargetGroup(group); err != nil {
 		return err
 	}
-	if s.enabled && (group.Port < s.portMin || group.Port > s.portMax) {
+	if group.Port < s.portMin || group.Port > s.portMax {
 		return fmt.Errorf("listener port must be between %d and %d", s.portMin, s.portMax)
 	}
 
@@ -572,8 +572,8 @@ func (s *Service) MarkNodeTargetsUnhealthy(ctx context.Context, nodeID string) e
 		return err
 	}
 	count := 0
+	s.mu.Lock()
 	for _, t := range targets {
-		s.mu.Lock()
 		group, exists := s.groups[t.GroupID]
 		if exists {
 			for i := range group.Targets {
@@ -589,8 +589,8 @@ func (s *Service) MarkNodeTargetsUnhealthy(ctx context.Context, nodeID string) e
 				}
 			}
 		}
-		s.mu.Unlock()
 	}
+	s.mu.Unlock()
 	if count > 0 {
 		slog.Info("marked targets unhealthy due to node going offline", "nodeId", nodeID, "count", count)
 	}
@@ -613,8 +613,8 @@ func (s *Service) MarkNodeTargetsHealthy(ctx context.Context, nodeID string) err
 		return err
 	}
 	count := 0
+	s.mu.Lock()
 	for _, t := range targets {
-		s.mu.Lock()
 		group, exists := s.groups[t.GroupID]
 		if exists {
 			for i := range group.Targets {
@@ -630,8 +630,8 @@ func (s *Service) MarkNodeTargetsHealthy(ctx context.Context, nodeID string) err
 				}
 			}
 		}
-		s.mu.Unlock()
 	}
+	s.mu.Unlock()
 	if count > 0 {
 		slog.Info("marked targets healthy due to node recovery", "nodeId", nodeID, "count", count)
 	}

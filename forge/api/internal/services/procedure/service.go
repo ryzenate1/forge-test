@@ -311,12 +311,6 @@ func (s *Service) executeProcedure(ctx context.Context, executionID, procedureID
 }
 
 func (s *Service) stepContinuesOnFailure(ctx context.Context, stepID string) bool {
-	// fetch step config from the DB
-	rows, _ := s.store.(interface {
-		ListProcedureSteps(ctx context.Context, procedureID string) ([]store.ProcedureStep, error)
-	}).ListProcedureSteps(ctx, "")
-	_ = rows
-	// For simplicity, we'll rely on the step execution's stored max_attempts
 	return false
 }
 
@@ -706,8 +700,12 @@ func validateCommand(command string) error {
 	if !allowedCommands[parts[0]] {
 		return fmt.Errorf("command %q is not in the allowed list", parts[0])
 	}
+	switch parts[0] {
+	case "bash", "sh", "docker", "docker-compose", "rm", "env", "export", "source":
+		return fmt.Errorf("command %q is not allowed in procedures", parts[0])
+	}
 	for _, part := range parts[1:] {
-		if strings.Contains(part, "`") || strings.Contains(part, "$(") || strings.Contains(part, ";") || strings.Contains(part, "|") || strings.Contains(part, "&") || strings.Contains(part, "\n") {
+		if strings.ContainsAny(part, "`$;|&\n\r><*?'\"\\") {
 			return fmt.Errorf("command argument contains shell metacharacters: %q", part)
 		}
 	}

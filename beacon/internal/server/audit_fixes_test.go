@@ -16,16 +16,25 @@ func TestFirewallStatePersistsAndReconciles(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "firewall.json")
 	t.Setenv("BEACON_FIREWALL_STATE_PATH", statePath)
 	previousExec := firewallExec
-	t.Cleanup(func() { firewallExec = previousExec })
+	previousRestore := firewallRestore
+	t.Cleanup(func() {
+		firewallExec = previousExec
+		firewallRestore = previousRestore
+	})
 	var commands [][]string
+	var restoredRules string
 	firewallExec = func(_ context.Context, name string, args ...string) error {
 		commands = append(commands, append([]string{name}, args...))
+		return nil
+	}
+	firewallRestore = func(_ context.Context, rules string) error {
+		restoredRules = rules
 		return nil
 	}
 	data := &firewallData{state: firewallState{
 		Enabled: true,
 		Rules: map[string]FirewallRule{
-			"rule-1": {ID: "rule-1", Port: 443, Protocol: "tcp", Action: "allow"},
+			"rule-1": {ID: "rule-1", Port: 443, Protocol: "tcp", SourceIP: "8.8.8.8", Action: "allow"},
 		},
 		Forwards: map[string]PortForward{
 			"fwd-1": {ID: "fwd-1", FromPort: 8443, ToPort: 443, ToIP: "127.0.0.1", Protocol: "tcp"},
@@ -48,8 +57,11 @@ func TestFirewallStatePersistsAndReconciles(t *testing.T) {
 	if err := loaded.reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) < 4 {
-		t.Fatalf("expected chain and rule reconciliation commands, got %v", commands)
+	if len(commands) < 2 {
+		t.Fatalf("expected hook reconciliation checks, got %v", commands)
+	}
+	if !strings.Contains(restoredRules, "rule-1") || !strings.Contains(restoredRules, "fwd-1") {
+		t.Fatalf("atomic restore omitted persisted rules: %q", restoredRules)
 	}
 }
 

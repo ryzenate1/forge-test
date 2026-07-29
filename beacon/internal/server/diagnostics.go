@@ -30,7 +30,7 @@ type ConnectivityDiagnostics struct {
 
 func (s *Server) RunConnectivityDiagnostics(ctx context.Context, panelURL string) ConnectivityDiagnostics {
 	d := ConnectivityDiagnostics{
-		UptimeSeconds: int64(time.Since(beaconStart).Seconds()),
+		UptimeSeconds: int64(time.Since(s.started).Seconds()),
 	}
 
 	if panelURL == "" {

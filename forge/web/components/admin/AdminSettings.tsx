@@ -15,7 +15,7 @@ import {
   type ApiPanelMailSettings,
   type ApiPanelSettings,
 } from "@/lib/api";
-import { Btn, Card, CardHeader, Input, SectionHeader, cn } from "./admin-ui";
+import { AdminTabs, Btn, Card, CardHeader, Input, SectionHeader, cn } from "./admin-ui";
 
 type Tab = "general" | "security" | "mail" | "monitoring" | "orchestration" | "backups" | "advanced";
 const TABS: Array<{ id: Tab; label: string; icon: typeof SettingsIcon }> = [
@@ -94,21 +94,7 @@ export function AdminSettings() {
   return (
     <div className="space-y-6">
       <SectionHeader title="Settings Center" sub="Global controls for branding, security, monitoring, orchestration, and platform behavior." />
-      <nav className="flex flex-wrap gap-1 border-b border-white/[0.06]">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            className={cn(
-              "flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition",
-              tab === t.id ? "border-b-2 border-[#dc2626] text-[#dc2626]" : "text-slate-400 hover:text-slate-200",
-            )}
-            onClick={() => setTab(t.id)}
-            type="button"
-          >
-            <t.icon size={14} /> {t.label}
-          </button>
-        ))}
-      </nav>
+      <AdminTabs tabs={TABS.map((t) => ({ id: t.id, label: t.label, icon: t.icon }))} active={tab} onChange={(id) => setTab(id as Tab)} />
       {tab === "general" && <PanelSettingsTab mode="general" />}
       {tab === "security" && <PanelSettingsTab mode="security" />}
       {tab === "mail" && <MailTab />}

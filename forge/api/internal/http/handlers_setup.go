@@ -3,7 +3,6 @@ package http
 import (
 	"os"
 	"strconv"
-	"time"
 
 	"gamepanel/forge/internal/store"
 
@@ -182,7 +181,7 @@ func registerSetupRoutes(public fiber.Router, cfg Config, authLimiter fiber.Hand
 			}
 		}
 
-		token, err := issueToken(cfg.AuthSecret, user)
+		token, err := issueConfiguredToken(cfg, user)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not issue session token")
 		}
@@ -190,7 +189,7 @@ func registerSetupRoutes(public fiber.Router, cfg Config, authLimiter fiber.Hand
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not generate csrf token")
 		}
-		setSessionCookies(c, token, csrfToken, time.Now().Add(tokenTTL))
+		setSessionCookies(c, token, csrfToken, tokenExpiry(cfg))
 		response := fiber.Map{"ok": true, "userId": user.ID, "email": user.Email}
 		if setupNodeID != "" {
 			response["nodeId"] = setupNodeID

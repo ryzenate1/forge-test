@@ -88,7 +88,7 @@ func registerAccountRecoveryRoutes(v1 fiber.Router, cfg Config, authLimiter fibe
 		return c.JSON(accountRecoveryResponse{Status: "ok", Message: "Account recovered successfully"})
 	})
 
-	protected := v1.Group("", authMiddleware(cfg.AuthSecret, cfg.Store))
+	protected := v1.Group("", authMiddleware(cfg.AuthSecret, cfg.Store), csrfMiddleware(LoadSessionCookieConfig()))
 	protected.Post("/account/2fa/recovery-codes", func(c *fiber.Ctx) error {
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {

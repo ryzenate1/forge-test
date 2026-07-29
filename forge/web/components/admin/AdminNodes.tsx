@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity, AlertCircle, ChevronRight, Cpu, Database, Eye, EyeOff, Globe, KeyRound, Lock, Mail,
@@ -9,12 +9,12 @@ import {
 import {
   fetchNodes, createNode, deleteNode, fetchServers, fetchLocations, fetchRegions, fetchNode, updateNode, rotateNodeToken,
   fetchNodeAllocations, fetchNodeServers, fetchNodeLifecycle,
-  fetchNodeSystemInformation, setAllocationAlias, deleteAllocationsBulk, getBeaconPanelURL,
+  fetchNodeSystemInformation, setAllocationAlias, deleteAllocationsBulk, getBeaconAPIURL,
   type ApiNode, type ApiAllocation, type ApiLocation, type ApiRegion, type ApiServer,
   type CreateNodeInput, type UpdateNodeInput,
 } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, SectionHeader, Textarea, cn } from "./admin-ui";
+import { AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, SectionHeader, Textarea, cn } from "./admin-ui";
 
 type Tab = "about" | "settings" | "configuration" | "allocation" | "servers";
 
@@ -45,19 +45,20 @@ function validateNodeForm(name: string, locationId: string, fqdn: string, scheme
 
 export function AdminNodes() {
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
-  const nodes = nodesQuery.data ?? [];
+  const nodes = useMemo(() => Array.isArray(nodesQuery.data) ? nodesQuery.data : [], [nodesQuery.data]);
   const locationsQuery = useQuery({ queryKey: ["locations"], queryFn: fetchLocations });
-  const locations = locationsQuery.data ?? [];
+  const locations = useMemo(() => Array.isArray(locationsQuery.data) ? locationsQuery.data : [], [locationsQuery.data]);
   const regionsQuery = useQuery({ queryKey: ["regions"], queryFn: fetchRegions });
-  const regions = regionsQuery.data ?? [];
+  const regions = useMemo(() => Array.isArray(regionsQuery.data) ? regionsQuery.data : [], [regionsQuery.data]);
   const serversQuery = useQuery({ queryKey: ["servers"], queryFn: fetchServers });
-  const servers = serversQuery.data ?? [];
+  const servers = useMemo(() => Array.isArray(serversQuery.data) ? serversQuery.data : [], [serversQuery.data]);
   const [search, setSearch] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
 
-  const filtered = nodes.filter((n) =>
-    !search || n.name.toLowerCase().includes(search.toLowerCase())
+  const filtered = useMemo(() =>
+    nodes.filter((n) => !search || n.name.toLowerCase().includes(search.toLowerCase())),
+    [nodes, search],
   );
 
   return (
@@ -211,7 +212,7 @@ function NodeDetailView({ nodeId, onClose }: { nodeId: string; onClose: () => vo
   const nodeQuery = useQuery({ queryKey: ["node", nodeId], queryFn: () => fetchNode(nodeId) });
   const { data: node, isLoading } = nodeQuery;
   const allocQuery = useQuery({ queryKey: ["node-allocations", nodeId], queryFn: () => fetchNodeAllocations(nodeId) });
-  const allocations = allocQuery.data ?? [];
+  const allocations = useMemo(() => Array.isArray(allocQuery.data) ? allocQuery.data : [], [allocQuery.data]);
   const [tab, setTab] = useState<Tab>("about");
   const qc = useQueryClient();
   const { toast } = useToast();
@@ -241,23 +242,7 @@ function NodeDetailView({ nodeId, onClose }: { nodeId: string; onClose: () => vo
     <Modal title={node.name} onClose={onClose} wide>
       <div className="space-y-6">
         <div className="flex justify-end"><Btn tone="danger" size="sm" type="button" disabled={deleteMut.isPending} onClick={() => { if (confirm(`Delete ${node.name}? This is only allowed after its servers and allocations are removed.`)) deleteMut.mutate(); }}><Trash2 size={14} /> {deleteMut.isPending ? "Deleting…" : "Delete Node"}</Btn></div>
-        <div className="flex gap-1 border-b border-white/[0.06]" role="tablist" aria-label="Node sections">
-          {ADMIN_TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              aria-selected={tab === t.id}
-              className={cn(
-                "px-3 py-2 text-sm font-medium transition",
-                tab === t.id ? "border-b-2 border-[#dc2626] text-[#dc2626]" : "text-slate-400 hover:text-slate-200"
-              )}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <AdminTabs tabs={ADMIN_TABS} active={tab} onChange={(id) => setTab(id as Tab)} label="Node sections" />
         {tab === "about" && <NodeAboutTab nodeId={nodeId} />}
         {tab === "settings" && <NodeSettingsTab node={node} />}
         {tab === "configuration" && <NodeConfigurationTab node={node} />}
@@ -284,7 +269,7 @@ function NodeAboutTab({ nodeId }: { nodeId: string }) {
     queryKey: ["node-servers", nodeId],
     queryFn: () => fetchNodeServers(nodeId),
   });
-  const filteredServers = serversQuery.data ?? [];
+  const filteredServers = useMemo(() => Array.isArray(serversQuery.data) ? serversQuery.data : [], [serversQuery.data]);
 
   return (
     <div className="grid gap-4 lg:grid-cols-3">
@@ -321,6 +306,70 @@ function NodeAboutTab({ nodeId }: { nodeId: string }) {
             <li className="flex justify-between px-4 py-3 text-sm">
               <span className="text-slate-400">FQDN</span>
               <span className="font-mono text-slate-200">{node?.fqdn ?? "—"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Runtime / scheduler</span>
+              <span className="text-right font-mono text-slate-200">{node?.runtimeProvider ?? node?.schedulerType ?? "Docker"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Beacon version</span>
+              <span className="text-right font-mono text-slate-200">{sys?.version ?? node?.version ?? "Not reported"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Last seen</span>
+              <span className="text-right font-mono text-slate-200">{node?.lastSeenAt ? new Date(node.lastSeenAt).toLocaleString() : "Not reported"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Labels</span>
+              <span className="max-w-[60%] text-right font-mono text-xs text-slate-200">{node?.labels?.length ? node.labels.map((label) => `${label.key}=${label.value}`).join(", ") : "None"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Desired state</span>
+              <span className="text-right font-mono text-slate-200 capitalize">{node?.desiredState ?? node?.draining ? "draining" : node?.maintenanceMode ? "maintenance" : "active"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Daemon ports</span>
+              <span className="text-right font-mono text-slate-200">{node?.daemonListen ?? "9090"} / {node?.daemonSftp ?? "2022"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Behind proxy</span>
+              <span className="text-right font-mono text-slate-200">{node?.behindProxy ? "Yes" : "No"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Public</span>
+              <span className="text-right font-mono text-slate-200">{node?.public ?? node?.isPublic ? "Yes" : "No"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Public hostname</span>
+              <span className="text-right font-mono text-slate-200">{node?.publicHostname || "—"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Display name</span>
+              <span className="text-right font-mono text-slate-200">{node?.displayName || "—"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Scheduler</span>
+              <span className="text-right font-mono text-slate-200 capitalize">{node?.schedulerType ?? "docker"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Upload limit</span>
+              <span className="text-right font-mono text-slate-200">{node?.uploadSizeMb ? `${node.uploadSizeMb} MiB` : "Default"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Memory overallocation</span>
+              <span className="text-right font-mono text-slate-200">{node?.memoryOverallocate != null ? `${node.memoryOverallocate}%` : "0%"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Disk overallocation</span>
+              <span className="text-right font-mono text-slate-200">{node?.diskOverallocate != null ? `${node.diskOverallocate}%` : "0%"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">CPU overallocation</span>
+              <span className="text-right font-mono text-slate-200">{node?.cpuOverallocate != null ? `${node.cpuOverallocate}%` : "0%"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Tags</span>
+              <span className="text-right font-mono text-xs text-slate-200">{node?.tags?.length ? node.tags.join(", ") : "None"}</span>
             </li>
           </ul>
         </Card>
@@ -367,24 +416,19 @@ function NodeAboutTab({ nodeId }: { nodeId: string }) {
         )}
       </div>
       <div className="space-y-3">
-        <SmallBox color="orange" label="Maintenance" value={node?.maintenanceMode ? "ENABLED" : "Normal"} />
-        <SmallBox color="blue" label="Total Servers" value={String(filteredServers.length)} />
-        <SmallBox color="purple" label="Memory Limit" value={`${node?.memoryMb ?? 0} MiB`} />
-        <SmallBox color="emerald" label="Disk Limit" value={`${node?.diskMb ?? 0} MiB`} />
+        <SmallBox tone={node?.maintenanceMode ? "warning" : "neutral"} label="Maintenance" value={node?.maintenanceMode ? "Enabled" : "Normal"} />
+        <SmallBox tone="neutral" label="Total Servers" value={String(filteredServers.length)} />
+        <SmallBox tone="neutral" label="Memory Limit" value={`${node?.memoryMb ?? 0} MiB`} />
+        <SmallBox tone="neutral" label="Disk Limit" value={`${node?.diskMb ?? 0} MiB`} />
       </div>
     </div>
   );
 }
 
-function SmallBox({ color, label, value }: { color: "orange" | "blue" | "purple" | "emerald"; label: string; value: string }) {
-  const map: Record<string, string> = {
-    orange: "bg-orange-500/10 text-orange-400 border-orange-500/30",
-    blue: "bg-sky-500/10 text-sky-400 border-sky-500/30",
-    purple: "bg-purple-500/10 text-purple-400 border-purple-500/30",
-    emerald: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
-  };
+function SmallBox({ tone, label, value }: { tone: "neutral" | "warning"; label: string; value: string }) {
+  const map: Record<string, string> = { neutral: "border-white/[0.08] bg-white/[0.02] text-slate-100", warning: "border-amber-500/30 bg-amber-500/[0.08] text-amber-100" };
   return (
-    <div className={cn("rounded-lg border p-4", map[color])}>
+    <div className={cn("rounded-xl border p-4", map[tone])}>
       <div className="text-[10px] font-bold uppercase tracking-widest opacity-70">{label}</div>
       <div className="mt-1 text-lg font-bold">{value}</div>
     </div>
@@ -394,7 +438,7 @@ function SmallBox({ color, label, value }: { color: "orange" | "blue" | "purple"
 function NodeSettingsTab({ node }: { node: ApiNode }) {
   const qc = useQueryClient();
   const locationsQuery = useQuery({ queryKey: ["locations"], queryFn: fetchLocations });
-  const locations = locationsQuery.data ?? [];
+  const locations = useMemo(() => Array.isArray(locationsQuery.data) ? locationsQuery.data : [], [locationsQuery.data]);
   const [name, setName] = useState(node.name);
   const [description, setDescription] = useState(node.description ?? "");
   const [locationId, setLocationId] = useState(node.locationId ?? "");
@@ -534,7 +578,7 @@ function NodeSettingsTab({ node }: { node: ApiNode }) {
 }
 
 function NodeConfigurationTab({ node }: { node: ApiNode }) {
-  const panelURL = getBeaconPanelURL();
+  const panelURL = getBeaconAPIURL();
   return (
     <div className="space-y-4">
       <Card>
@@ -566,7 +610,11 @@ function NodeAllocationTab({ node, allocations }: { node: ApiNode; allocations: 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [aliases, setAliases] = useState<Record<string, string>>({});
 
-  const filtered = allocations.filter((a) => !filter || a.ip.includes(filter) || a.port.toString().includes(filter));
+  const safeAllocations = useMemo(() => Array.isArray(allocations) ? allocations : [], [allocations]);
+  const filtered = useMemo(() =>
+    safeAllocations.filter((a) => !filter || a.ip.includes(filter) || a.port.toString().includes(filter)),
+    [safeAllocations, filter],
+  );
   const deletable = filtered.filter((allocation) => !allocation.server);
   const toggle = (id: string) => {
     const next = new Set(selected);
@@ -663,7 +711,7 @@ function NodeServersTab({ nodeId }: { nodeId: string }) {
     queryKey: ["node-servers-list", nodeId],
     queryFn: () => fetchNodeServers(nodeId),
   });
-  const filtered = serversQuery.data ?? [];
+  const filtered = useMemo(() => Array.isArray(serversQuery.data) ? serversQuery.data : [], [serversQuery.data]);
   return (
     <Card>
       <CardHeader title={`Servers (${filtered.length})`} icon={Database} />
@@ -771,7 +819,7 @@ function CreateNodeModal({ open, onClose, locations, locationsError, onRetryLoca
   const [onboarding, setOnboarding] = useState<{ id: string; token: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-  const panelURL = getBeaconPanelURL();
+  const panelURL = getBeaconAPIURL();
 
   const createMut = useMutation({
     mutationFn: () => {

@@ -1,5 +1,5 @@
 #!/bin/bash
-cd /Users/riyaz/project/gamepanel/web
+cd "$(dirname "$0")"
 node -e "
 const ts=require('typescript'),p=require('path'),fs=require('fs');
 const c=ts.readConfigFile('tsconfig.json',ts.sys.readFile);

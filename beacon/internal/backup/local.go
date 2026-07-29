@@ -24,10 +24,10 @@ import (
 const metadataSuffix = ".metadata.json"
 
 type localMetadata struct {
-	Checksum    string    `json:"checksum"`
-	Size        int64     `json:"size"`
-	Created     time.Time `json:"created"`
-	IgnoredFiles []string `json:"ignored_files,omitempty"`
+	Checksum     string    `json:"checksum"`
+	Size         int64     `json:"size"`
+	Created      time.Time `json:"created"`
+	IgnoredFiles []string  `json:"ignored_files,omitempty"`
 }
 
 type restoreJournal struct {
@@ -45,6 +45,13 @@ type LocalBackup struct {
 	progress       ProgressFunc
 	progressMu     sync.Mutex
 	writeLimit     int64
+	namespaceMu    sync.Mutex
+	namespaceOps   map[string]*namespaceOperation
+}
+
+type namespaceOperation struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // NewLocalBackup configures daemon-owned storage. legacyDataRoot is optional;
@@ -55,7 +62,7 @@ func NewLocalBackup(backupRoot string, legacyDataRoot ...string) (*LocalBackup, 
 	if err != nil {
 		return nil, fmt.Errorf("initialize local backup root: %w", err)
 	}
-	adapter := &LocalBackup{backupRoot: root}
+	adapter := &LocalBackup{backupRoot: root, namespaceOps: make(map[string]*namespaceOperation)}
 	if len(legacyDataRoot) > 0 && strings.TrimSpace(legacyDataRoot[0]) != "" {
 		legacy, err := canonicalDirectory(legacyDataRoot[0], true)
 		if err != nil {
@@ -75,7 +82,30 @@ func (l *LocalBackup) SetProgressCallback(fn ProgressFunc) {
 }
 
 func (l *LocalBackup) SetWriteLimit(bytesPerSec int64) {
+	l.progressMu.Lock()
+	defer l.progressMu.Unlock()
 	l.writeLimit = bytesPerSec
+}
+
+func (l *LocalBackup) lockNamespace(namespace string) func() {
+	l.namespaceMu.Lock()
+	operation := l.namespaceOps[namespace]
+	if operation == nil {
+		operation = &namespaceOperation{}
+		l.namespaceOps[namespace] = operation
+	}
+	operation.refs++
+	l.namespaceMu.Unlock()
+	operation.mu.Lock()
+	return func() {
+		operation.mu.Unlock()
+		l.namespaceMu.Lock()
+		operation.refs--
+		if operation.refs == 0 {
+			delete(l.namespaceOps, namespace)
+		}
+		l.namespaceMu.Unlock()
+	}
 }
 
 func (l *LocalBackup) reportProgress(bytesProcessed, totalBytes int64, phase string) {
@@ -206,6 +236,8 @@ func (l *LocalBackup) archivePath(namespace, name string, createDir bool) (strin
 }
 
 func (l *LocalBackup) Create(ctx context.Context, serverRoot, namespace, name string, ignored []string) (*BackupInfo, error) {
+	unlock := l.lockNamespace(namespace)
+	defer unlock()
 	l.reportProgress(0, 0, "creating backup")
 	canonicalRoot, err := canonicalDirectory(serverRoot, false)
 	if err != nil {
@@ -240,7 +272,7 @@ func (l *LocalBackup) Create(ctx context.Context, serverRoot, namespace, name st
 
 	l.reportProgress(0, 0, "archiving files")
 
-	temp, err := os.OpenFile(backupPath+".partial", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o640)
+	temp, err := os.OpenFile(backupPath+".partial", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("create backup staging file: %w", err)
 	}
@@ -254,8 +286,11 @@ func (l *LocalBackup) Create(ctx context.Context, serverRoot, namespace, name st
 	}()
 
 	var zipTarget io.Writer = temp
-	if l.writeLimit > 0 {
-		limiter := rate.NewLimiter(rate.Limit(l.writeLimit), int(l.writeLimit))
+	l.progressMu.Lock()
+	writeLimit := l.writeLimit
+	l.progressMu.Unlock()
+	if writeLimit > 0 {
+		limiter := rate.NewLimiter(rate.Limit(writeLimit), int(writeLimit))
 		zipTarget = &rateLimitedWriter{writer: temp, limiter: limiter, ctx: ctx}
 	}
 	zipper := zip.NewWriter(zipTarget)
@@ -306,6 +341,7 @@ func (l *LocalBackup) Create(ctx context.Context, serverRoot, namespace, name st
 			return nil
 		}
 
+		walkedInfo := info
 		source, err := sourceFS.Open(rel)
 		if err != nil {
 			return err
@@ -317,6 +353,10 @@ func (l *LocalBackup) Create(ctx context.Context, serverRoot, namespace, name st
 				return err
 			}
 			return fmt.Errorf("source changed type while backing up %q", rel)
+		}
+		if !os.SameFile(walkedInfo, info) {
+			_ = source.Close()
+			return fmt.Errorf("source changed while backing up %q", rel)
 		}
 		header, err := zip.FileInfoHeader(info)
 		if err != nil {
@@ -426,24 +466,14 @@ func (l *LocalBackup) Delete(namespace, name string) error {
 }
 
 func (l *LocalBackup) Restore(ctx context.Context, namespace, name, serverRoot string, truncate bool) error {
+	unlock := l.lockNamespace(namespace)
+	defer unlock()
 	l.reportProgress(0, 0, "restoring backup")
 	defer l.reportProgress(0, 0, "completed")
 	backupPath, err := l.archivePath(namespace, name, false)
 	if err != nil {
 		return err
 	}
-	metadata, err := readOrCreateMetadata(backupPath)
-	if err != nil {
-		return fmt.Errorf("load backup metadata: %w", err)
-	}
-	actualChecksum, err := calculateChecksum(backupPath)
-	if err != nil {
-		return fmt.Errorf("checksum backup: %w", err)
-	}
-	if !strings.EqualFold(actualChecksum, metadata.Checksum) {
-		return fmt.Errorf("%w: expected %s, got %s", ErrChecksumMismatch, metadata.Checksum, actualChecksum)
-	}
-
 	absoluteRoot, err := filepath.Abs(serverRoot)
 	if err != nil {
 		return fmt.Errorf("resolve live root: %w", err)
@@ -470,6 +500,17 @@ func (l *LocalBackup) Restore(ctx context.Context, namespace, name, serverRoot s
 	defer reader.Close()
 	if err := validateArchive(reader.File); err != nil {
 		return err
+	}
+	metadata, err := readOrCreateMetadata(backupPath)
+	if err != nil {
+		return fmt.Errorf("load backup metadata: %w", err)
+	}
+	actualChecksum, err := calculateChecksum(backupPath)
+	if err != nil {
+		return fmt.Errorf("checksum backup: %w", err)
+	}
+	if !strings.EqualFold(actualChecksum, metadata.Checksum) {
+		return fmt.Errorf("%w: expected %s, got %s", ErrChecksumMismatch, metadata.Checksum, actualChecksum)
 	}
 
 	if !truncate {
@@ -709,7 +750,7 @@ func writeMetadata(backupPath string, metadata localMetadata) error {
 	}
 	tempName := temp.Name()
 	defer os.Remove(tempName)
-	if err := temp.Chmod(0o640); err != nil {
+	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()
 		return err
 	}
@@ -724,7 +765,10 @@ func writeMetadata(backupPath string, metadata localMetadata) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tempName, backupPath+metadataSuffix)
+	if err := os.Rename(tempName, backupPath+metadataSuffix); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(backupPath))
 }
 
 func backupInfo(name string, metadata localMetadata, adapter AdapterType, remotePath string) *BackupInfo {

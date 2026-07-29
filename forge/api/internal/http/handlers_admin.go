@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"gamepanel/forge/internal/domain"
 	"gamepanel/forge/internal/services/clustermanager"
 	"gamepanel/forge/internal/services/evacuationplanner"
 	migrationservice "gamepanel/forge/internal/services/migration"
@@ -41,7 +42,7 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 	}
 	// ---- Permissions ----
 
-	protected.Get("/permissions", func(c *fiber.Ctx) error {
+	protected.Get("/permissions", requireRole("admin"), requireAdminScope("admin.read"), func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"permissions": store.PermissionDescriptions(),
 		})
@@ -66,17 +67,23 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 		offset := (page - 1) * perPage
 		ctx, cancel := requestContext()
 		defer cancel()
-		nodes, err := cfg.Store.ListNodesPaginated(ctx, offset, perPage)
+		nodes, total, err := cfg.Store.ListNodesPaginated(ctx, offset, perPage)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		totalPages := (total + perPage - 1) / perPage
+		if totalPages == 0 {
+			totalPages = 1
 		}
 		return c.JSON(fiber.Map{
 			"data": nodes,
 			"meta": fiber.Map{
 				"pagination": fiber.Map{
-					"current":  page,
-					"count":    len(nodes),
-					"per_page": perPage,
+					"current":       page,
+					"total":         totalPages,
+					"count":         len(nodes),
+					"per_page":      perPage,
+					"total_records": total,
 				},
 			},
 		})
@@ -461,7 +468,7 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 		return c.Status(fiber.StatusCreated).JSON(plan)
 	})
 
-	protected.Get("/nodes/:id/capacity", func(c *fiber.Ctx) error {
+	protected.Get("/nodes/:id/capacity", requireRole("admin"), requireAdminScope("nodes.read"), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
@@ -579,7 +586,7 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 		defer cancel()
 		migration, err := migrationService.CreateMigration(ctx, req)
 		if err != nil {
-			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+			return toMigrationError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(migration)
 	})
@@ -599,7 +606,7 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 		defer cancel()
 		migration, err := migrationService.CreateMigration(ctx, req)
 		if err != nil {
-			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+			return toMigrationError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(migration)
 	})
@@ -1044,6 +1051,19 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 	})
 
 	// ---- Eggs CRUD ----
+
+	protected.Get("/eggs", requireRole("admin"), requireAdminScope("nests.read"), func(c *fiber.Ctx) error {
+		if cfg.Store == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+		}
+		ctx, cancel := requestContext()
+		defer cancel()
+		eggs, err := cfg.Store.ListEggs(ctx, "")
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		return c.JSON(eggs)
+	})
 
 	protected.Get("/nests/:nestId/eggs", requireAdminScope("nests.read"), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
@@ -2225,6 +2245,11 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 
 	// ---- Migration lifecycle ----
 
+	protected.Get("/migrations/executor", requireRole("admin"), func(c *fiber.Ctx) error {
+		available := migrationService != nil && migrationService.ExecutorAvailable()
+		return c.JSON(fiber.Map{"available": available})
+	})
+
 	protected.Post("/migrations/:id/prepare", requireRole("admin"), prepareMigrationRoute(migrationService))
 	protected.Post("/migrations/:id/execute", requireRole("admin"), executeMigrationRoute(migrationService))
 
@@ -2453,6 +2478,14 @@ func executeMigrationRoute(service *migrationservice.Service) fiber.Handler {
 		}
 		return c.JSON(migration)
 	}
+}
+
+func toMigrationError(c *fiber.Ctx, err error) error {
+	var targetErr *domain.TargetValidationError
+	if errors.As(err, &targetErr) {
+		return c.Status(fiber.StatusUnprocessableEntity).JSON(targetErr)
+	}
+	return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": err.Error()})
 }
 
 func derefInt(v *int) int {

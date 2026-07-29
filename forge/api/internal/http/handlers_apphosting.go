@@ -96,7 +96,7 @@ func registerAppHostingRoutes(protected fiber.Router, cfg Config, appSvc *apphos
 	// ---- Global /apps routes (no org prefix) ----
 	// These resolve the user's first org as fallback when no orgId is provided.
 
-	protected.Get("/apps", func(c *fiber.Ctx) error {
+	protected.Get("/apps", requireRole("admin"), func(c *fiber.Ctx) error {
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -112,7 +112,7 @@ func registerAppHostingRoutes(protected fiber.Router, cfg Config, appSvc *apphos
 		}
 		orgs, err := cfg.Store.ListOrganizationsForUser(ctx, claims.Sub)
 		if err != nil || len(orgs) == 0 {
-			return c.JSON(fiber.Map{"data": []store.Application{}})
+			return c.JSON([]store.Application{})
 		}
 		var allApps []store.Application
 		seen := map[string]bool{}
@@ -128,7 +128,7 @@ func registerAppHostingRoutes(protected fiber.Router, cfg Config, appSvc *apphos
 				}
 			}
 		}
-		return c.JSON(fiber.Map{"data": allApps})
+		return c.JSON(allApps)
 	})
 
 	protected.Post("/apps", mutationLimiter, func(c *fiber.Ctx) error {
@@ -452,7 +452,7 @@ func registerAppHostingRoutes(protected fiber.Router, cfg Config, appSvc *apphos
 		if deployments == nil {
 			deployments = []store.Deployment{}
 		}
-		return c.JSON(fiber.Map{"data": deployments})
+		return c.JSON(deployments)
 	})
 
 	// ---- Logs ----
@@ -482,7 +482,7 @@ func registerAppHostingRoutes(protected fiber.Router, cfg Config, appSvc *apphos
 			}
 			logs = entries
 		}
-		return c.JSON(fiber.Map{"data": logs})
+		return c.JSON(logs)
 	})
 
 	// ---- Domains ----
@@ -513,7 +513,7 @@ func registerAppHostingRoutes(protected fiber.Router, cfg Config, appSvc *apphos
 		if domains == nil {
 			domains = []store.ProxyDomain{}
 		}
-		return c.JSON(fiber.Map{"data": domains})
+		return c.JSON(domains)
 	})
 
 	protected.Post("/apps/:id/domains", mutationLimiter, func(c *fiber.Ctx) error {
@@ -606,13 +606,13 @@ func registerAppHostingRoutes(protected fiber.Router, cfg Config, appSvc *apphos
 			}
 		}
 		appID := c.Params("id")
-		artifacts, total, err := appBackupSvc.ListBackupArtifacts(ctx, backup.ArtifactFilter{
+		artifacts, _, err := appBackupSvc.ListBackupArtifacts(ctx, backup.ArtifactFilter{
 			SourceAppID: &appID, Page: c.QueryInt("page", 1), PerPage: c.QueryInt("perPage", 50),
 		})
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "failed to list application backups")
 		}
-		return c.JSON(fiber.Map{"data": artifacts, "total": total})
+		return c.JSON(artifacts)
 	})
 
 	protected.Post("/apps/:id/backups", mutationLimiter, func(c *fiber.Ctx) error {

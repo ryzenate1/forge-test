@@ -5,12 +5,12 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-func registerClusterMembershipRoutes(protected fiber.Router, membership *clustermembership.Service) {
+func registerClusterMembershipRoutes(protected fiber.Router, membership *clustermembership.Service, mutationLimiter fiber.Handler) {
 	if membership == nil {
 		return
 	}
 
-	protected.Post("/nodes/:id/join", requireRole("admin"), func(c *fiber.Ctx) error {
+	protected.Post("/nodes/:id/join", mutationLimiter, requireRole("admin"), func(c *fiber.Ctx) error {
 		ctx, cancel := requestContext()
 		defer cancel()
 		if err := membership.Join(ctx, c.Params("id")); err != nil {
@@ -19,7 +19,7 @@ func registerClusterMembershipRoutes(protected fiber.Router, membership *cluster
 		return c.JSON(fiber.Map{"status": "joined"})
 	})
 
-	protected.Post("/nodes/:id/leave", requireRole("admin"), func(c *fiber.Ctx) error {
+	protected.Post("/nodes/:id/leave", mutationLimiter, requireRole("admin"), func(c *fiber.Ctx) error {
 		ctx, cancel := requestContext()
 		defer cancel()
 		if err := membership.Leave(ctx, c.Params("id")); err != nil {
@@ -28,7 +28,7 @@ func registerClusterMembershipRoutes(protected fiber.Router, membership *cluster
 		return c.JSON(fiber.Map{"status": "left"})
 	})
 
-	protected.Post("/nodes/:id/drain", requireRole("admin"), func(c *fiber.Ctx) error {
+	protected.Post("/nodes/:id/drain", mutationLimiter, requireRole("admin"), func(c *fiber.Ctx) error {
 		ctx, cancel := requestContext()
 		defer cancel()
 		if err := membership.StartDrain(ctx, c.Params("id")); err != nil {
@@ -37,7 +37,7 @@ func registerClusterMembershipRoutes(protected fiber.Router, membership *cluster
 		return c.JSON(fiber.Map{"status": "draining"})
 	})
 
-	protected.Post("/nodes/:id/drain/cancel", requireRole("admin"), func(c *fiber.Ctx) error {
+	protected.Post("/nodes/:id/drain/cancel", mutationLimiter, requireRole("admin"), func(c *fiber.Ctx) error {
 		ctx, cancel := requestContext()
 		defer cancel()
 		if err := membership.CancelDrain(ctx, c.Params("id")); err != nil {
@@ -56,7 +56,7 @@ func registerClusterMembershipRoutes(protected fiber.Router, membership *cluster
 		return c.JSON(fiber.Map{"status": status})
 	})
 
-	protected.Post("/nodes/:id/maintenance", requireRole("admin"), func(c *fiber.Ctx) error {
+	protected.Post("/nodes/:id/maintenance", mutationLimiter, requireRole("admin"), func(c *fiber.Ctx) error {
 		var req struct {
 			Message string `json:"message"`
 		}

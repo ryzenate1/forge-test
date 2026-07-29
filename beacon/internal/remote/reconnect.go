@@ -2,8 +2,9 @@ package remote
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"log"
-	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,13 +40,17 @@ type ReconnectClient struct {
 	token          string
 	offlineTimeout time.Duration
 
-	state    int32
-	stopCh   chan struct{}
-	stopped  chan struct{}
-	mu       sync.Mutex
-	lastHb   time.Time
-	onHB     func()
-	attempts int64
+	state     int32
+	stopCh    chan struct{}
+	stopped   chan struct{}
+	mu        sync.Mutex
+	lastHb    time.Time
+	onHB      func()
+	attempts  int64
+	startOnce sync.Once
+	stopOnce  sync.Once
+	started   chan struct{}
+	newClient func() Client
 }
 
 func NewReconnectClient(panelURL, token string, offlineTimeout time.Duration) *ReconnectClient {
@@ -57,19 +62,40 @@ func NewReconnectClient(panelURL, token string, offlineTimeout time.Duration) *R
 		state:          int32(StateDisconnected),
 		stopCh:         make(chan struct{}),
 		stopped:        make(chan struct{}),
+		started:        make(chan struct{}),
+		newClient:      func() Client { return NewClient(panelURL, token) },
 	}
+}
+
+func NewReconnectClientWithClient(inner Client, reconnect func() Client, offlineTimeout time.Duration) *ReconnectClient {
+	if reconnect == nil {
+		reconnect = func() Client { return inner }
+	}
+	client := &ReconnectClient{
+		inner: inner, offlineTimeout: offlineTimeout,
+		state: int32(StateDisconnected), stopCh: make(chan struct{}),
+		stopped: make(chan struct{}), started: make(chan struct{}), newClient: reconnect,
+	}
+	return client
 }
 
 func (rc *ReconnectClient) Inner() Client {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	if rc.inner == nil {
-		rc.inner = NewClient(rc.panelURL, rc.token)
+		rc.inner = rc.newClient()
 	}
 	return rc.inner
 }
 
 func (rc *ReconnectClient) Start(ctx context.Context) {
+	rc.startOnce.Do(func() {
+		close(rc.started)
+		rc.run(ctx)
+	})
+}
+
+func (rc *ReconnectClient) run(ctx context.Context) {
 	defer close(rc.stopped)
 	atomic.StoreInt32(&rc.state, int32(StateConnected))
 	rc.mu.Lock()
@@ -127,7 +153,7 @@ func (rc *ReconnectClient) doReconnect(ctx context.Context, backoff, maxBackoff 
 	}
 
 	rc.mu.Lock()
-	rc.inner = NewClient(rc.panelURL, rc.token)
+	rc.inner = rc.newClient()
 	rc.lastHb = time.Now()
 	rc.mu.Unlock()
 
@@ -138,13 +164,31 @@ func (rc *ReconnectClient) doReconnect(ctx context.Context, backoff, maxBackoff 
 	if nextBackoff > maxBackoff {
 		nextBackoff = maxBackoff
 	}
-	jitter := time.Duration(rand.Int63n(int64(nextBackoff) / 4))
+	jitter := secureDurationJitter(nextBackoff / 4)
 	return nextBackoff - nextBackoff/8 + jitter
 }
 
 func (rc *ReconnectClient) Stop() {
-	close(rc.stopCh)
-	<-rc.stopped
+	rc.stopOnce.Do(func() { close(rc.stopCh) })
+	select {
+	case <-rc.started:
+		select {
+		case <-rc.stopped:
+		case <-time.After(5 * time.Second):
+		}
+	default:
+	}
+}
+
+func secureDurationJitter(max time.Duration) time.Duration {
+	if max <= 0 {
+		return 0
+	}
+	var body [8]byte
+	if _, err := rand.Read(body[:]); err != nil {
+		return 0
+	}
+	return time.Duration(binary.LittleEndian.Uint64(body[:]) % uint64(max))
 }
 
 func (rc *ReconnectClient) State() ConnState {
@@ -159,8 +203,8 @@ func (rc *ReconnectClient) SetOnHeartbeat(fn func()) {
 
 func (rc *ReconnectClient) Stats() map[string]any {
 	return map[string]any{
-		"state":           rc.State().String(),
-		"attempts":        atomic.LoadInt64(&rc.attempts),
+		"state":            rc.State().String(),
+		"attempts":         atomic.LoadInt64(&rc.attempts),
 		"offlineTimeoutMs": rc.offlineTimeout.Milliseconds(),
 	}
 }

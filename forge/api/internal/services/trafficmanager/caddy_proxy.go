@@ -36,7 +36,7 @@ func NewCaddyReverseProxy(adminAddr string) *CaddyReverseProxy {
 	}
 	return &CaddyReverseProxy{
 		adminAddr:    adminAddr,
-		client:       &http.Client{Timeout: 10 * time.Second},
+		client:       caddyHTTPClient(10 * time.Second),
 		healthStatus: make(map[string]bool),
 	}
 }
@@ -58,8 +58,8 @@ func (p *CaddyReverseProxy) RemoveRoutes(ctx context.Context, ruleIDs []string) 
 	}
 
 	for _, id := range ruleIDs {
-		req, err := http.NewRequestWithContext(ctx, "DELETE",
-			fmt.Sprintf("http://%s/id/gamepanel-%s", addr, id),
+		req, err := newCaddyAdminRequest(ctx, "DELETE", addr,
+			fmt.Sprintf("/id/gamepanel-%s", id),
 			nil)
 		if err != nil {
 			return fmt.Errorf("caddy delete request: %w", err)
@@ -68,6 +68,7 @@ func (p *CaddyReverseProxy) RemoveRoutes(ctx context.Context, ruleIDs []string) 
 		if err != nil {
 			return fmt.Errorf("caddy delete api: %w", err)
 		}
+		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
 	return nil
@@ -98,8 +99,8 @@ func (p *CaddyReverseProxy) SetCertificate(ctx context.Context, cert CertConfig)
 		if err != nil {
 			return fmt.Errorf("marshal cert payload: %w", err)
 		}
-		req, err := http.NewRequestWithContext(ctx, "POST",
-			fmt.Sprintf("http://%s/%s", addr, key),
+		req, err := newCaddyAdminRequest(ctx, "POST", addr,
+			"/"+key,
 			bytes.NewReader(body))
 		if err != nil {
 			return fmt.Errorf("set tls cert request: %w", err)
@@ -109,6 +110,7 @@ func (p *CaddyReverseProxy) SetCertificate(ctx context.Context, cert CertConfig)
 		if err != nil {
 			return fmt.Errorf("set tls cert api: %w", err)
 		}
+		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode >= 300 {
 			return fmt.Errorf("set tls cert failed: HTTP %d", resp.StatusCode)
@@ -129,8 +131,8 @@ func (p *CaddyReverseProxy) RemoveCertificate(ctx context.Context, domains []str
 
 	for _, domain := range domains {
 		key := fmt.Sprintf("tls/certificates/%s", domain)
-		req, err := http.NewRequestWithContext(ctx, "DELETE",
-			fmt.Sprintf("http://%s/%s", addr, key),
+		req, err := newCaddyAdminRequest(ctx, "DELETE", addr,
+			"/"+key,
 			nil)
 		if err != nil {
 			return fmt.Errorf("remove tls cert request: %w", err)
@@ -919,8 +921,8 @@ func (p *CaddyReverseProxy) buildGroupedRoute(grp routeGroup) map[string]any {
 }
 
 func (p *CaddyReverseProxy) validateConfig(ctx context.Context, addr string, configJSON []byte) error {
-	req, err := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("http://%s/load", addr),
+	req, err := newCaddyAdminRequest(ctx, "POST", addr,
+		"/load",
 		bytes.NewReader(configJSON))
 	if err != nil {
 		return fmt.Errorf("validate request: %w", err)
@@ -943,8 +945,8 @@ func (p *CaddyReverseProxy) validateConfig(ctx context.Context, addr string, con
 }
 
 func (p *CaddyReverseProxy) getRunningConfig(ctx context.Context, addr string) (json.RawMessage, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET",
-		fmt.Sprintf("http://%s/config/", addr),
+	req, err := newCaddyAdminRequest(ctx, "GET", addr,
+		"/config/",
 		nil)
 	if err != nil {
 		return nil, fmt.Errorf("get config request: %w", err)
@@ -970,8 +972,8 @@ func (p *CaddyReverseProxy) applyConfig(ctx context.Context, addr string, config
 		return fmt.Errorf("marshal apply config: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("http://%s/config/", addr),
+	req, err := newCaddyAdminRequest(ctx, "POST", addr,
+		"/config/",
 		bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("apply request: %w", err)
@@ -997,8 +999,8 @@ func (p *CaddyReverseProxy) restoreConfig(ctx context.Context, addr string, conf
 		return nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("http://%s/config/", addr),
+	req, err := newCaddyAdminRequest(ctx, "POST", addr,
+		"/config/",
 		bytes.NewReader(config))
 	if err != nil {
 		return fmt.Errorf("restore request: %w", err)

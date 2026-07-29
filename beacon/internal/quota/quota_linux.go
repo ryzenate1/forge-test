@@ -4,6 +4,7 @@ package quota
 
 import (
 	"context"
+	"errors"
 
 	"golang.org/x/sys/unix"
 )
@@ -37,7 +38,10 @@ func (t *linuxTracker) Enforce(ctx context.Context, path string, currentUsed int
 	if limit <= 0 {
 		return nil
 	}
-	if currentUsed+size > limit {
+	if currentUsed < 0 || size < 0 {
+		return errors.New("quota usage and write size must not be negative")
+	}
+	if currentUsed > limit || size > limit-currentUsed {
 		return ErrQuotaExceeded
 	}
 	return nil

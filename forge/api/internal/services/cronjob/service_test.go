@@ -50,7 +50,7 @@ func TestStopWithoutStart(t *testing.T) {
 
 func TestNextRunWithNoEntries(t *testing.T) {
 	svc := newTestService(t)
-	job := store.CronJob{ID: "nonexistent", Schedule: "*/5 * * * * *"}
+	job := store.CronJob{ID: "nonexistent", Schedule: "*/5 * * * *"}
 	next := svc.NextRun(job)
 	if next != nil {
 		t.Error("expected nil for unscheduled job")
@@ -63,11 +63,11 @@ func TestNextRunAfterScheduling(t *testing.T) {
 	defer svc.Stop()
 
 	svc.mu.Lock()
-	entryID, _ := svc.cron.AddFunc("*/1 * * * * *", func() {})
+	entryID, _ := svc.cron.AddFunc("*/1 * * * *", func() {})
 	svc.entries["test-next-run"] = entryID
 	svc.mu.Unlock()
 
-	job := store.CronJob{ID: "test-next-run", Schedule: "*/1 * * * * *"}
+	job := store.CronJob{ID: "test-next-run", Schedule: "*/1 * * * *"}
 	next := svc.NextRun(job)
 	if next == nil {
 		t.Error("expected non-nil next run time for scheduled cron entry")
@@ -82,7 +82,7 @@ func TestRescheduleJobDisables(t *testing.T) {
 
 	job := store.CronJob{
 		ID:       "disable-test",
-		Schedule: "*/5 * * * * *",
+		Schedule: "*/5 * * * *",
 		Command:  "echo hello",
 		Type:     "shell",
 		Enabled:  false,
@@ -109,7 +109,7 @@ func TestRescheduleJobEnabled(t *testing.T) {
 
 	job := store.CronJob{
 		ID:       "enable-test",
-		Schedule: "*/5 * * * * *",
+		Schedule: "*/5 * * * *",
 		Command:  "echo hello",
 		Type:     "shell",
 		Enabled:  true,
@@ -134,7 +134,7 @@ func TestRescheduleJobReschedules(t *testing.T) {
 
 	job := store.CronJob{
 		ID:       "reschedule-test",
-		Schedule: "*/5 * * * * *",
+		Schedule: "*/5 * * * *",
 		Command:  "echo hello",
 		Type:     "shell",
 		Enabled:  true,
@@ -212,9 +212,9 @@ func TestMultipleEntriesNextRun(t *testing.T) {
 	defer svc.Stop()
 
 	jobs := []store.CronJob{
-		{ID: "job-1", Schedule: "*/1 * * * * *"},
-		{ID: "job-2", Schedule: "*/2 * * * * *"},
-		{ID: "job-3", Schedule: "*/3 * * * * *"},
+		{ID: "job-1", Schedule: "*/1 * * * *"},
+		{ID: "job-2", Schedule: "*/2 * * * *"},
+		{ID: "job-3", Schedule: "*/3 * * * *"},
 	}
 
 	for _, job := range jobs {

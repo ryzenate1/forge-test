@@ -41,6 +41,10 @@ func StructuredLogger(logger *slog.Logger) fiber.Handler {
 			attrs = append(attrs, slog.String("user_id", user.Sub))
 		}
 
+		if err != nil {
+			attrs = append(attrs, slog.String("error", err.Error()))
+		}
+
 		level := slog.LevelInfo
 		if status >= 500 {
 			level = slog.LevelError

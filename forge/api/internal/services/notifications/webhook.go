@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -18,8 +20,15 @@ type WebhookService struct {
 
 // NewWebhookService creates a new webhook service
 func NewWebhookService() *WebhookService {
+	client := &http.Client{Timeout: 15 * time.Second}
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return fmt.Errorf("too many webhook redirects")
+		}
+		return validateWebhookURL(req.URL.String())
+	}
 	return &WebhookService{
-		client: &http.Client{Timeout: 15 * time.Second},
+		client: client,
 	}
 }
 
@@ -43,6 +52,9 @@ type WebhookResponse struct {
 
 // Send sends a message to a webhook
 func (s *WebhookService) Send(ctx context.Context, config WebhookConfig, message WebhookMessage) (*WebhookResponse, error) {
+	if err := validateWebhookURL(config.URL); err != nil {
+		return nil, err
+	}
 	// Set default method
 	if config.Method == "" {
 		config.Method = http.MethodPost
@@ -167,25 +179,23 @@ func (s *WebhookService) SendTestNotification(ctx context.Context, config Webhoo
 
 // ValidateURL validates a webhook URL
 func (s *WebhookService) ValidateURL(url string) error {
-	if url == "" {
-		return fmt.Errorf("webhook URL is required")
-	}
+	return validateWebhookURL(url)
+}
 
-	// Basic URL validation
-	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		return fmt.Errorf("webhook URL must start with http:// or https://")
+func validateWebhookURL(rawURL string) error {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
+		return fmt.Errorf("webhook URL must be an absolute HTTPS URL without userinfo")
 	}
-
-	// Parse the URL to check if it's valid
-	parsed, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return fmt.Errorf("invalid webhook URL: %w", err)
+	addresses, err := net.LookupIP(parsed.Hostname())
+	if err != nil || len(addresses) == 0 {
+		return fmt.Errorf("webhook host does not resolve")
 	}
-
-	if parsed.URL.Scheme == "" || parsed.URL.Host == "" {
-		return fmt.Errorf("invalid webhook URL format")
+	for _, address := range addresses {
+		if address.IsLoopback() || address.IsPrivate() || address.IsUnspecified() || address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() {
+			return fmt.Errorf("webhook URL resolves to a non-public address")
+		}
 	}
-
 	return nil
 }
 

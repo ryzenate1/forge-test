@@ -29,7 +29,7 @@ services:
       - "--api.debug=false"
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
-      - "--providers.docker.network=forge-frontend"
+      - "--providers.docker.network=frontend"
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--providers.file.watch=true"
       - "--entryPoints.web.address=:80"
@@ -108,7 +108,7 @@ services:
       REDIS_ADDR: redis:6380
       REDIS_TLS_ENABLED: "true"
       REDIS_TLS_SKIP_VERIFY: "true"
-      DATABASE_URL: "${DATABASE_URL}?sslmode=require"
+      DATABASE_URL: "${DATABASE_URL}"
     depends_on:
       cert-init:
         condition: service_completed_successfully

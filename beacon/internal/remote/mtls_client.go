@@ -7,25 +7,26 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"sync"
 	"time"
 )
 
 type MTLSClientConfig struct {
-	Enabled     bool
-	PanelURL    string
-	Token       string
-	CACertPath  string
-	CertPath    string
-	KeyPath     string
+	Enabled    bool
+	PanelURL   string
+	Token      string
+	CACertPath string
+	CertPath   string
+	KeyPath    string
 }
 
 type MTLSClient struct {
-	inner    Client
-	config   MTLSClientConfig
-	mu       sync.RWMutex
-	httpCli  *http.Client
+	inner   Client
+	config  MTLSClientConfig
+	mu      sync.RWMutex
+	httpCli *http.Client
 }
 
 func NewMTLSClient(config MTLSClientConfig) Client {
@@ -35,8 +36,8 @@ func NewMTLSClient(config MTLSClientConfig) Client {
 
 	tlsConfig, err := buildMTLSTLSConfig(config)
 	if err != nil {
-		log.Printf("[mtls] failed to build TLS config, falling back to token auth: %v", err)
-		return NewClient(config.PanelURL, config.Token)
+		log.Printf("[mtls] failed to build required TLS config: %v", err)
+		return &client{initErr: fmt.Errorf("initialize required mTLS: %w", err)}
 	}
 
 	base := NewClient(config.PanelURL, config.Token).(*client)
@@ -60,6 +61,10 @@ func NewMTLSClient(config MTLSClientConfig) Client {
 }
 
 func buildMTLSTLSConfig(config MTLSClientConfig) (*tls.Config, error) {
+	panelURL, err := url.Parse(config.PanelURL)
+	if err != nil || panelURL.Hostname() == "" {
+		return nil, fmt.Errorf("parse panel URL for mTLS server name")
+	}
 	caData, err := os.ReadFile(config.CACertPath)
 	if err != nil {
 		return nil, fmt.Errorf("read CA cert: %w", err)
@@ -75,6 +80,13 @@ func buildMTLSTLSConfig(config MTLSClientConfig) (*tls.Config, error) {
 		return nil, fmt.Errorf("read client cert: %w", err)
 	}
 
+	keyInfo, err := os.Stat(config.KeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat client key: %w", err)
+	}
+	if keyInfo.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("client key %s must not be accessible by group or others", config.KeyPath)
+	}
 	keyData, err := os.ReadFile(config.KeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("read client key: %w", err)
@@ -88,7 +100,7 @@ func buildMTLSTLSConfig(config MTLSClientConfig) (*tls.Config, error) {
 	return &tls.Config{
 		RootCAs:      caPool,
 		Certificates: []tls.Certificate{cert},
-		ServerName:   "", // derived from panel URL
+		ServerName:   panelURL.Hostname(),
 		MinVersion:   tls.VersionTLS12,
 	}, nil
 }

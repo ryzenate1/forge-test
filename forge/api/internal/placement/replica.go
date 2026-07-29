@@ -55,12 +55,26 @@ func (e *Engine) PlaceReplicas(ctx context.Context, candidates []Candidate, req 
 	}
 
 	usedNodeCount := make(map[string]int)
+	workingCandidates := append([]Candidate(nil), candidates...)
+	var existingCPU, existingMemory, existingDisk int
+	for _, replica := range req.Replicas {
+		existingCPU = max(existingCPU, replica.CPU)
+		existingMemory = max(existingMemory, replica.MemoryMB)
+		existingDisk = max(existingDisk, replica.DiskMB)
+	}
 	for nodeID, count := range req.ExistingNodeMap {
 		usedNodeCount[nodeID] = count
+		for index := range workingCandidates {
+			if workingCandidates[index].NodeID == nodeID {
+				workingCandidates[index].AvailableCPU -= count * existingCPU
+				workingCandidates[index].AvailableMemory -= count * existingMemory
+				workingCandidates[index].AvailableDisk -= count * existingDisk
+			}
+		}
 	}
 
 	for _, replica := range req.Replicas {
-		placement, err := e.placeSingleReplica(ctx, candidates, replica, req, usedNodeCount)
+		placement, err := e.placeSingleReplica(ctx, workingCandidates, replica, req, usedNodeCount)
 		if err != nil {
 			result.Failures = append(result.Failures, ReplicaFailure{
 				Index:  replica.Index,
@@ -69,6 +83,17 @@ func (e *Engine) PlaceReplicas(ctx context.Context, candidates []Candidate, req 
 			continue
 		}
 		usedNodeCount[placement.NodeID]++
+		for index := range workingCandidates {
+			if workingCandidates[index].NodeID == placement.NodeID {
+				workingCandidates[index].AvailableCPU -= replica.CPU
+				workingCandidates[index].AvailableMemory -= replica.MemoryMB
+				workingCandidates[index].AvailableDisk -= replica.DiskMB
+				workingCandidates[index].AllocatedCPU += replica.CPU
+				workingCandidates[index].AllocatedMemory += replica.MemoryMB
+				workingCandidates[index].AllocatedDisk += replica.DiskMB
+				workingCandidates[index].ServerCount++
+			}
+		}
 		result.Placements = append(result.Placements, *placement)
 	}
 	return result, nil
@@ -90,9 +115,10 @@ func (e *Engine) placeSingleReplica(ctx context.Context, candidates []Candidate,
 	}
 
 	constraintFiltered, _ := e.checker.FilterByConstraints(filtered, req.Constraints, req.ConstraintCtx)
-	if len(constraintFiltered) > 0 {
-		filtered = constraintFiltered
+	if len(constraintFiltered) == 0 {
+		return nil, fmt.Errorf("no candidates satisfy replica constraints")
 	}
+	filtered = constraintFiltered
 
 	var results []scoredPlacement
 	for _, c := range filtered {
@@ -143,13 +169,13 @@ func (e *Engine) scoreReplicaCandidate(ctx context.Context, c Candidate, replica
 
 	count := c.ServerCount + usedNodeCount[c.NodeID]
 	if count > 0 {
-		spreadPenalty := float64(count) * 1e8
+		spreadPenalty := float64(count) * 0.1
 		score -= spreadPenalty
 		reasons = append(reasons, fmt.Sprintf("anti-affinity spread penalty: -%.0f (%d instances)", spreadPenalty, count))
 	}
 
 	if req.PreferredNode != "" && c.NodeID == req.PreferredNode {
-		score += 1e9
+		score += 1
 		reasons = append(reasons, "preferred node bonus")
 	}
 
@@ -178,12 +204,14 @@ func (e *Engine) buildPlacement(c Candidate, replica ReplicaSpec, constraints []
 }
 
 func filterByRuntime(candidates []Candidate, runtimeProvider string) []Candidate {
-	if runtimeProvider == "" || runtimeProvider == "docker" {
+	if runtimeProvider == "" {
 		return candidates
 	}
 	var filtered []Candidate
 	for _, c := range candidates {
-		filtered = append(filtered, c)
+		if strings.EqualFold(c.RuntimeProvider, runtimeProvider) || (c.RuntimeProvider == "" && strings.EqualFold(runtimeProvider, "docker")) {
+			filtered = append(filtered, c)
+		}
 	}
 	return filtered
 }
@@ -196,7 +224,7 @@ func ExplainReplicaPlacement(ctx context.Context, engine *Engine, candidates []C
 	}
 	for _, replica := range req.Replicas {
 		exp := ReplicaPlacementExplanation{
-			Index:     replica.Index,
+			Index:      replica.Index,
 			Candidates: make([]CandidateExplanation, 0),
 		}
 		filtered := filterByRuntime(candidates, replica.RuntimeProvider)
@@ -225,14 +253,24 @@ func ExplainReplicaPlacement(ctx context.Context, engine *Engine, candidates []C
 			}
 			exp.Candidates = append(exp.Candidates, ce)
 		}
-		usedNodeCount[filtered[0].NodeID]++
+		var selected *CandidateExplanation
+		for i := range exp.Candidates {
+			candidate := &exp.Candidates[i]
+			if candidate.Rejected || (selected != nil && candidate.Score <= selected.Score) {
+				continue
+			}
+			selected = candidate
+		}
+		if selected != nil {
+			usedNodeCount[selected.NodeID]++
+		}
 		explanations = append(explanations, exp)
 	}
 	return explanations
 }
 
 type ReplicaPlacementExplanation struct {
-	Index     int                  `json:"index"`
+	Index      int                    `json:"index"`
 	Candidates []CandidateExplanation `json:"candidates"`
 }
 

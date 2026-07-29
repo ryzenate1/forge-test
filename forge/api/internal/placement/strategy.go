@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"sync"
+	"time"
 )
 
 type Strategy string
@@ -38,6 +40,7 @@ type Candidate struct {
 	Draining        bool
 	Status          string
 	StorageLocality string
+	RuntimeProvider string
 }
 
 type WorkloadRequest struct {
@@ -67,17 +70,31 @@ func NewScorer(strategy Strategy) Scorer {
 		return &SpreadScorer{}
 	case StrategyRandom:
 		return NewRandomScorer()
-	default:
+	case "", StrategyLeastLoaded:
 		return &LeastLoadedScorer{}
+	default:
+		return invalidScorer{strategy: strategy}
 	}
+}
+
+type invalidScorer struct{ strategy Strategy }
+
+func (s invalidScorer) Name() string { return string(s.strategy) }
+func (s invalidScorer) Score(context.Context, Candidate, WorkloadRequest) (float64, []string, error) {
+	return 0, nil, fmt.Errorf("unknown placement strategy %q", s.strategy)
 }
 
 type LeastLoadedScorer struct{}
 
 func (s *LeastLoadedScorer) Name() string { return string(StrategyLeastLoaded) }
 
-func (s *LeastLoadedScorer) Score(_ context.Context, candidate Candidate, _ WorkloadRequest) (float64, []string, error) {
-	score := float64(candidate.AvailableMemory)*1e9 + float64(candidate.AvailableCPU)*1e3 + float64(candidate.AvailableDisk)
+func (s *LeastLoadedScorer) Score(_ context.Context, candidate Candidate, request WorkloadRequest) (float64, []string, error) {
+	if err := ensureCapacity(candidate, request); err != nil {
+		return 0, nil, err
+	}
+	score := availableRatio(candidate.AvailableMemory, candidate.TotalMemory) +
+		availableRatio(candidate.AvailableCPU, candidate.TotalCPU) +
+		availableRatio(candidate.AvailableDisk, candidate.TotalDisk)
 	reasons := []string{
 		fmt.Sprintf("available memory: %d MB", candidate.AvailableMemory),
 		fmt.Sprintf("available CPU: %d shares", candidate.AvailableCPU),
@@ -90,7 +107,10 @@ type BinPackScorer struct{}
 
 func (s *BinPackScorer) Name() string { return string(StrategyBinPack) }
 
-func (s *BinPackScorer) Score(_ context.Context, candidate Candidate, _ WorkloadRequest) (float64, []string, error) {
+func (s *BinPackScorer) Score(_ context.Context, candidate Candidate, request WorkloadRequest) (float64, []string, error) {
+	if err := ensureCapacity(candidate, request); err != nil {
+		return 0, nil, err
+	}
 	var memUtil, cpuUtil, diskUtil float64
 	if candidate.TotalMemory > 0 {
 		memUtil = float64(candidate.AllocatedMemory) / float64(candidate.TotalMemory)
@@ -114,7 +134,10 @@ type SpreadScorer struct{}
 
 func (s *SpreadScorer) Name() string { return string(StrategySpread) }
 
-func (s *SpreadScorer) Score(_ context.Context, candidate Candidate, _ WorkloadRequest) (float64, []string, error) {
+func (s *SpreadScorer) Score(_ context.Context, candidate Candidate, request WorkloadRequest) (float64, []string, error) {
+	if err := ensureCapacity(candidate, request); err != nil {
+		return 0, nil, err
+	}
 	score := 1.0 / (1.0 + float64(candidate.ServerCount))
 	reasons := []string{
 		fmt.Sprintf("server count: %d", candidate.ServerCount),
@@ -124,21 +147,44 @@ func (s *SpreadScorer) Score(_ context.Context, candidate Candidate, _ WorkloadR
 }
 
 type RandomScorer struct {
+	mu  sync.Mutex
 	rng *rand.Rand
 }
 
 func NewRandomScorer() *RandomScorer {
 	return &RandomScorer{
-		rng: rand.New(rand.NewSource(42)),
+		rng: rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
 func (s *RandomScorer) Name() string { return string(StrategyRandom) }
 
-func (s *RandomScorer) Score(_ context.Context, candidate Candidate, _ WorkloadRequest) (float64, []string, error) {
+func (s *RandomScorer) Score(_ context.Context, candidate Candidate, request WorkloadRequest) (float64, []string, error) {
+	if err := ensureCapacity(candidate, request); err != nil {
+		return 0, nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	score := s.rng.Float64()
 	reasons := []string{
 		fmt.Sprintf("random score: %.4f", score),
 	}
 	return score, reasons, nil
+}
+
+func ensureCapacity(candidate Candidate, request WorkloadRequest) error {
+	if request.CPU < 0 || request.MemoryMB < 0 || request.DiskMB < 0 {
+		return fmt.Errorf("workload resources must not be negative")
+	}
+	if request.CPU > candidate.AvailableCPU || request.MemoryMB > candidate.AvailableMemory || request.DiskMB > candidate.AvailableDisk {
+		return fmt.Errorf("candidate %s does not have enough capacity", candidate.NodeID)
+	}
+	return nil
+}
+
+func availableRatio(available, total int) float64 {
+	if total <= 0 {
+		return float64(available)
+	}
+	return float64(available) / float64(total)
 }

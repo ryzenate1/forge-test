@@ -23,14 +23,19 @@ func (s *Service) CheckHealth(ctx context.Context, deployment *Deployment) (*Hea
 		return &HealthCheckResult{Passed: false, Error: err.Error()}, nil
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return &HealthCheckResult{Passed: false, Error: err.Error()}, nil
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	passed := resp.StatusCode >= 200 && resp.StatusCode < 400
 
 	return &HealthCheckResult{

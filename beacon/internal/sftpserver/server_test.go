@@ -224,11 +224,12 @@ func TestHandlerSetstatIsExplicitlyUnsupported(t *testing.T) {
 
 func TestLoadOrCreateHostKeyPersistsKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".sftp", "id_ed25519")
-	first, err := loadOrCreateHostKey(path)
+	passphrase := []byte("test-passphrase-with-enough-entropy")
+	first, err := loadOrCreateHostKey(path, passphrase)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := loadOrCreateHostKey(path)
+	second, err := loadOrCreateHostKey(path, passphrase)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +275,11 @@ func startTestSFTP(t *testing.T, suspended *atomic.Bool, publicKey string, regis
 	}))
 	t.Cleanup(panel.Close)
 	ctx, cancel := context.WithCancel(context.Background())
-	server := &Server{Addr: "127.0.0.1:0", DataDir: t.TempDir(), PanelAPIURL: panel.URL, NodeToken: "token", HTTPClient: panel.Client(), IdleTimeout: idle, Sessions: registry, Activity: activity}
+	server := &Server{
+		Addr: "127.0.0.1:0", DataDir: t.TempDir(), PanelAPIURL: panel.URL, NodeToken: "token",
+		HTTPClient: panel.Client(), IdleTimeout: idle, Sessions: registry, Activity: activity,
+		HostKeyPassphrase: "test-passphrase-with-enough-entropy",
+	}
 	done := make(chan error, 1)
 	go func() { done <- server.Run(ctx) }()
 	deadline := time.Now().Add(3 * time.Second)

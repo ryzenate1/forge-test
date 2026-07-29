@@ -21,19 +21,19 @@ type gatewayAdapter interface {
 }
 
 type IngressSynchronizer struct {
-	adapter     gatewayAdapter
-	resolver    *Resolver
-	health      *HealthFilter
-	publisher   events.Publisher
-	mu          sync.RWMutex
-	rules       map[string]*trafficmanager.RoutingRule
-	policies    map[string]*trafficmanager.TrafficPolicy
-	tracking    map[string]RouteGenerationRecord
-	lastSync    time.Time
-	syncCount   int
-	errCount    int
-	running     bool
-	cancel      context.CancelFunc
+	adapter   gatewayAdapter
+	resolver  *Resolver
+	health    *HealthFilter
+	publisher events.Publisher
+	mu        sync.RWMutex
+	rules     map[string]*trafficmanager.RoutingRule
+	policies  map[string]*trafficmanager.TrafficPolicy
+	tracking  map[string]RouteGenerationRecord
+	lastSync  time.Time
+	syncCount int
+	errCount  int
+	running   bool
+	cancel    context.CancelFunc
 }
 
 func NewIngressSynchronizer(adapter gatewayAdapter, resolver *Resolver, health *HealthFilter, publishers ...events.Publisher) *IngressSynchronizer {
@@ -122,9 +122,9 @@ func (is *IngressSynchronizer) Sync(ctx context.Context) error {
 		healthyBackends := is.health.FilterHealthy(backends)
 
 		if len(healthyBackends) == 0 {
-			slog.Warn("no healthy backends for route, using all backends",
+			slog.Warn("no healthy backends for route; route omitted",
 				"domain", key.Domain, "path", key.Path)
-			healthyBackends = backends
+			continue
 		}
 
 		primary := grp.Rules[0]
@@ -179,9 +179,9 @@ func (is *IngressSynchronizer) Sync(ctx context.Context) error {
 			"ingress",
 			"",
 			map[string]any{
-				"routes":     len(mergedRules),
-				"groups":     len(groups),
-				"syncCount":  is.syncCount,
+				"routes":    len(mergedRules),
+				"groups":    len(groups),
+				"syncCount": is.syncCount,
 			},
 		))
 	}

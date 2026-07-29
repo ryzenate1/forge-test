@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -14,15 +15,15 @@ type PeriodicSchedule interface {
 type PeriodicJobConstructor func() (JobType, any, *Job)
 
 type PeriodicJob struct {
-	constructor   PeriodicJobConstructor
-	id            string
-	schedule      PeriodicSchedule
-	runOnStart    bool
-	nextRun       time.Time
+	constructor PeriodicJobConstructor
+	id          string
+	schedule    PeriodicSchedule
+	runOnStart  bool
+	nextRun     time.Time
 }
 
 type PeriodicJobOpts struct {
-	ID        string
+	ID         string
 	RunOnStart bool
 }
 
@@ -109,13 +110,14 @@ func (s *PeriodicJobScheduler) tick(ctx context.Context, now time.Time) {
 			}
 		}
 		if !now.Before(j.nextRun) {
-			go s.execute(ctx, j)
+			scheduledFor := j.nextRun
+			go s.execute(ctx, j, scheduledFor)
 			j.nextRun = j.schedule.Next(now)
 		}
 	}
 }
 
-func (s *PeriodicJobScheduler) execute(ctx context.Context, job *PeriodicJob) {
+func (s *PeriodicJobScheduler) execute(ctx context.Context, job *PeriodicJob, scheduledFor time.Time) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("periodic job panic recovered", "id", job.id, "panic", r)
@@ -129,7 +131,8 @@ func (s *PeriodicJobScheduler) execute(ctx context.Context, job *PeriodicJob) {
 	if dispatchOpts == nil {
 		dispatchOpts = &Job{}
 	}
-	_, err := s.service.DispatchIdempotent(ctx, "", jobType, dispatchOpts.ServerID, dispatchOpts.NodeID, payload, dispatchOpts.Priority)
+	idempotencyKey := fmt.Sprintf("periodic:%s:%s", job.id, scheduledFor.UTC().Format(time.RFC3339Nano))
+	_, err := s.service.DispatchIdempotent(ctx, idempotencyKey, jobType, dispatchOpts.ServerID, dispatchOpts.NodeID, payload, dispatchOpts.Priority)
 	if err != nil {
 		slog.Error("periodic job dispatch failed", "id", job.id, "type", jobType, "error", err)
 	}

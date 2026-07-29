@@ -389,7 +389,7 @@ func (p *TraefikReverseProxy) SetCertificate(ctx context.Context, cert CertConfi
 		return fmt.Errorf("marshal tls config: %w", err)
 	}
 
-	if err := os.WriteFile(tlsPath, out, 0644); err != nil {
+	if err := os.WriteFile(tlsPath, out, 0600); err != nil {
 		return fmt.Errorf("write tls config: %w", err)
 	}
 
@@ -427,7 +427,7 @@ func (p *TraefikReverseProxy) RemoveCertificate(ctx context.Context, domains []s
 		return fmt.Errorf("marshal tls config: %w", err)
 	}
 
-	if err := os.WriteFile(tlsPath, out, 0644); err != nil {
+	if err := os.WriteFile(tlsPath, out, 0600); err != nil {
 		return fmt.Errorf("write tls config: %w", err)
 	}
 
@@ -461,7 +461,7 @@ func (p *TraefikReverseProxy) Rollback(ctx context.Context) error {
 		return nil
 	}
 
-	if err := os.WriteFile(activePath, data, 0644); err != nil {
+	if err := os.WriteFile(activePath, data, 0600); err != nil {
 		return fmt.Errorf("rollback write: %w", err)
 	}
 
@@ -1047,7 +1047,7 @@ func (p *TraefikReverseProxy) writeConfig(cfg *TraefikFileConfig) error {
 	backupPath := filepath.Join(p.configDir, "routes.backup.yml")
 
 	if input, err := os.ReadFile(configPath); err == nil {
-		_ = os.WriteFile(backupPath, input, 0644)
+		_ = os.WriteFile(backupPath, input, 0600)
 	}
 
 	out, err := yaml.Marshal(cfg)
@@ -1055,7 +1055,7 @@ func (p *TraefikReverseProxy) writeConfig(cfg *TraefikFileConfig) error {
 		return fmt.Errorf("marshal traefik config: %w", err)
 	}
 
-	if err := os.WriteFile(configPath, out, 0644); err != nil {
+	if err := os.WriteFile(configPath, out, 0600); err != nil {
 		return fmt.Errorf("write config file: %w", err)
 	}
 
@@ -1094,7 +1094,7 @@ func (p *TraefikReverseProxy) restorePreviousConfig(cfg *TraefikFileConfig) erro
 	}
 
 	configPath := filepath.Join(p.configDir, "routes.yml")
-	return os.WriteFile(configPath, out, 0644)
+	return os.WriteFile(configPath, out, 0600)
 }
 
 type TraefikFileTLSConfig struct {
@@ -1124,7 +1124,7 @@ func (p *TraefikReverseProxy) loadTLSConfig(tlsPath string) TraefikFileTLSConfig
 func (p *TraefikReverseProxy) writeConfigWithBackup(data []byte) error {
 	configPath := filepath.Join(p.configDir, "routes.yml")
 
-	if err := os.WriteFile(configPath, data, 0644); err != nil {
+	if err := os.WriteFile(configPath, data, 0600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 

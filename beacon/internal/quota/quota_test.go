@@ -14,11 +14,11 @@ func TestNoopTrackerReturnsErrNoQuota(t *testing.T) {
 	}
 }
 
-func TestNoopTrackerEnforceReturnsNil(t *testing.T) {
+func TestNoopTrackerEnforceFailsClosedWhenQuotaRequested(t *testing.T) {
 	tracker := NoopTracker{}
 	err := tracker.Enforce(context.Background(), "/tmp", 100, 50, 200)
-	if err != nil {
-		t.Fatalf("expected nil, got %v", err)
+	if !errors.Is(err, ErrNoQuota) {
+		t.Fatalf("expected ErrNoQuota, got %v", err)
 	}
 }
 

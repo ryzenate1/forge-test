@@ -47,22 +47,22 @@ export interface ProcessEntry {
   state: string;
 }
 
-export function fetchHostInfo(): Promise<HostInfo> {
-  return fetchJSON<HostInfo>('/host/info');
+export function fetchHostInfo(init?: RequestInit): Promise<HostInfo> {
+  return fetchJSON<HostInfo>('/host/info', init);
 }
 
-export function fetchHostDisk(): Promise<DiskPartition[]> {
-  return fetchJSON<DiskPartition[]>('/host/disk');
+export function fetchHostDisk(init?: RequestInit): Promise<DiskPartition[]> {
+  return fetchJSON<DiskPartition[]>('/host/disk', init);
 }
 
-export function fetchHostMemory(): Promise<MemoryInfo> {
-  return fetchJSON<MemoryInfo>('/host/memory');
+export function fetchHostMemory(init?: RequestInit): Promise<MemoryInfo> {
+  return fetchJSON<MemoryInfo>('/host/memory', init);
 }
 
-export function fetchHostNetwork(): Promise<NetworkInterface[]> {
-  return fetchJSON<NetworkInterface[]>('/host/network');
+export function fetchHostNetwork(init?: RequestInit): Promise<NetworkInterface[]> {
+  return fetchJSON<NetworkInterface[]>('/host/network', init);
 }
 
-export function fetchHostProcesses(): Promise<ProcessEntry[]> {
-  return fetchJSON<ProcessEntry[]>('/host/processes');
+export function fetchHostProcesses(init?: RequestInit): Promise<ProcessEntry[]> {
+  return fetchJSON<ProcessEntry[]>('/host/processes', init);
 }

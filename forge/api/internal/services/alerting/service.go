@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	notificationsvc "gamepanel/forge/internal/services/notifications"
 	"gamepanel/forge/internal/store"
 )
 
@@ -44,20 +48,22 @@ var DefaultThresholds = ThresholdConfig{
 }
 
 type Service struct {
-	store      Store
-	thresholds ThresholdConfig
-	notifier   *Notifier
-	logger     *slog.Logger
-	mu         sync.RWMutex
-	routes     []store.NotificationRoute
+	store         Store
+	thresholds    ThresholdConfig
+	notifier      *Notifier
+	logger        *slog.Logger
+	mu            sync.RWMutex
+	routes        []store.NotificationRoute
+	dispatchSlots chan struct{}
 }
 
 func New(s Store, thresholds ThresholdConfig, logger *slog.Logger) *Service {
 	svc := &Service{
-		store:      s,
-		thresholds: thresholds,
-		notifier:   NewNotifier(&http.Client{Timeout: 10 * time.Second}, logger),
-		logger:     logger,
+		store:         s,
+		thresholds:    thresholds,
+		notifier:      NewNotifier(&http.Client{Timeout: 10 * time.Second}, logger),
+		logger:        logger,
+		dispatchSlots: make(chan struct{}, 16),
 	}
 	return svc
 }
@@ -195,7 +201,18 @@ func (svc *Service) evaluateAndAlert(ctx context.Context, nodeID, serverID, aler
 		return err
 	}
 
-	go svc.dispatchNotifications(context.Background(), alert)
+	dispatchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	select {
+	case svc.dispatchSlots <- struct{}{}:
+		go func() {
+			defer cancel()
+			defer func() { <-svc.dispatchSlots }()
+			svc.dispatchNotifications(dispatchCtx, alert)
+		}()
+	case <-dispatchCtx.Done():
+		cancel()
+		svc.logger.Error("notification dispatch capacity exhausted", "alert", alert.ID)
+	}
 	return nil
 }
 
@@ -251,12 +268,10 @@ func (svc *Service) dispatchNotifications(ctx context.Context, alert store.Alert
 			continue
 		}
 
-		go func(r store.NotificationRoute) {
-			if err := svc.notifier.Send(ctx, r, alert); err != nil {
-				svc.logger.Error("notification dispatch failed",
-					"route", r.Name, "channel", r.ChannelType, "alert", alert.ID, "error", err)
-			}
-		}(route)
+		if err := svc.notifier.Send(ctx, route, alert); err != nil {
+			svc.logger.Error("notification dispatch failed",
+				"route", route.Name, "channel", route.ChannelType, "alert", alert.ID, "error", err)
+		}
 	}
 }
 
@@ -281,6 +296,7 @@ func NewNotifier(client *http.Client, logger *slog.Logger) *Notifier {
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	return &Notifier{client: client, logger: logger}
 }
 
@@ -353,27 +369,49 @@ func (n *Notifier) sendTelegram(ctx context.Context, config map[string]any, aler
 	if botToken == "" || chatID == "" {
 		return fmt.Errorf("telegram bot_token and chat_id required")
 	}
-	text := fmt.Sprintf("*%s* [%s]\n%s", alert.Title, strings.ToUpper(string(alert.Severity)), alert.Message)
+	text := fmt.Sprintf("%s [%s]\n%s", alert.Title, strings.ToUpper(string(alert.Severity)), alert.Message)
 	if len(alert.Details) > 0 {
 		details, _ := json.MarshalIndent(alert.Details, "", "  ")
-		text += "\n\n```json\n" + string(details) + "\n```"
+		text += "\n\n" + string(details)
 	}
 	payload := map[string]any{
-		"chat_id":    chatID,
-		"text":       text,
-		"parse_mode": "Markdown",
+		"chat_id": chatID,
+		"text":    text,
 	}
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", botToken)
 	return n.postJSON(ctx, apiURL, payload)
 }
 
 func (n *Notifier) sendEmail(ctx context.Context, config map[string]any, alert store.Alert) error {
-	recipients, _ := config["recipients"].([]any)
+	recipientsRaw, _ := config["recipients"].([]any)
+	recipients := make([]string, 0, len(recipientsRaw))
+	for _, raw := range recipientsRaw {
+		if recipient, ok := raw.(string); ok {
+			recipients = append(recipients, recipient)
+		}
+	}
 	if len(recipients) == 0 {
 		return fmt.Errorf("email recipients not configured")
 	}
-	_ = recipients
-	return nil
+	port := 0
+	if raw, ok := config["smtp_port"].(float64); ok {
+		port = int(raw)
+	}
+	emailer := notificationsvc.NewEmailService(notificationsvc.EmailConfig{
+		SMTPHost:     stringConfig(config, "smtp_host"),
+		SMTPPort:     port,
+		SMTPUsername: stringConfig(config, "smtp_username"),
+		SMTPPassword: stringConfig(config, "smtp_password"),
+		FromAddress:  stringConfig(config, "from_address"),
+		FromName:     stringConfig(config, "from_name"),
+		UseTLS:       boolConfig(config, "use_tls"),
+		UseSSL:       boolConfig(config, "use_ssl"),
+	})
+	return emailer.Send(ctx, notificationsvc.EmailMessage{
+		To:      recipients,
+		Subject: alert.Title,
+		Body:    alert.Message,
+	})
 }
 
 func (n *Notifier) sendWebhook(ctx context.Context, config map[string]any, alert store.Alert) error {
@@ -402,6 +440,9 @@ func (n *Notifier) postJSON(ctx context.Context, url string, payload any) error 
 }
 
 func (n *Notifier) postJSONWithHeaders(ctx context.Context, url string, payload any, headers map[string]any) error {
+	if err := validateNotificationURL(url); err != nil {
+		return err
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -413,16 +454,48 @@ func (n *Notifier) postJSONWithHeaders(ctx context.Context, url string, payload 
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
 		if s, ok := v.(string); ok {
+			switch strings.ToLower(strings.TrimSpace(k)) {
+			case "host", "content-length", "connection", "transfer-encoding":
+				continue
+			}
 			req.Header.Set(k, s)
 		}
 	}
 	resp, err := n.client.Do(req)
 	if err != nil {
-		return err
+		return errors.New("notification request failed")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("notification returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func stringConfig(config map[string]any, key string) string {
+	value, _ := config[key].(string)
+	return value
+}
+
+func boolConfig(config map[string]any, key string) bool {
+	value, _ := config[key].(bool)
+	return value
+}
+
+func validateNotificationURL(rawURL string) error {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
+		return errors.New("notification URL must be an absolute HTTPS URL")
+	}
+	addresses, err := net.LookupIP(parsed.Hostname())
+	if err != nil || len(addresses) == 0 {
+		return errors.New("notification host does not resolve")
+	}
+	for _, address := range addresses {
+		if address.IsPrivate() || address.IsLoopback() || address.IsUnspecified() ||
+			address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() {
+			return errors.New("notification URL resolves to a non-public address")
+		}
 	}
 	return nil
 }

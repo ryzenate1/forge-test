@@ -15,6 +15,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -29,11 +30,12 @@ import (
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/time/rate"
 )
 
 // Username validation regex (format: username.server_id)
 // This prevents unnecessary database/API connection scans by failing fast
-var validUsernameRegexp = regexp.MustCompile(`^(?i)(.+)\.([a-z0-9-]{8,36})$`)
+var validUsernameRegexp = regexp.MustCompile(`^(?i)([a-z0-9_.@-]{1,128})\.([a-z0-9-]{8,36})$`)
 
 type AuthResult struct {
 	UserID      string   `json:"user"`
@@ -58,6 +60,8 @@ type Server struct {
 	IdleTimeout        time.Duration
 	MaxConnections     int
 	MaxSessionsPerUser int
+	MaxSessionLifetime time.Duration
+	HostKeyPassphrase  string
 	Activity           *system.ActivityDedup
 	Sessions           SessionRegistry
 
@@ -68,6 +72,13 @@ type Server struct {
 	listener     net.Listener
 	active       map[net.Conn]struct{}
 	wg           sync.WaitGroup
+	authMu       sync.Mutex
+	authLimiters map[string]*authVisitor
+}
+
+type authVisitor struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -86,11 +97,22 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.MaxSessionsPerUser <= 0 {
 		s.MaxSessionsPerUser = 8
 	}
-	signer, err := loadOrCreateHostKey(filepath.Join(s.DataDir, ".sftp", "id_ed25519"))
+	if s.MaxSessionLifetime <= 0 {
+		s.MaxSessionLifetime = 24 * time.Hour
+	}
+	signer, err := loadOrCreateHostKey(filepath.Join(s.DataDir, ".sftp", "id_ed25519"), []byte(s.HostKeyPassphrase))
 	if err != nil {
 		return err
 	}
-	config := &ssh.ServerConfig{PasswordCallback: s.passwordCallback, PublicKeyCallback: s.publicKeyCallback}
+	config := &ssh.ServerConfig{
+		PasswordCallback:  s.passwordCallback,
+		PublicKeyCallback: s.publicKeyCallback,
+		Config: ssh.Config{
+			KeyExchanges: []string{"curve25519-sha256", "ecdh-sha2-nistp256", "diffie-hellman-group16-sha512"},
+			Ciphers:      []string{"chacha20-poly1305@openssh.com", "aes256-gcm@openssh.com", "aes128-gcm@openssh.com"},
+			MACs:         []string{"hmac-sha2-512-etm@openssh.com", "hmac-sha2-256-etm@openssh.com"},
+		},
+	}
 	config.AddHostKey(signer)
 	listener, err := net.Listen("tcp", s.Addr)
 	if err != nil {
@@ -119,7 +141,7 @@ func (s *Server) Run(ctx context.Context) error {
 			_ = raw.Close()
 			continue
 		}
-		conn := &idleConn{Conn: raw, timeout: s.IdleTimeout}
+		conn := &idleConn{Conn: raw, timeout: s.IdleTimeout, absoluteDeadline: time.Now().Add(s.MaxSessionLifetime)}
 		s.wg.Add(1)
 		go func() { defer s.wg.Done(); defer s.releaseConnection(raw); s.handleConn(conn, config) }()
 	}
@@ -181,6 +203,12 @@ func (s *Server) releaseUser(user string) {
 }
 
 func (s *Server) passwordCallback(meta ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
+	if !s.allowAuthentication(remoteIP(meta.RemoteAddr())) {
+		return nil, errors.New("too many authentication attempts")
+	}
+	if !validUsernameRegexp.MatchString(meta.User()) {
+		return nil, errors.New("invalid username format")
+	}
 	result, err := s.authenticateCredential(meta.User(), "password", string(password), remoteIP(meta.RemoteAddr()))
 	if err != nil {
 		return nil, err
@@ -189,6 +217,12 @@ func (s *Server) passwordCallback(meta ssh.ConnMetadata, password []byte) (*ssh.
 }
 
 func (s *Server) publicKeyCallback(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+	if !s.allowAuthentication(remoteIP(meta.RemoteAddr())) {
+		return nil, errors.New("too many authentication attempts")
+	}
+	if !validUsernameRegexp.MatchString(meta.User()) {
+		return nil, errors.New("invalid username format")
+	}
 	encoded := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
 	result, err := s.authenticateCredential(meta.User(), "public_key", encoded, remoteIP(meta.RemoteAddr()))
 	if err != nil {
@@ -220,9 +254,21 @@ func (s *Server) authRequest(payload map[string]string) (AuthResult, error) {
 	if s.PanelAPIURL == "" || s.NodeToken == "" {
 		return AuthResult{}, errors.New("sftp panel auth is not configured")
 	}
+	panelURL, err := url.Parse(s.PanelAPIURL)
+	if err != nil || panelURL.Hostname() == "" {
+		return AuthResult{}, errors.New("sftp panel URL is invalid")
+	}
+	if panelURL.Scheme != "https" {
+		hostIP := net.ParseIP(panelURL.Hostname())
+		if panelURL.Hostname() != "localhost" && (hostIP == nil || !hostIP.IsLoopback()) {
+			return AuthResult{}, errors.New("sftp panel authentication requires HTTPS")
+		}
+	}
 	body, _ := json.Marshal(payload)
 	base := strings.TrimSuffix(strings.TrimSuffix(strings.TrimRight(s.PanelAPIURL, "/"), "/api/remote"), "/api/v1")
-	req, err := http.NewRequest(http.MethodPost, base+"/api/remote/sftp/auth", bytes.NewReader(body))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/remote/sftp/auth", bytes.NewReader(body))
 	if err != nil {
 		return AuthResult{}, err
 	}
@@ -250,6 +296,32 @@ func (s *Server) authRequest(payload map[string]string) (AuthResult, error) {
 	return result, nil
 }
 
+func (s *Server) allowAuthentication(ip string) bool {
+	now := time.Now()
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	if s.authLimiters == nil {
+		s.authLimiters = make(map[string]*authVisitor)
+	}
+	if visitor := s.authLimiters[ip]; visitor != nil {
+		visitor.lastSeen = now
+		return visitor.limiter.Allow()
+	}
+	if len(s.authLimiters) >= 10_000 {
+		for candidate, visitor := range s.authLimiters {
+			if now.Sub(visitor.lastSeen) > 15*time.Minute {
+				delete(s.authLimiters, candidate)
+			}
+		}
+		if len(s.authLimiters) >= 10_000 {
+			return false
+		}
+	}
+	visitor := &authVisitor{limiter: rate.NewLimiter(rate.Every(5*time.Second), 5), lastSeen: now}
+	s.authLimiters[ip] = visitor
+	return visitor.limiter.Allow()
+}
+
 func (s *Server) handleConn(raw net.Conn, config *ssh.ServerConfig) {
 	conn, channels, requests, err := ssh.NewServerConn(raw, config)
 	if err != nil {
@@ -258,14 +330,14 @@ func (s *Server) handleConn(raw net.Conn, config *ssh.ServerConfig) {
 	}
 	defer conn.Close()
 	go ssh.DiscardRequests(requests)
-	
+
 	// Validate username format before making remote requests (security best practice)
 	username := conn.User()
 	if !validUsernameRegexp.MatchString(username) {
 		log.Printf("SFTP: rejected invalid username format: %s from %s", username, raw.RemoteAddr())
 		return
 	}
-	
+
 	userID, serverID := conn.Permissions.Extensions["user"], conn.Permissions.Extensions["server"]
 	if !s.acquireUser(userID) {
 		return
@@ -321,7 +393,8 @@ func (s *Server) handleChannel(conn *ssh.ServerConn, accepted ssh.Channel, reque
 			diskMB = fresh.DiskLimitMB
 		}
 		lockValue, _ := s.writeLocks.LoadOrStore(serverID, &sync.Mutex{})
-		h := &handler{root: filepath.Join(s.DataDir, serverID), fsys: fsys, permissions: fresh.Permissions, readOnly: s.ReadOnly || fresh.ReadOnly, quotaBytes: server.MbToBytes(diskMB), writeLock: lockValue.(*sync.Mutex), activity: s.Activity, serverID: serverID, userID: userID, ip: remoteIP(conn.RemoteAddr()), client: sanitizeClient(conn.ClientVersion()), sessionID: sessionID(conn)}
+		writeLock, _ := lockValue.(*sync.Mutex)
+		h := &handler{root: filepath.Join(s.DataDir, serverID), fsys: fsys, permissions: fresh.Permissions, readOnly: s.ReadOnly || fresh.ReadOnly, quotaBytes: server.MbToBytes(diskMB), writeLock: writeLock, activity: s.Activity, serverID: serverID, userID: userID, ip: remoteIP(conn.RemoteAddr()), client: sanitizeClient(conn.ClientVersion()), sessionID: sessionID(conn)}
 		requestServer := sftp.NewRequestServer(accepted, h.handlers())
 		_ = requestServer.Serve()
 		_ = requestServer.Close()
@@ -345,24 +418,75 @@ func parseInt64(value string) (int64, error) {
 	_, err := fmt.Sscan(value, &n)
 	return n, err
 }
-func loadOrCreateHostKey(path string) (ssh.Signer, error) {
-	if body, err := os.ReadFile(path); err == nil {
-		return ssh.ParsePrivateKey(body)
+func loadOrCreateHostKey(path string, passphrase []byte) (ssh.Signer, error) {
+	if len(passphrase) < 16 {
+		return nil, errors.New("SFTP host-key passphrase must contain at least 16 bytes")
+	}
+	body, readErr := os.ReadFile(path)
+	if readErr == nil {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			return nil, statErr
+		}
+		if info.Mode().Perm()&0o077 != 0 {
+			return nil, errors.New("SFTP host key permissions must be 0600 or stricter")
+		}
+		signer, parseErr := ssh.ParsePrivateKeyWithPassphrase(body, passphrase)
+		if parseErr != nil {
+			if _, unencryptedErr := ssh.ParsePrivateKey(body); unencryptedErr == nil {
+				return nil, errors.New("existing SFTP host key is unencrypted; move it aside so Beacon can create an encrypted key")
+			}
+			return nil, parseErr
+		}
+		return signer, nil
+	}
+	if !errors.Is(readErr, os.ErrNotExist) {
+		return nil, readErr
 	}
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
 	}
-	block, err := ssh.MarshalPrivateKey(privateKey, "")
+	block, err := ssh.MarshalPrivateKeyWithPassphrase(privateKey, "", passphrase)
 	if err != nil {
 		return nil, err
 	}
-	body := pem.EncodeToMemory(block)
+	body = pem.EncodeToMemory(block)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(path, body, 0o600); err != nil {
+	temp, err := os.CreateTemp(filepath.Dir(path), ".id_ed25519.tmp-*")
+	if err != nil {
 		return nil, err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return nil, err
+	}
+	if _, err := temp.Write(body); err != nil {
+		_ = temp.Close()
+		return nil, err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return nil, err
+	}
+	if err := temp.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return nil, err
+	}
+	parent, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	syncErr := parent.Sync()
+	_ = parent.Close()
+	if syncErr != nil {
+		return nil, syncErr
 	}
 	return ssh.NewSignerFromKey(privateKey)
 }
@@ -376,16 +500,25 @@ func remoteIP(addr net.Addr) string {
 
 type idleConn struct {
 	net.Conn
-	timeout time.Duration
+	timeout          time.Duration
+	absoluteDeadline time.Time
 }
 
 func (c *idleConn) Read(p []byte) (int, error) {
-	_ = c.SetDeadline(time.Now().Add(c.timeout))
+	_ = c.SetDeadline(c.nextDeadline())
 	return c.Conn.Read(p)
 }
 func (c *idleConn) Write(p []byte) (int, error) {
-	_ = c.SetDeadline(time.Now().Add(c.timeout))
+	_ = c.SetDeadline(c.nextDeadline())
 	return c.Conn.Write(p)
+}
+
+func (c *idleConn) nextDeadline() time.Time {
+	idleDeadline := time.Now().Add(c.timeout)
+	if !c.absoluteDeadline.IsZero() && c.absoluteDeadline.Before(idleDeadline) {
+		return c.absoluteDeadline
+	}
+	return idleDeadline
 }
 
 type handler struct {

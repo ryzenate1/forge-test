@@ -5,12 +5,12 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-func registerCleanupRoutes(protected fiber.Router, cleanup *cleanupsvc.Service) {
+func registerCleanupRoutes(protected fiber.Router, cleanup *cleanupsvc.Service, mutationLimiter fiber.Handler) {
 	if cleanup == nil {
 		return
 	}
 
-	protected.Post("/cleanup/run", requireRole("admin"), func(c *fiber.Ctx) error {
+	protected.Post("/cleanup/run", mutationLimiter, requireRole("admin"), func(c *fiber.Ctx) error {
 		ctx, cancel := requestContext()
 		defer cancel()
 		info, err := cleanup.RunCleanup(ctx)

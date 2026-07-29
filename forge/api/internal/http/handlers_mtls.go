@@ -15,7 +15,9 @@ func registerMTLSRoutes(protected fiber.Router, cfg Config, certSvc services.MTL
 			Organization string `json:"organization"`
 			CommonName   string `json:"commonName"`
 		}
-		_ = c.BodyParser(&req)
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
 
 		cert, err := certSvc.GenerateCA(c.Context(), req.Organization, req.CommonName)
 		if err != nil {

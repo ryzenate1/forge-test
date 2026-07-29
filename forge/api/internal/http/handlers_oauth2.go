@@ -58,10 +58,10 @@ func IssueOAuth2Token(cfg Config) fiber.Handler {
 				"error_description": "only client_credentials is supported",
 			})
 		}
-	// Authenticate client via HTTP Basic only. Form-based client credentials
-	// are not accepted to avoid exposing secrets in request bodies and logs.
-	clientID, clientSecret, ok := parseBasicAuth(c.Get("Authorization"))
-	if !ok || clientID == "" || clientSecret == "" {
+		// Authenticate client via HTTP Basic only. Form-based client credentials
+		// are not accepted to avoid exposing secrets in request bodies and logs.
+		clientID, clientSecret, ok := parseBasicAuth(c.Get("Authorization"))
+		if !ok || clientID == "" || clientSecret == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error":             "invalid_client",
 				"error_description": "client_id and client_secret are required",
@@ -118,7 +118,7 @@ func IssueOAuth2Token(cfg Config) fiber.Handler {
 			grantedScopes = wanted
 		}
 		// Mint the token. TTL matches the session token TTL.
-		ttl := tokenTTL
+		ttl := configuredTokenTTL(cfg)
 		expiresAt := time.Now().Add(ttl)
 		claims := jwt.MapClaims{
 			"iss":       "forge-panel",

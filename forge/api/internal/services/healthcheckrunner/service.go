@@ -3,10 +3,13 @@ package healthcheckrunner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,19 +53,19 @@ type Target struct {
 }
 
 type TargetHealthState struct {
-	ID                     string
-	GroupID                string
-	ServerID               string
-	Status                 TargetStatus
-	ConsecutiveFailures    int
-	ConsecutiveSuccesses   int
-	SuspectedSince         *time.Time
-	LastCheckAt            time.Time
-	LastSuccessAt          *time.Time
-	LastFailureAt          *time.Time
-	HealthyThreshold       int
-	UnhealthyThreshold     int
-	mu                     sync.Mutex
+	ID                   string
+	GroupID              string
+	ServerID             string
+	Status               TargetStatus
+	ConsecutiveFailures  int
+	ConsecutiveSuccesses int
+	SuspectedSince       *time.Time
+	LastCheckAt          time.Time
+	LastSuccessAt        *time.Time
+	LastFailureAt        *time.Time
+	HealthyThreshold     int
+	UnhealthyThreshold   int
+	mu                   sync.Mutex
 }
 
 type CheckResult struct {
@@ -91,13 +94,13 @@ type storeAdapter interface {
 type OnTargetUnhealthy func(ctx context.Context, serverID string, targetID string, consecutiveFailures int)
 
 type Config struct {
-	Interval        time.Duration
+	Interval         time.Duration
 	HistoryRetention time.Duration
 }
 
 func DefaultConfig() Config {
 	return Config{
-		Interval:        15 * time.Second,
+		Interval:         15 * time.Second,
 		HistoryRetention: 7 * 24 * time.Hour,
 	}
 }
@@ -199,7 +202,9 @@ func (s *Service) loadExistingStates(ctx context.Context) {
 			}
 			var hc HealthCheckConfig
 			if len(g.HealthCheck) > 0 {
-				json.Unmarshal(g.HealthCheck, &hc)
+				if err := json.Unmarshal(g.HealthCheck, &hc); err != nil {
+					continue
+				}
 			}
 			healthyThreshold := hc.HealthyThreshold
 			if healthyThreshold <= 0 {
@@ -237,7 +242,11 @@ func (s *Service) runOnce(ctx context.Context) {
 	s.lastGroups = groups
 	s.mu.Unlock()
 
-	checkCtx, cancel := context.WithTimeout(ctx, s.config.Interval-time.Second)
+	checkTimeout := s.config.Interval - time.Second
+	if checkTimeout <= 0 {
+		checkTimeout = time.Second
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, checkTimeout)
 	defer cancel()
 
 	var wg sync.WaitGroup
@@ -387,7 +396,9 @@ func (s *Service) checkTarget(ctx context.Context, target store.TargetRow, group
 								fmt.Printf("health check onUnhealthy callback panic: %v", r)
 							}
 						}()
-						s.onUnhealthy(ctx, serverID, targetID, failures)
+						callbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+						defer cancel()
+						s.onUnhealthy(callbackCtx, serverID, targetID, failures)
 					}(target.ServerID, target.ID, state.ConsecutiveFailures)
 				}
 			}
@@ -402,7 +413,9 @@ func (s *Service) checkTarget(ctx context.Context, target store.TargetRow, group
 								fmt.Printf("health check onUnhealthy callback panic: %v", r)
 							}
 						}()
-						s.onUnhealthy(ctx, serverID, targetID, failures)
+						callbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+						defer cancel()
+						s.onUnhealthy(callbackCtx, serverID, targetID, failures)
 					}(target.ServerID, target.ID, state.ConsecutiveFailures)
 				}
 			}
@@ -429,20 +442,40 @@ func (s *Service) runHTTPCheck(ctx context.Context, target store.TargetRow, port
 		timeout = 5 * time.Second
 	}
 
-	client := http.Client{Timeout: timeout}
+	targetIP := net.ParseIP(strings.TrimSpace(target.IP))
+	if targetIP == nil || targetIP.IsUnspecified() || targetIP.IsLinkLocalUnicast() || targetIP.IsLinkLocalMulticast() || targetIP.IsMulticast() {
+		result.Status = TargetStatusUnhealthy
+		result.ErrorMessage = "health check target must be a routable configured IP address"
+		return result
+	}
+	if port < 1 || port > 65535 {
+		result.Status = TargetStatusUnhealthy
+		result.ErrorMessage = "health check port is invalid"
+		return result
+	}
 
 	path := hc.Path
 	if path == "" {
 		path = "/"
 	}
+	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") || strings.ContainsAny(path, "\r\n") {
+		result.Status = TargetStatusUnhealthy
+		result.ErrorMessage = "health check path is invalid"
+		return result
+	}
 
-	url := fmt.Sprintf("http://%s:%d%s", target.IP, port, path)
-	if target.IP == "" {
-		url = fmt.Sprintf("http://%s:%d%s", "127.0.0.1", port, path)
+	targetHost := net.JoinHostPort(targetIP.String(), strconv.Itoa(port))
+	checkURL := "http://" + targetHost + path
+	client := http.Client{Timeout: timeout}
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 || req.URL.Host != targetHost {
+			return errors.New("health check redirect escaped configured target")
+		}
+		return nil
 	}
 
 	start := time.Now()
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", checkURL, nil)
 	if err != nil {
 		result.Status = TargetStatusUnhealthy
 		result.ErrorMessage = err.Error()

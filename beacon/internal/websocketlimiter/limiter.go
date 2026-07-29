@@ -29,8 +29,10 @@ func NewLimiterBucket() *LimiterBucket {
 		limits: make(map[Event]*rate.Limiter),
 	}
 	lb.limits[AuthenticationEvent] = rate.NewLimiter(rate.Every(5*time.Second), 2)
+	lb.limits[SetStateEvent] = rate.NewLimiter(rate.Every(time.Second), 4)
 	lb.limits[SendLogsEvent] = rate.NewLimiter(rate.Every(5*time.Second), 2)
 	lb.limits[SendCommandEvent] = rate.NewLimiter(rate.Limit(1), 10)
+	lb.limits[SendStatsEvent] = rate.NewLimiter(rate.Every(time.Second), 4)
 	return lb
 }
 

@@ -1,28 +1,42 @@
 package shutdown
 
-import "time"
+import (
+	"context"
+	"sync"
+	"time"
+)
 
-// ShutdownManager handles graceful shutdown of the application
+// ShutdownManager broadcasts shutdown exactly once. Timeout is used only by
+// WaitContext; Shutdown itself never blocks the initiating goroutine.
 type ShutdownManager struct {
 	done    chan struct{}
 	timeout time.Duration
+	once    sync.Once
 }
 
-// NewShutdownManager creates a new ShutdownManager
 func NewShutdownManager(timeout time.Duration) *ShutdownManager {
-	return &ShutdownManager{
-		done:    make(chan struct{}),
-		timeout: timeout,
-	}
+	return &ShutdownManager{done: make(chan struct{}), timeout: timeout}
 }
 
-// Wait blocks until a shutdown signal is received or the done channel is closed
 func (s *ShutdownManager) Wait() {
 	<-s.done
 }
 
-// Shutdown initiates a graceful shutdown
+func (s *ShutdownManager) WaitContext(ctx context.Context) error {
+	waitCtx := ctx
+	cancel := func() {}
+	if s.timeout > 0 {
+		waitCtx, cancel = context.WithTimeout(ctx, s.timeout)
+	}
+	defer cancel()
+	select {
+	case <-s.done:
+		return nil
+	case <-waitCtx.Done():
+		return waitCtx.Err()
+	}
+}
+
 func (s *ShutdownManager) Shutdown() {
-	close(s.done)
-	time.Sleep(s.timeout)
+	s.once.Do(func() { close(s.done) })
 }

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Network, Plus, Trash2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { hasServerPermission, useOptionalServerContext } from "./server-context";
-import { type ApiAllocation, type ApiServer, assignServerAllocation, fetchServerAllocations, setPrimaryServerAllocation, unassignServerAllocation, updateAllocation } from "@/lib/api";
+import { type ApiAllocation, type ApiServer, assignServerAllocation, fetchServerAllocations, setPrimaryServerAllocation, unassignServerAllocation, updateServerAllocationAlias } from "@/lib/api";
 
 function isPrimaryAllocation(allocation: ApiAllocation, server?: ApiServer) {
   return allocation.isPrimary === true || allocation.primary === true || server?.primaryAllocationId === allocation.id || server?.allocationId === allocation.id;
@@ -38,7 +38,7 @@ export function NetworkView({ server }: { server?: ApiServer }) {
     onSuccess: () => { setAllocationId(""); refresh(); },
   });
   const unassignMutation = useMutation({ mutationFn: (id: string) => unassignServerAllocation(server?.id ?? "", id), onSuccess: refresh });
-  const aliasMutation = useMutation({ mutationFn: ({ id, alias, notes }: { id: string; alias: string; notes: string }) => updateAllocation(id, { alias, notes }), onSuccess: refresh });
+  const aliasMutation = useMutation({ mutationFn: ({ id, alias, notes }: { id: string; alias: string; notes: string }) => updateServerAllocationAlias(server?.id ?? "", id, { alias, notes }), onSuccess: refresh });
   const rows = allocationsQuery.data ?? [];
   const limit = server?.allocationLimit;
   const limitReached = typeof limit === "number" && limit > 0 && rows.length >= limit;

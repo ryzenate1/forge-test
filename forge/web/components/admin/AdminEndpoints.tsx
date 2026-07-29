@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Box, Plus, Trash2, ExternalLink } from "lucide-react";
 import { ApiError, createEndpoint, deleteEndpoint, fetchEndpoints } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
 import {
-  Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, PermissionDeniedState, Pill, SectionHeader,
+  AdminFormSection, AdminSelect, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, PermissionDeniedState, Pill, SectionHeader,
 } from "./admin-ui";
 import Link from "next/link";
 
@@ -29,7 +29,7 @@ export function AdminEndpoints() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const endpointsQuery = useQuery({ queryKey: ["infra-endpoints"], queryFn: fetchEndpoints });
-  const endpoints = endpointsQuery.data ?? [];
+  const endpoints = useMemo(() => endpointsQuery.data ?? [], [endpointsQuery.data]);
 
   const [modal, setModal] = useState<null | "create" | { id: string }>(null);
   const [name, setName] = useState("");
@@ -94,7 +94,7 @@ export function AdminEndpoints() {
             </div>
           </div>
           )
-        ) : endpoints.length === 0 ? (
+        ) : !Array.isArray(endpoints) || endpoints.length === 0 ? (
           <EmptyState icon={Box} title="No endpoints yet" message="Create your first infrastructure endpoint to group nodes." />
         ) : (
           <table className="w-full text-sm">
@@ -110,10 +110,10 @@ export function AdminEndpoints() {
               </tr>
             </thead>
             <tbody>
-              {endpoints.map((ep) => (
+              {Array.isArray(endpoints) && endpoints.map((ep) => (
                 <tr key={ep.id} className="border-b border-slate-800/50 transition-colors hover:bg-slate-800/30">
                   <td className="px-4 py-3">
-                    <Link href={`/admin/endpoints/${ep.id}`} className="font-medium text-white hover:text-blue-400 transition-colors">
+                    <Link href={`/admin/endpoints/${ep.id}`} className="font-medium text-white hover:text-slate-300 transition-colors">
                       {ep.name}
                       <ExternalLink size={12} className="inline ml-1 opacity-40" />
                     </Link>
@@ -161,39 +161,24 @@ export function AdminEndpoints() {
               <AlertCircle size={14} /> {formError}
             </div>
           )}
-          <div className="space-y-3">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-400">Name *</label>
-              <Input value={name} onChange={setName} placeholder="Production Cluster" />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-400">Description</label>
-              <Input value={description} onChange={setDescription} placeholder="Primary production environment" />
-            </div>
+          <AdminFormSection title="Endpoint Details">
+            <Input label="Name *" value={name} onChange={setName} placeholder="Production Cluster" />
+            <Input label="Description" value={description} onChange={setDescription} placeholder="Primary production environment" />
             <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-400">Type</label>
-                <select value={epType} onChange={(e) => setEpType(e.target.value)} className="h-9 w-full rounded border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100">
-                  <option value="docker">Docker</option>
-                  <option value="swarm">Swarm</option>
-                  <option value="kubernetes">Kubernetes</option>
-                  <option value="edge">Edge</option>
-                </select>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-400">Connection Mode</label>
-                <select value={connMode} onChange={(e) => setConnMode(e.target.value)} className="h-9 w-full rounded border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100">
-                  <option value="direct">Direct</option>
-                  <option value="tunnel">Tunnel</option>
-                  <option value="edge">Edge</option>
-                </select>
-              </div>
+              <AdminSelect label="Type" value={epType} onChange={setEpType} options={[
+                { value: "docker", label: "Docker" },
+                { value: "swarm", label: "Swarm" },
+                { value: "kubernetes", label: "Kubernetes" },
+                { value: "edge", label: "Edge" },
+              ]} />
+              <AdminSelect label="Connection Mode" value={connMode} onChange={setConnMode} options={[
+                { value: "direct", label: "Direct" },
+                { value: "tunnel", label: "Tunnel" },
+                { value: "edge", label: "Edge" },
+              ]} />
             </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-400">URL</label>
-              <Input value={url} onChange={setUrl} placeholder="https://docker.example.com:2375" />
-            </div>
-          </div>
+            <Input label="URL" value={url} onChange={setUrl} placeholder="https://docker.example.com:2375" />
+          </AdminFormSection>
           <ModalFooter
             onCancel={() => setModal(null)}
             onConfirm={() => createMut.mutate()}

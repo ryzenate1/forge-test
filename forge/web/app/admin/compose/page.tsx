@@ -1,14 +1,15 @@
 "use client";
 
+import { useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/components/ui/toast";
 import { useRouter } from "next/navigation";
+import { deleteJSON, fetchJSON, postJSON } from "@/lib/api";
+import { AdminLoadingState, AdminPageHeader, Btn, Card, EmptyState } from "@/components/admin/admin-ui";
 import {
   Plus, Play, Square, Trash2, Loader2,
   CheckCircle, XCircle, AlertTriangle, Clock, ArrowUpDown
 } from "lucide-react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === "development" ? "http://localhost:8080/api/v1" : "/api/v1");
 
 interface ComposeStack {
   id: string;
@@ -31,12 +32,12 @@ interface ComposeStack {
 
 const statusConfig: Record<string, { color: string; bg: string; icon: React.ReactNode }> = {
   running: { color: "text-emerald-400", bg: "bg-emerald-500/10", icon: <CheckCircle className="h-4 w-4" /> },
-  deploying: { color: "text-blue-400", bg: "bg-blue-500/10", icon: <Loader2 className="h-4 w-4 animate-spin" /> },
+  deploying: { color: "text-slate-200", bg: "bg-white/[0.06]", icon: <Loader2 className="h-4 w-4 animate-spin" /> },
   awaiting_health: { color: "text-yellow-400", bg: "bg-yellow-500/10", icon: <Clock className="h-4 w-4" /> },
   stopped: { color: "text-slate-400", bg: "bg-slate-500/10", icon: <Square className="h-4 w-4" /> },
-  degraded: { color: "text-orange-400", bg: "bg-orange-500/10", icon: <AlertTriangle className="h-4 w-4" /> },
+  degraded: { color: "text-amber-300", bg: "bg-amber-500/10", icon: <AlertTriangle className="h-4 w-4" /> },
   failed: { color: "text-red-400", bg: "bg-red-500/10", icon: <XCircle className="h-4 w-4" /> },
-  updating: { color: "text-blue-400", bg: "bg-blue-500/10", icon: <ArrowUpDown className="h-4 w-4" /> },
+  updating: { color: "text-slate-200", bg: "bg-white/[0.06]", icon: <ArrowUpDown className="h-4 w-4" /> },
   deleting: { color: "text-red-400", bg: "bg-red-500/10", icon: <Loader2 className="h-4 w-4 animate-spin" /> },
   deleted: { color: "text-slate-500", bg: "bg-slate-500/10", icon: <XCircle className="h-4 w-4" /> },
 };
@@ -46,23 +47,18 @@ export default function ComposeStacksPage() {
   const { toast } = useToast();
   const router = useRouter();
 
-  const { data: stacks = [], isLoading } = useQuery<ComposeStack[]>({
+  const { data: stacks, isLoading } = useQuery<ComposeStack[]>({
     queryKey: ["compose-stacks"],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/compose`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch stacks");
-      return res.json();
+      return fetchJSON<ComposeStack[]>("/compose");
     },
   });
 
+  const safeStacks = useMemo(() => Array.isArray(stacks) ? stacks : [], [stacks]);
+
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await fetch(`${API_BASE}/compose/${id}`, {
-        method: "DELETE",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-      });
-      if (!res.ok) throw new Error("Delete failed");
+      return deleteJSON<void>(`/compose/${encodeURIComponent(id)}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["compose-stacks"] });
@@ -73,11 +69,7 @@ export default function ComposeStacksPage() {
 
   const stopMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await fetch(`${API_BASE}/compose/${id}/stop`, {
-        method: "POST", credentials: "include",
-        headers: { "Content-Type": "application/json" },
-      });
-      if (!res.ok) throw new Error("Stop failed");
+      return postJSON<void>(`/compose/${encodeURIComponent(id)}/stop`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["compose-stacks"] });
@@ -88,11 +80,7 @@ export default function ComposeStacksPage() {
 
   const startMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await fetch(`${API_BASE}/compose/${id}/start`, {
-        method: "POST", credentials: "include",
-        headers: { "Content-Type": "application/json" },
-      });
-      if (!res.ok) throw new Error("Start failed");
+      return postJSON<void>(`/compose/${encodeURIComponent(id)}/start`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["compose-stacks"] });
@@ -112,42 +100,27 @@ export default function ComposeStacksPage() {
   };
 
   return (
-    <div className="space-y-6 p-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-100">Compose Stacks</h1>
-        <button
-          onClick={() => router.push("/admin/compose/new")}
-          className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
-        >
-          <Plus className="h-4 w-4" /> New Stack
-        </button>
-      </div>
+    <div className="space-y-6">
+      <AdminPageHeader title="Compose Stacks" description="Deploy and operate multi-service Compose workloads." action={<Btn onClick={() => router.push("/admin/compose/new")}><Plus className="h-4 w-4" /> New stack</Btn>} />
 
       {isLoading ? (
-        <div className="flex items-center justify-center py-20">
-          <Loader2 className="h-8 w-8 animate-spin text-slate-400" />
-        </div>
-      ) : stacks.length === 0 ? (
-        <div className="rounded-xl border border-slate-700/50 bg-[#1a2332] p-12 text-center">
-          <p className="text-slate-400">No compose stacks yet.</p>
-          <button
-            onClick={() => router.push("/admin/compose/new")}
-            className="mt-4 text-blue-400 hover:text-blue-300 text-sm"
-          >
-            Create your first stack
-          </button>
-        </div>
+        <AdminLoadingState label="Loading Compose stacks…" />
+      ) : safeStacks.length === 0 ? (
+        <Card className="p-8"><EmptyState title="No Compose stacks" message="Create a stack to deploy a multi-service workload." /><div className="mt-4 flex justify-center"><Btn onClick={() => router.push("/admin/compose/new")}><Plus className="h-4 w-4" /> Create stack</Btn></div></Card>
       ) : (
         <div className="grid gap-4">
-          {stacks.map((stack) => {
+          {safeStacks.map((stack) => {
             const cfg = statusConfig[stack.status] || statusConfig.failed;
             return (
               <div
                 key={stack.id}
-                className="rounded-xl border border-slate-700/50 bg-[#1a2332] p-4 hover:border-slate-600 transition-colors cursor-pointer"
+                className="ui-card p-4 cursor-pointer"
                 onClick={() => router.push(`/admin/compose/${stack.id}`)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === 'Enter') router.push(`/admin/compose/${stack.id}`); }}
               >
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
                   <div className="flex items-center gap-3">
                     <div className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs ${cfg.bg} ${cfg.color}`}>
                       {cfg.icon}
@@ -160,30 +133,18 @@ export default function ComposeStacksPage() {
                   </div>
                   <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                     {stack.status === "stopped" && (
-                      <button
-                        onClick={() => handleAction("start", stack.id)}
-                        className="rounded-lg p-2 text-slate-400 hover:text-emerald-400 hover:bg-slate-700 transition-colors"
-                        title="Start"
-                      >
+                      <Btn size="sm" tone="ghost" onClick={() => handleAction("start", stack.id)} ariaLabel="Start">
                         <Play className="h-4 w-4" />
-                      </button>
+                      </Btn>
                     )}
                     {stack.status === "running" && (
-                      <button
-                        onClick={() => handleAction("stop", stack.id)}
-                        className="rounded-lg p-2 text-slate-400 hover:text-yellow-400 hover:bg-slate-700 transition-colors"
-                        title="Stop"
-                      >
+                      <Btn size="sm" tone="ghost" onClick={() => handleAction("stop", stack.id)} ariaLabel="Stop">
                         <Square className="h-4 w-4" />
-                      </button>
+                      </Btn>
                     )}
-                    <button
-                      onClick={() => handleAction("delete", stack.id)}
-                      className="rounded-lg p-2 text-slate-400 hover:text-red-400 hover:bg-slate-700 transition-colors"
-                      title="Delete"
-                    >
+                    <Btn size="sm" tone="danger" onClick={() => handleAction("delete", stack.id)} ariaLabel="Delete">
                       <Trash2 className="h-4 w-4" />
-                    </button>
+                    </Btn>
                   </div>
                 </div>
                 {stack.error && (

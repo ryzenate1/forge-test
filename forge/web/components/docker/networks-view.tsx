@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Trash2, RefreshCw, Plus } from "lucide-react";
 import { listNetworks, createNetwork, deleteNetwork, type DockerNetwork } from "@/lib/api/docker";
@@ -17,9 +17,11 @@ export function NetworksView() {
     queryKey: ["docker", "networks"],
     queryFn: listNetworks,
     refetchInterval: 30_000,
+    retry: false,
+    staleTime: 10_000,
   });
 
-  const networks = networksQuery.data ?? [];
+  const networks = useMemo(() => Array.isArray(networksQuery.data) ? networksQuery.data : [], [networksQuery.data]);
 
   const createMut = useMutation({
     mutationFn: (data: { name: string; driver: string; subnet: string }) =>
@@ -32,8 +34,11 @@ export function NetworksView() {
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["docker", "networks"] }); setDeleteTarget(null); },
   });
 
-  const filtered = networks.filter(
-    (n) => !search || n.name.toLowerCase().includes(search.toLowerCase()) || n.driver.toLowerCase().includes(search.toLowerCase()),
+  const filtered = useMemo(
+    () => networks.filter(
+      (n) => !search || n.name.toLowerCase().includes(search.toLowerCase()) || n.driver.toLowerCase().includes(search.toLowerCase()),
+    ),
+    [networks, search],
   );
 
   return (

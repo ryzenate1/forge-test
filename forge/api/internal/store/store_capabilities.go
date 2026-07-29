@@ -2,36 +2,42 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type OnboardingToken struct {
-	ID           string    `json:"id"`
-	TokenHash    string    `json:"-"`
-	NodeID       string    `json:"nodeId"`
-	CreatedAt    time.Time `json:"createdAt"`
-	ExpiresAt    time.Time `json:"expiresAt"`
-	ApprovedAt   *time.Time `json:"approvedAt,omitempty"`
-	ApprovedBy   string    `json:"approvedBy,omitempty"`
-	RevokedAt    *time.Time `json:"revokedAt,omitempty"`
-	RevokedReason string   `json:"revokedReason,omitempty"`
-	State        string    `json:"state"`
+	ID            string     `json:"id"`
+	TokenHash     string     `json:"-"`
+	PlainToken    string     `json:"-"`
+	NodeID        string     `json:"nodeId"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	ExpiresAt     time.Time  `json:"expiresAt"`
+	ApprovedAt    *time.Time `json:"approvedAt,omitempty"`
+	ApprovedBy    string     `json:"approvedBy,omitempty"`
+	RevokedAt     *time.Time `json:"revokedAt,omitempty"`
+	RevokedReason string     `json:"revokedReason,omitempty"`
+	State         string     `json:"state"`
 }
 
 type NodeCapability struct {
-	ID              string    `json:"id"`
-	NodeID          string    `json:"nodeId"`
-	BeaconVersion   string    `json:"beaconVersion"`
-	OS              string    `json:"os"`
-	Architecture    string    `json:"architecture"`
-	CPUThreads      int       `json:"cpuThreads"`
-	MemoryMB        int64     `json:"memoryMb"`
-	DiskMB          int64     `json:"diskMb"`
-	UptimeSeconds   int64     `json:"uptimeSeconds"`
+	ID            string `json:"id"`
+	NodeID        string `json:"nodeId"`
+	BeaconVersion string `json:"beaconVersion"`
+	OS            string `json:"os"`
+	Architecture  string `json:"architecture"`
+	CPUThreads    int    `json:"cpuThreads"`
+	MemoryMB      int64  `json:"memoryMb"`
+	DiskMB        int64  `json:"diskMb"`
+	UptimeSeconds int64  `json:"uptimeSeconds"`
 
 	RuntimeAvailable bool   `json:"runtimeAvailable"`
 	RuntimeStatus    string `json:"runtimeStatus"`
@@ -69,9 +75,18 @@ type CapabilityInventoryFilter struct {
 
 func (s *Store) CreateOnboardingToken(ctx context.Context, nodeID string, expiresAt time.Time) (*OnboardingToken, error) {
 	id := uuid.NewString()
-	tokenHash := uuid.NewString()
+	secretBytes := make([]byte, 32)
+	if _, err := rand.Read(secretBytes); err != nil {
+		return nil, err
+	}
+	secret := base64.RawURLEncoding.EncodeToString(secretBytes)
+	tokenHashBytes, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, err
+	}
+	tokenHash := string(tokenHashBytes)
 	now := time.Now().UTC()
-	_, err := s.db.Exec(ctx, `
+	_, err = s.db.Exec(ctx, `
 		INSERT INTO onboarding_tokens (id, token_hash, node_id, created_at, expires_at, state)
 		VALUES ($1, $2, $3, $4, $5, 'pending')
 	`, id, tokenHash, nodeID, now, expiresAt)
@@ -79,13 +94,50 @@ func (s *Store) CreateOnboardingToken(ctx context.Context, nodeID string, expire
 		return nil, err
 	}
 	return &OnboardingToken{
-		ID:        id,
-		TokenHash: tokenHash,
-		NodeID:    nodeID,
-		CreatedAt: now,
-		ExpiresAt: expiresAt,
-		State:     "pending",
+		ID:         id,
+		TokenHash:  tokenHash,
+		PlainToken: id + "." + secret,
+		NodeID:     nodeID,
+		CreatedAt:  now,
+		ExpiresAt:  expiresAt,
+		State:      "pending",
 	}, nil
+}
+
+func (s *Store) ConsumeOnboardingToken(ctx context.Context, plaintext string) (string, error) {
+	id, secret, ok := strings.Cut(strings.TrimSpace(plaintext), ".")
+	if !ok || id == "" || secret == "" || len(plaintext) > 256 {
+		return "", errors.New("invalid onboarding token")
+	}
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+	var tokenHash, nodeID, state string
+	var expiresAt time.Time
+	if err := tx.QueryRow(ctx, `
+		SELECT token_hash, node_id, state, expires_at
+		FROM onboarding_tokens
+		WHERE id = $1
+		FOR UPDATE
+	`, id).Scan(&tokenHash, &nodeID, &state, &expiresAt); err != nil {
+		return "", errors.New("invalid onboarding token")
+	}
+	if state != "approved" || !expiresAt.After(time.Now().UTC()) || bcrypt.CompareHashAndPassword([]byte(tokenHash), []byte(secret)) != nil {
+		return "", errors.New("invalid onboarding token")
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE onboarding_tokens
+		SET state = 'consumed', revoked_at = now(), revoked_reason = 'exchanged'
+		WHERE id = $1
+	`, id); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return nodeID, nil
 }
 
 func (s *Store) GetOnboardingToken(ctx context.Context, tokenID string) (*OnboardingToken, error) {

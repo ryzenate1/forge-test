@@ -13,28 +13,28 @@ import (
 )
 
 // registerEnhancedNotificationRoutes registers routes for the enhanced notification system
-func registerEnhancedNotificationRoutes(protected fiber.Router, notificationService *notificationsvc.Service) {
+func registerEnhancedNotificationRoutes(protected fiber.Router, notificationService *notificationsvc.Service, mutationLimiter fiber.Handler) {
 	// Alert Rules endpoints
 	alerts := protected.Group("/notifications/alerts", requireRole("admin"))
 	alerts.Get("/", handleListAlertRules(notificationService))
-	alerts.Post("/", handleCreateAlertRule(notificationService))
+	alerts.Post("/", mutationLimiter, handleCreateAlertRule(notificationService))
 	alerts.Get("/:id", handleGetAlertRule(notificationService))
-	alerts.Patch("/:id", handleUpdateAlertRule(notificationService))
-	alerts.Delete("/:id", handleDeleteAlertRule(notificationService))
+	alerts.Patch("/:id", mutationLimiter, handleUpdateAlertRule(notificationService))
+	alerts.Delete("/:id", mutationLimiter, handleDeleteAlertRule(notificationService))
 
 	// Alert States endpoints
 	alerts.Get("/:id/states", handleListAlertStates(notificationService))
 
 	// Notification Preferences endpoints
-	prefs := protected.Group("/notifications/preferences", requireAuth())
+	prefs := protected.Group("/notifications/preferences", requireRole("admin"))
 	prefs.Get("/", handleListNotificationPreferences(notificationService))
-	prefs.Post("/", handleCreateNotificationPreference(notificationService))
+	prefs.Post("/", mutationLimiter, handleCreateNotificationPreference(notificationService))
 	prefs.Get("/:id", handleGetNotificationPreference(notificationService))
-	prefs.Patch("/:id", handleUpdateNotificationPreference(notificationService))
-	prefs.Delete("/:id", handleDeleteNotificationPreference(notificationService))
+	prefs.Patch("/:id", mutationLimiter, handleUpdateNotificationPreference(notificationService))
+	prefs.Delete("/:id", mutationLimiter, handleDeleteNotificationPreference(notificationService))
 
 	// Test notification endpoint
-	protected.Post("/notifications/test", requireRole("admin"), handleTestNotification(notificationService))
+	protected.Post("/notifications/test", mutationLimiter, requireRole("admin"), handleTestNotification(notificationService))
 
 	// WebSocket notification endpoint
 	protected.Get("/notifications/ws", handleNotificationWebSocket(notificationService))
@@ -42,11 +42,11 @@ func registerEnhancedNotificationRoutes(protected fiber.Router, notificationServ
 	// Enhanced channels endpoints with tenant support
 	channels := protected.Group("/notifications/channels", requireRole("admin"))
 	channels.Get("/", handleListNotificationChannelsEnhanced(notificationService))
-	channels.Post("/", handleCreateNotificationChannelEnhanced(notificationService))
+	channels.Post("/", mutationLimiter, handleCreateNotificationChannelEnhanced(notificationService))
 	channels.Get("/:id", handleGetNotificationChannelEnhanced(notificationService))
-	channels.Patch("/:id", handleUpdateNotificationChannelEnhanced(notificationService))
-	channels.Delete("/:id", handleDeleteNotificationChannelEnhanced(notificationService))
-	channels.Post("/:id/test", handleTestNotificationChannelEnhanced(notificationService))
+	channels.Patch("/:id", mutationLimiter, handleUpdateNotificationChannelEnhanced(notificationService))
+	channels.Delete("/:id", mutationLimiter, handleDeleteNotificationChannelEnhanced(notificationService))
+	channels.Post("/:id/test", mutationLimiter, handleTestNotificationChannelEnhanced(notificationService))
 
 	// Enhanced logs endpoint
 	protected.Get("/notifications/logs", requireRole("admin"), handleListNotificationLogsEnhanced(notificationService))
@@ -571,16 +571,9 @@ func handleListNotificationLogsEnhanced(svc *notificationsvc.Service) fiber.Hand
 	}
 }
 
-// Helper function to get user ID from context
 func getUserIDFromContext(c *fiber.Ctx) string {
-	// This would be implemented based on your authentication middleware
-	// For now, return a placeholder
-	if user := c.Locals("user"); user != nil {
-		if userMap, ok := user.(map[string]interface{}); ok {
-			if id, ok := userMap["id"].(string); ok {
-				return id
-			}
-		}
+	if claims, ok := c.Locals("user").(tokenClaims); ok {
+		return claims.Sub
 	}
 	return ""
 }

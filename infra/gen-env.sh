@@ -97,7 +97,8 @@ fi
 POSTGRES_PASSWORD="$PG_PASSWORD"
 POSTGRES_DB="$PG_DB"
 POSTGRES_USER="$PG_USER"
-DATABASE_URL="postgres://${PG_USER}:${POSTGRES_PASSWORD}@postgres:5432/${PG_DB}?sslmode=prefer"
+: "${REDIS_PASSWORD:=$(rand_base64)}"
+DATABASE_URL="postgres://${PG_USER}:${POSTGRES_PASSWORD}@postgres:5432/${PG_DB}?sslmode=require"
 
 API_AUTH_SECRET="$(rand_base64)"
 APP_KEY="$(rand_base64)"
@@ -109,6 +110,8 @@ GRAFANA_ADMIN_USER="$GF_USER"
 GRAFANA_ADMIN_PASSWORD="$GF_PASSWORD"
 SOKETI_APP_KEY="$(rand_hex16)"
 SOKETI_APP_SECRET="$(rand_hex32)"
+METRICS_TOKEN="$(rand_base64)"
+DAEMON_SFTP_HOST_KEY_PASSPHRASE="$(rand_base64)"
 
 # ---- Write Output File -----------------------------------------------------
 mkdir -p "$(dirname "$OUTPUT")"
@@ -121,7 +124,7 @@ cat > "$OUTPUT" <<ENV
 # =====================================================================
 # Quick Start:
 #   1. Review PANEL_URL, DAEMON_NODE_ID, DAEMON_NODE_TOKEN,
-#      PANEL_API_URL, BEACON_PANEL_API_URL, DAEMON_SFTP_BIND_ADDR.
+#      PANEL_API_URL and DAEMON_SFTP_BIND_ADDR.
 #   2. Run:
 #      docker compose -f compose.yml -f compose.production.yml \\
 #          --env-file .env up -d
@@ -144,7 +147,7 @@ POSTGRES_BACKUP_RETENTION_DAYS=14
 # --- Redis ---
 # =====================================================================
 REDIS_ADDR=redis:6379
-REDIS_PASSWORD=
+REDIS_PASSWORD=${REDIS_PASSWORD}
 
 # =====================================================================
 # --- Soketi / WebSocket (optional — requires compose.realtime.yml) ---
@@ -188,6 +191,8 @@ FORGE_ALLOW_EPHEMERAL_MASTER_KEY=false
 # Generate a new token from the panel web UI after deployment.
 # =====================================================================
 DAEMON_NODE_TOKEN=${NODE_TOKEN}
+DAEMON_SFTP_HOST_KEY_PASSPHRASE=${DAEMON_SFTP_HOST_KEY_PASSPHRASE}
+DAEMON_UPGRADE_PUBLIC_KEY=${DAEMON_UPGRADE_PUBLIC_KEY:-}
 
 # =====================================================================
 # --- Daemon (Beacon) Configuration ---
@@ -199,8 +204,7 @@ DAEMON_DATA_DIR=/srv/game-panel/servers
 GAME_SERVERS_HOST_DIR=/srv/game-panel/servers
 DAEMON_NODE_ID=${NODE_ID}
 DAEMON_ALLOW_MOCK_RUNTIME=false
-PANEL_API_URL=http://api:8080/api/v1
-BEACON_PANEL_API_URL=https://${PANEL_DOMAIN}/api/v1
+PANEL_API_URL=https://${PANEL_DOMAIN}/api/v1
 
 # =====================================================================
 # --- AWS Node Bootstrap (optional) ---
@@ -212,7 +216,9 @@ BEACON_PANEL_API_URL=https://${PANEL_DOMAIN}/api/v1
 #AWS_SUBNET_ID=
 #AWS_SECURITY_GROUP_IDS=sg-0123456789abcdef0
 #AWS_IAM_INSTANCE_PROFILE=gamepanel-beacon
-#AWS_BEACON_IMAGE=ghcr.io/example/gamepanel-beacon:stable
+DAEMON_IMAGE=ghcr.io/gamepanel/beacon:${TAG}
+METRICS_TOKEN=${METRICS_TOKEN}
+METRICS_TOKEN_FILE=./.metrics-token
 
 # =====================================================================
 # --- Grafana ---
@@ -305,10 +311,12 @@ BATCH2_MIGRATIONS_DIR=/batch2-migrations
 ENV
 
 chmod 600 "$OUTPUT"
+printf '%s\n' "$METRICS_TOKEN" > "$(dirname "$OUTPUT")/.metrics-token"
+chmod 600 "$(dirname "$OUTPUT")/.metrics-token"
 
 # ---- Validate Required Variables -------------------------------------------
 missing=0
-required_vars="POSTGRES_PASSWORD DATABASE_URL API_AUTH_SECRET APP_KEY FORGE_MASTER_KEY DAEMON_NODE_TOKEN GRAFANA_ADMIN_PASSWORD PANEL_URL DAEMON_NODE_ID"
+required_vars="POSTGRES_PASSWORD DATABASE_URL API_AUTH_SECRET APP_KEY FORGE_MASTER_KEY DAEMON_NODE_TOKEN DAEMON_SFTP_HOST_KEY_PASSPHRASE METRICS_TOKEN GRAFANA_ADMIN_PASSWORD PANEL_URL DAEMON_NODE_ID REDIS_PASSWORD"
 
 for var in $required_vars; do
     line=$(grep -E "^(#)?${var}=" "$OUTPUT" 2>/dev/null || true)

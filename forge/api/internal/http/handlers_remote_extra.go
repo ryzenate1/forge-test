@@ -220,7 +220,9 @@ func registerRemoteExtras(remote fiber.Router, cfg Config) {
 			Successful bool   `json:"successful"`
 			Error      string `json:"error"`
 		}
-		_ = c.BodyParser(&body)
+		if err := c.BodyParser(&body); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		}
 		backupUUID := strings.TrimSpace(c.Params("backup"))
 		if backupUUID == "" {
 			return fiber.NewError(fiber.StatusBadRequest, "backup id required")

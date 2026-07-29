@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 type K3sScheduler struct {
@@ -29,6 +31,10 @@ func (s *K3sScheduler) Name() string {
 }
 
 func (s *K3sScheduler) kubectl(ctx context.Context, args ...string) (string, error) {
+	return s.kubectlInput(ctx, "", args...)
+}
+
+func (s *K3sScheduler) kubectlInput(ctx context.Context, input string, args ...string) (string, error) {
 	baseArgs := []string{}
 	if s.config.KubeconfigPath != "" {
 		baseArgs = append(baseArgs, "--kubeconfig", s.config.KubeconfigPath)
@@ -39,6 +45,9 @@ func (s *K3sScheduler) kubectl(ctx context.Context, args ...string) (string, err
 	baseArgs = append(baseArgs, "-n", s.config.Namespace)
 	baseArgs = append(baseArgs, args...)
 	cmd := exec.CommandContext(ctx, "kubectl", baseArgs...)
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -52,12 +61,12 @@ func (s *K3sScheduler) Deploy(ctx context.Context, req DeployRequest) (DeployRes
 	name := sanitizeName(req.Name)
 
 	deploymentYAML := s.buildDeployment(name, req)
-	if _, err := s.kubectl(ctx, "apply", "-f", "-", "--filename", "-", "--filename", deploymentYAML); err != nil {
+	if _, err := s.kubectlInput(ctx, deploymentYAML, "apply", "-f", "-"); err != nil {
 		return DeployResponse{}, fmt.Errorf("apply deployment: %w", err)
 	}
 
 	serviceYAML := s.buildService(name, req)
-	if _, err := s.kubectl(ctx, "apply", "-f", "-", "--filename", "-", "--filename", serviceYAML); err != nil {
+	if _, err := s.kubectlInput(ctx, serviceYAML, "apply", "-f", "-"); err != nil {
 		return DeployResponse{}, fmt.Errorf("apply service: %w", err)
 	}
 
@@ -198,111 +207,125 @@ func (s *K3sScheduler) buildDeployment(name string, req DeployRequest) string {
 	if replicas <= 0 {
 		replicas = 1
 	}
-	envVars := ""
+	envVars := make([]map[string]any, 0, len(req.Env))
 	for k, v := range req.Env {
-		envVars += fmt.Sprintf("            - name: %s\n              value: %q\n", k, v)
+		envVars = append(envVars, map[string]any{"name": k, "value": v})
 	}
-	ports := ""
+	ports := make([]map[string]any, 0, len(req.Ports))
 	for _, p := range req.Ports {
-		ports += fmt.Sprintf("            - containerPort: %d\n              protocol: %s\n", p.TargetPort, p.Protocol)
+		ports = append(ports, map[string]any{
+			"containerPort": p.TargetPort,
+			"protocol":      strings.ToUpper(p.Protocol),
+		})
 	}
-	mounts := ""
+	mounts := make([]map[string]any, 0, len(req.Mounts))
+	volumes := make([]map[string]any, 0, len(req.Mounts))
 	for _, m := range req.Mounts {
-		mounts += fmt.Sprintf("            - mountPath: %q\n              name: vol-%s\n", m.Target, sanitizeName(m.Source))
+		volumeName := "vol-" + sanitizeName(m.Source)
+		mounts = append(mounts, map[string]any{
+			"mountPath": m.Target,
+			"name":      volumeName,
+			"readOnly":  m.ReadOnly,
+		})
+		volumes = append(volumes, map[string]any{
+			"name": volumeName,
+			"hostPath": map[string]any{
+				"path": m.Source,
+				"type": "DirectoryOrCreate",
+			},
+		})
 	}
-	volumes := ""
-	for _, m := range req.Mounts {
-		volumes += fmt.Sprintf("        - name: vol-%s\n          hostPath:\n            path: %q\n            type: DirectoryOrCreate\n", sanitizeName(m.Source), m.Source)
+	container := map[string]any{
+		"name":         name,
+		"image":        req.Image,
+		"env":          envVars,
+		"ports":        ports,
+		"volumeMounts": mounts,
 	}
-	cmdStr := ""
 	if len(req.Command) > 0 {
-		cmdStr = fmt.Sprintf("            command: [%s]", quoteJoin(req.Command))
+		container["command"] = req.Command
 	}
-	memoryLimit := ""
-	cpuLimit := ""
+	limits := map[string]any{}
 	if req.MemoryMB > 0 {
-		memoryLimit = fmt.Sprintf("            memory: %dMi", req.MemoryMB)
+		limits["memory"] = fmt.Sprintf("%dMi", req.MemoryMB)
 	}
 	if req.CPUMHz > 0 {
-		cpuLimit = fmt.Sprintf("            cpu: %dm", req.CPUMHz)
+		limits["cpu"] = fmt.Sprintf("%dm", req.CPUMHz)
+	}
+	if len(limits) > 0 {
+		container["resources"] = map[string]any{"limits": limits}
 	}
 
-	return fmt.Sprintf(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: %s
-  labels:
-    app: %s
-spec:
-  replicas: %d
-  selector:
-    matchLabels:
-      app: %s
-  template:
-    metadata:
-      labels:
-        app: %s
-    spec:
-      containers:
-      - name: %s
-        image: %s
-%s
-        env:
-%s
-        ports:
-%s
-        resources:
-          limits:
-%s
-%s
-        volumeMounts:
-%s
-      volumes:
-%s
-`, name, name, replicas, name, name, name, req.Image, cmdStr, envVars, ports, memoryLimit, cpuLimit, mounts, volumes)
+	manifest := map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata":   map[string]any{"name": name, "labels": map[string]string{"app": name}},
+		"spec": map[string]any{
+			"replicas": replicas,
+			"selector": map[string]any{"matchLabels": map[string]string{"app": name}},
+			"template": map[string]any{
+				"metadata": map[string]any{"labels": map[string]string{"app": name}},
+				"spec": map[string]any{
+					"containers": []map[string]any{container},
+					"volumes":    volumes,
+				},
+			},
+		},
+	}
+	data, _ := yaml.Marshal(manifest)
+	return string(data)
 }
 
 func (s *K3sScheduler) buildService(name string, req DeployRequest) string {
-	ports := ""
+	ports := make([]map[string]any, 0, len(req.Ports))
 	for _, p := range req.Ports {
-		np := ""
-		if p.NodePort > 0 {
-			np = fmt.Sprintf("    nodePort: %d", p.NodePort)
+		port := map[string]any{
+			"name":       p.Name,
+			"port":       p.Port,
+			"targetPort": p.TargetPort,
+			"protocol":   strings.ToUpper(p.Protocol),
 		}
-		ports += fmt.Sprintf("    - name: %s\n      port: %d\n      targetPort: %d\n      protocol: %s\n%s\n", p.Name, p.Port, p.TargetPort, p.Protocol, np)
+		if p.NodePort > 0 {
+			port["nodePort"] = p.NodePort
+		}
+		ports = append(ports, port)
 	}
-	return fmt.Sprintf(`apiVersion: v1
-kind: Service
-metadata:
-  name: %s-svc
-  labels:
-    app: %s
-spec:
-  selector:
-    app: %s
-  type: NodePort
-  ports:
-%s
-`, name, name, name, ports)
+	manifest := map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Service",
+		"metadata":   map[string]any{"name": name + "-svc", "labels": map[string]string{"app": name}},
+		"spec": map[string]any{
+			"selector": map[string]string{"app": name},
+			"type":     "NodePort",
+			"ports":    ports,
+		},
+	}
+	data, _ := yaml.Marshal(manifest)
+	return string(data)
 }
 
 func sanitizeName(name string) string {
-	s := strings.NewReplacer(
-		"_", "-",
-		".", "-",
-		" ", "-",
-		"/", "-",
-	).Replace(name)
-	s = strings.ToLower(s)
-	return s
-}
-
-func quoteJoin(strs []string) string {
-	quoted := make([]string, len(strs))
-	for i, s := range strs {
-		quoted[i] = fmt.Sprintf("%q", s)
+	name = strings.ToLower(strings.TrimSpace(name))
+	var b strings.Builder
+	lastHyphen := false
+	for _, r := range name {
+		isAlphaNumeric := r >= 'a' && r <= 'z' || r >= '0' && r <= '9'
+		if isAlphaNumeric {
+			b.WriteRune(r)
+			lastHyphen = false
+		} else if !lastHyphen && b.Len() > 0 {
+			b.WriteByte('-')
+			lastHyphen = true
+		}
 	}
-	return strings.Join(quoted, ", ")
+	s := strings.Trim(b.String(), "-")
+	if s == "" {
+		s = "app"
+	}
+	if len(s) > 63 {
+		s = strings.TrimRight(s[:63], "-")
+	}
+	return s
 }
 
 func parseCPUPercent(s string) float64 {

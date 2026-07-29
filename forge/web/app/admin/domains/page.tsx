@@ -4,7 +4,8 @@ import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Globe, Plus, Trash2, ShieldCheck, ShieldAlert, RotateCw, Network } from "lucide-react";
 import { fetchJSON, postJSON, deleteJSON } from "@/lib/api";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
+import { checkDNS as checkDNSApi } from "@/lib/api/domains";
+import { AdminPageLayout, AdminSelect, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
 
 type DomainRecord = {
   id: string;
@@ -49,7 +50,7 @@ export default function AdminDomainsPage() {
     queryKey: ["domains", serverFilter || "all"],
     queryFn: async () => {
       if (serverFilter) {
-        const result = await fetchJSON<DomainRecord[]>("/servers/" + serverFilter + "/domains");
+        const result = await fetchJSON<DomainRecord[]>("/servers/" + encodeURIComponent(serverFilter) + "/domains");
         return result;
       }
       return [] as DomainRecord[];
@@ -71,7 +72,7 @@ export default function AdminDomainsPage() {
 
   const addMutation = useMutation({
     mutationFn: () =>
-      postJSON<DomainRecord>("/servers/" + addForm.serverId + "/domains", {
+      postJSON<DomainRecord>("/servers/" + encodeURIComponent(addForm.serverId) + "/domains", {
         domain: addForm.domain,
       }),
     onSuccess: () => {
@@ -83,7 +84,7 @@ export default function AdminDomainsPage() {
 
   const deleteMutation = useMutation({
     mutationFn: ({ serverId, id }: { serverId: string; id: string }) =>
-      deleteJSON("/servers/" + serverId + "/domains/" + id),
+      deleteJSON("/servers/" + encodeURIComponent(serverId) + "/domains/" + encodeURIComponent(id)),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["domains"] });
     },
@@ -98,14 +99,21 @@ export default function AdminDomainsPage() {
 
   const checkDNSMutation = useMutation({
     mutationFn: (data: { domain: string; expectedIp: string }) =>
-      postJSON<DNSResult>("/domains/check-dns", data),
+      checkDNSApi(data.domain, data.expectedIp || undefined),
     onSuccess: (result) => {
-      setDnsResult(result);
+      setDnsResult({
+        domain: dnsForm.domain,
+        resolved: result.configured,
+        ips: result.currentIp ? [result.currentIp] : [],
+        expectedIp: result.expectedIp,
+        match: result.configured,
+        error: result.message,
+      });
     },
   });
 
   return (
-    <div className="space-y-6">
+    <AdminPageLayout>
       <SectionHeader
         title="Domain Management"
         sub="Manage custom domains for game servers. Verify ownership via HTTP challenge."
@@ -124,20 +132,7 @@ export default function AdminDomainsPage() {
       <Card>
         <CardHeader title="Domains" icon={Globe} />
         <div className="flex items-center gap-3 p-4">
-          <select
-            className="h-9 w-64 rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100 outline-none focus:border-[#dc2626]/60 focus:ring-1 focus:ring-[#dc2626]/30"
-            value={serverFilter}
-            onChange={(e) => {
-              setServerFilter(e.target.value);
-            }}
-          >
-            <option value="">Select a server...</option>
-            {servers.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name} ({s.id})
-              </option>
-            ))}
-          </select>
+          <div className="w-64"><AdminSelect value={serverFilter} onChange={setServerFilter} placeholder="Select a server..." options={Array.isArray(servers) ? servers.map((s) => ({ value: s.id, label: `${s.name} (${s.id})` })) : []} /></div>
           <Input placeholder="Search domains..." value={search} onChange={setSearch} />
         </div>
 
@@ -160,7 +155,7 @@ export default function AdminDomainsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
-                {filteredDomains.map((d) => (
+                {Array.isArray(filteredDomains) && filteredDomains.map((d) => (
                   <tr key={d.id} className="hover:bg-white/[0.02]">
                     <td className="px-4 py-3 font-mono text-xs font-medium text-slate-200">
                       {d.domain}
@@ -229,7 +224,7 @@ export default function AdminDomainsPage() {
                 onChange={(e) => setAddForm({ ...addForm, serverId: e.target.value })}
               >
                 <option value="">Select server...</option>
-                {servers.map((s) => (
+                {Array.isArray(servers) && servers.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name}
                   </option>
@@ -243,7 +238,7 @@ export default function AdminDomainsPage() {
               placeholder="example.com or *.example.com"
             />
             {addForm.domain?.startsWith("*.") && (
-              <p className="text-xs text-blue-400">Wildcard domain detected. DNS verification will use test.{addForm.domain.replace("*.", "")}</p>
+              <p className="text-xs text-slate-400">Wildcard domain detected. DNS verification will use test.{addForm.domain.replace("*.", "")}</p>
             )}
           </div>
           <ModalFooter
@@ -295,6 +290,6 @@ export default function AdminDomainsPage() {
           />
         </Modal>
       )}
-    </div>
+    </AdminPageLayout>
   );
 }

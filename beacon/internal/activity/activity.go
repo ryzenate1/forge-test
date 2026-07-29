@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -36,7 +37,8 @@ type Sender interface {
 }
 
 type Database struct {
-	db *sql.DB
+	db      *sql.DB
+	flushMu sync.Mutex
 }
 
 func NewDatabase(path string) (*Database, error) {
@@ -53,7 +55,9 @@ func NewDatabase(path string) (*Database, error) {
 			ip TEXT NOT NULL DEFAULT '',
 			timestamp DATETIME NOT NULL,
 			metadata TEXT NOT NULL DEFAULT '{}'
-		)`); err != nil {
+		);
+		CREATE INDEX IF NOT EXISTS idx_activities_timestamp ON activities(timestamp);
+		CREATE INDEX IF NOT EXISTS idx_activities_id_timestamp ON activities(id, timestamp)`); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -63,6 +67,9 @@ func NewDatabase(path string) (*Database, error) {
 func (d *Database) Record(ctx context.Context, activity Activity) error {
 	if d == nil || d.db == nil {
 		return errors.New("activity database is not initialized")
+	}
+	if ctx == nil {
+		return errors.New("activity record context must not be nil")
 	}
 	_, err := d.db.ExecContext(ctx, `
 		INSERT INTO activities (event, user, server_id, ip, timestamp, metadata)
@@ -82,6 +89,8 @@ func (d *Database) Flush(ctx context.Context, sender Sender) error {
 	if d == nil || d.db == nil || sender == nil {
 		return nil
 	}
+	d.flushMu.Lock()
+	defer d.flushMu.Unlock()
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT id, event, user, server_id, ip, timestamp, metadata
 		FROM activities ORDER BY id ASC LIMIT 100`)
@@ -108,15 +117,10 @@ func (d *Database) Flush(ctx context.Context, sender Sender) error {
 		return err
 	}
 
-	ids := make([]interface{}, len(activities))
-	query := "DELETE FROM activities WHERE id IN (?"
-	for i, activity := range activities {
-		ids[i] = activity.ID
-		if i > 0 {
-			query += ",?"
-		}
-	}
-	query += ")"
-	_, err = d.db.ExecContext(ctx, query, ids...)
+	// The selected batch is ordered and contiguous. With Flush serialized, a
+	// bounded delete avoids dynamically constructed SQL and cannot delete a
+	// record that was not successfully delivered.
+	_, err = d.db.ExecContext(ctx, "DELETE FROM activities WHERE id >= ? AND id <= ?",
+		activities[0].ID, activities[len(activities)-1].ID)
 	return err
 }

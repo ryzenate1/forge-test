@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
 	"path"
 	"strconv"
@@ -90,7 +91,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		defer cancel()
 		users, err := cfg.Store.ListUsers(ctx)
 		if err != nil {
-			return err
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to list users")
 		}
 		return c.JSON(ToPublicUsers(users))
 	})
@@ -224,7 +225,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		defer cancel()
 		servers, total, err := cfg.Store.ListServersForUser(ctx, claims.Sub, claims.Role, page, perPage, search)
 		if err != nil {
-			return err
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to list servers")
 		}
 
 		totalPages := (total + perPage - 1) / perPage
@@ -705,7 +706,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		if cfg.Store == nil || clusterManager == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres and runtime lifecycle service are required")
 		}
-		ctx, cancel := requestContext()
+		ctx, cancel := longRequestContext()
 		defer cancel()
 		defaultMemoryMB := 2048
 		if req.MemoryMB == nil {
@@ -861,6 +862,21 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 			if op == nil {
 				return fiber.NewError(fiber.StatusNotFound, "operation not found")
 			}
+			if op.ResourceType == "server" && op.ResourceID != "" && cfg.Store != nil {
+				claims, ok := c.Locals("user").(tokenClaims)
+				if !ok {
+					return fiber.NewError(fiber.StatusUnauthorized, "missing session")
+				}
+				checkCtx, checkCancel := requestContext()
+				allowed, checkErr := cfg.Store.UserCanAccessServer(checkCtx, op.ResourceID, claims.Sub, claims.Role, "")
+				checkCancel()
+				if checkErr != nil {
+					return fiber.NewError(fiber.StatusInternalServerError, "failed to check access: "+checkErr.Error())
+				}
+				if !allowed {
+					return fiber.NewError(fiber.StatusNotFound, "operation not found")
+				}
+			}
 			return c.JSON(op)
 		}
 		if cfg.QueueService == nil {
@@ -872,6 +888,21 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		}
 		if job == nil {
 			return fiber.NewError(fiber.StatusNotFound, "operation not found")
+		}
+		if job.ServerID != "" && cfg.Store != nil {
+			claims, ok := c.Locals("user").(tokenClaims)
+			if !ok {
+				return fiber.NewError(fiber.StatusUnauthorized, "missing session")
+			}
+			checkCtx, checkCancel := requestContext()
+			allowed, checkErr := cfg.Store.UserCanAccessServer(checkCtx, job.ServerID, claims.Sub, claims.Role, "")
+			checkCancel()
+			if checkErr != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, "failed to check access: "+checkErr.Error())
+			}
+			if !allowed {
+				return fiber.NewError(fiber.StatusNotFound, "operation not found")
+			}
 		}
 		return c.JSON(job)
 	})
@@ -1185,7 +1216,9 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		if suspended && cfg.Daemon != nil {
 			// Best-effort: stop server processes when suspending.
 			if target, err := cfg.Store.ServerControlTarget(ctx, c.Params("id")); err == nil {
-				_, _ = cfg.Daemon.SendPower(ctx, target.NodeURL, target.NodeToken, target.ServerID, "stop")
+				if _, sendErr := cfg.Daemon.SendPower(ctx, target.NodeURL, target.NodeToken, target.ServerID, "stop"); sendErr != nil {
+					slog.Error("failed to send power-off on suspend", "server", c.Params("id"), "error", sendErr)
+				}
 				_ = cfg.Store.SetServerPowerState(ctx, target.ServerID, "stop")
 			}
 		}
@@ -1746,7 +1779,9 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		var req struct {
 			IgnoredFiles []string `json:"ignored"`
 		}
-		_ = c.BodyParser(&req)
+		if err := c.BodyParser(&req); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		}
 
 		target, err := cfg.Store.ServerControlTarget(ctx, c.Params("id"))
 		if err != nil {
@@ -1775,12 +1810,14 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		if daemonErr != nil {
 			// Mark the pending record as failed so it does not hang indefinitely.
 			now := time.Now().UTC()
-			_, _ = cfg.Store.UpsertBackup(ctx, target.ServerID, store.UpsertBackupRequest{
+			if _, upsertErr := cfg.Store.UpsertBackup(ctx, target.ServerID, store.UpsertBackupRequest{
 				UUID:        stored.UUID,
 				Name:        stored.Name,
 				Status:      "failed",
 				CompletedAt: &now,
-			}, actorID)
+			}, actorID); upsertErr != nil {
+				slog.Error("failed to mark backup as failed", "server", target.ServerID, "error", upsertErr)
+			}
 			return fiber.NewError(fiber.StatusBadGateway, daemonErr.Error())
 		}
 		completedAt := time.Now().UTC()

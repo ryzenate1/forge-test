@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Globe, Plus, RefreshCw, Send, Trash2 } from "lucide-react";
 import { fetchJSON, postJSON, patchJSON, deleteJSON, fetchWebhookDeliveries, testWebhook, retryWebhookDelivery, type ApiWebhook, type ApiWebhookDelivery } from "@/lib/api";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "./admin-ui";
+import { AdminFormSection, AdminSelect, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "./admin-ui";
 import { TableSkeleton } from "@/components/ui/loading-skeleton";
 
 type Webhook = ApiWebhook;
@@ -65,7 +65,7 @@ export function AdminWebhooks() {
       return responseList(response, "webhooks");
     },
   });
-  const webhooks = webhooksQuery.data ?? [];
+  const webhooks = useMemo(() => webhooksQuery.data ?? [], [webhooksQuery.data]);
 
   const [showCreate, setShowCreate] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -143,7 +143,7 @@ export function AdminWebhooks() {
           <TableSkeleton />
         ) : webhooksQuery.isError ? (
           <div className="p-4"><div className="flex items-start justify-between gap-4 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-200"><span>Could not load webhooks: {webhooksQuery.error.message}</span><Btn size="sm" tone="ghost" onClick={() => void webhooksQuery.refetch()}>Retry</Btn></div></div>
-        ) : webhooks.length === 0 ? (
+        ) : !Array.isArray(webhooks) || webhooks.length === 0 ? (
           <EmptyState icon={Globe} message="No webhooks configured." />
         ) : (
           <div className="overflow-x-auto">
@@ -159,7 +159,7 @@ export function AdminWebhooks() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
-                {webhooks.map((wh) => (
+                  {Array.isArray(webhooks) && webhooks.map((wh) => (
                   <tr key={wh.id} className="hover:bg-white/[0.02]">
                     <td className="px-4 py-3 min-w-0 max-w-[160px] sm:max-w-none">
                       <p className="font-medium text-slate-200 truncate">{wh.name}</p>
@@ -214,38 +214,27 @@ export function AdminWebhooks() {
       {(showCreate || editId) ? (
         <Modal title={editId ? "Edit Webhook" : "Create Webhook"} onClose={() => { setShowCreate(false); setEditId(null); resetForm(); }}>
           <div className="grid gap-4">
-            <Input label="Name" value={name} onChange={setName} placeholder="My Webhook" />
-            <Input label="Description" value={description} onChange={setDescription} placeholder="Optional description" />
-            <Input label="Payload URL" value={url} onChange={setUrl} placeholder="https://discord.com/api/webhooks/..." />
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-300">Type</label>
-                <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100" value={webhookType} onChange={(e) => setWebhookType(e.target.value as "regular" | "discord")}>
-                  <option value="regular">Regular</option>
-                  <option value="discord">Discord Embed</option>
-                </select>
-              </div>
-              <div>
-                <label className="mb-1.5 block font-medium text-sm text-slate-300">Signing Secret</label>
-                <input className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100" type="password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder={editId ? "Masked; replace to rotate" : "Optional secret"} />
-                <p className="mt-1 text-xs text-slate-500">Secrets are masked after creation. Enter a new value to replace the current secret.</p>
-              </div>
-            </div>
-            <label className="flex items-center gap-3 text-sm text-slate-300 cursor-pointer">
-              <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="accent-[#dc2626]" />
-              Enabled
-            </label>
+            <AdminFormSection title="Webhook Details">
+              <Input label="Name" value={name} onChange={setName} placeholder="My Webhook" />
+              <Input label="Description" value={description} onChange={setDescription} placeholder="Optional description" />
+              <Input label="Payload URL" value={url} onChange={setUrl} placeholder="https://discord.com/api/webhooks/..." />
+              <AdminSelect label="Type" value={webhookType} onChange={(v) => setWebhookType(v as "regular" | "discord")} options={[
+                { value: "regular", label: "Regular" },
+                { value: "discord", label: "Discord Embed" },
+              ]} />
+              <Input label="Signing Secret" value={secret} onChange={setSecret} type="password" placeholder={editId ? "Masked; replace to rotate" : "Optional secret"} />
+              <p className="-mt-2 text-xs text-slate-500">Secrets are masked after creation. Enter a new value to replace the current secret.</p>
+              <label className="flex items-center gap-3 text-sm text-slate-300 cursor-pointer">
+                <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="accent-[#dc2626]" />
+                Enabled
+              </label>
+            </AdminFormSection>
 
             {webhookType === "discord" && (
-              <div className="rounded-lg border border-white/[0.06] bg-[#161b28] p-4 grid gap-4">
-                <h4 className="text-xs font-semibold uppercase tracking-widest text-slate-400">Discord Settings</h4>
+              <AdminFormSection title="Discord Settings">
                 <Input label="Username Override" value={discordUsername} onChange={setDiscordUsername} placeholder="My Bot" />
                 <Input label="Avatar URL" value={discordAvatarUrl} onChange={setDiscordAvatarUrl} placeholder="https://..." />
-                <div>
-                  <label className="mb-1.5 block text-sm font-medium text-slate-300">Content</label>
-                  <textarea className="h-20 w-full rounded-lg border border-white/10 bg-surface-card-header px-3 py-2 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15" value={discordContent} onChange={(e) => setDiscordContent(e.target.value)} placeholder="Optional message content" />
-                </div>
-                {/* Mini preview */}
+                <Input label="Content" value={discordContent} onChange={setDiscordContent} placeholder="Optional message content" />
                 <div className="rounded-lg bg-[#2b2d31] p-3">
                   <div className="flex items-center gap-2.5 mb-2">
                     {discordAvatarUrl ? <span aria-label="Webhook avatar preview" className="h-6 w-6 rounded-full bg-cover bg-center" role="img" style={{ backgroundImage: `url(${discordAvatarUrl})` }} /> : <div className="h-6 w-6 rounded-full bg-[#5865f2]" />}
@@ -259,11 +248,10 @@ export function AdminWebhooks() {
                     {events.length > 0 && <p className="text-xs text-[#949ba4] mt-1">Triggered on: {events.join(", ")}</p>}
                   </div>
                 </div>
-              </div>
+              </AdminFormSection>
             )}
 
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-slate-300">Events</label>
+            <AdminFormSection title="Events">
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 max-h-32 sm:max-h-48 overflow-y-auto">
                 {AVAILABLE_EVENTS.map((ev) => (
                   <label key={ev} className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-white/10 bg-[#161b28] px-3 py-2.5 text-sm text-slate-200 hover:bg-white/[0.03]">
@@ -272,7 +260,7 @@ export function AdminWebhooks() {
                   </label>
                 ))}
               </div>
-            </div>
+            </AdminFormSection>
           </div>
           {(editId ? updateMut.isError : createMut.isError) ? <p className="mt-4 text-sm text-red-300">{errorMessage(editId ? updateMut.error : createMut.error, `Webhook could not be ${editId ? "updated" : "created"}.`)}</p> : null}
           <ModalFooter
@@ -299,6 +287,6 @@ function WebhookDeliveryModal({ webhookId, onClose }: { webhookId: string; onClo
     {query.isLoading ? <p className="text-sm text-slate-500">Loading delivery history...</p> : null}
     {query.isError ? <p className="text-sm text-red-300">{errorMessage(query.error, "Delivery history could not be loaded.")}</p> : null}
     {!query.isLoading && !query.isError && deliveries.length === 0 ? <EmptyState icon={Globe} message="No deliveries recorded."/> : null}
-    {!query.isLoading && !query.isError && deliveries.length > 0 ? <div className="max-h-[60vh] overflow-auto"><div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500"><th className="px-3 py-2.5">Created</th><th className="px-3 py-2.5">Event</th><th className="px-3 py-2.5">State</th><th className="hidden sm:table-cell px-3 py-2.5">HTTP</th><th className="px-3 py-2.5">Attempts</th><th className="hidden md:table-cell px-3 py-2.5">Failure</th></tr></thead><tbody>{deliveries.map((delivery) => <tr className="border-b border-white/[0.04]" key={delivery.id}><td className="px-3 py-2.5 whitespace-nowrap">{new Date(delivery.createdAt).toLocaleString()}</td><td className="px-3 py-2.5 font-mono max-w-[120px] truncate">{delivery.eventName}</td><td className="px-3 py-2.5"><Pill tone={delivery.state === "delivered" ? "green" : delivery.state === "failed" ? "red" : "yellow"}>{delivery.state}</Pill></td><td className="hidden sm:table-cell px-3 py-2.5">{delivery.responseStatus ?? "—"}</td><td className="px-3 py-2.5">{delivery.attempt}</td><td className="hidden md:table-cell px-3 py-2.5 text-red-300 max-w-[160px] truncate">{delivery.lastError ?? delivery.responseBodyExcerpt ?? "—"}</td></tr>)}</tbody></table></div></div> : null}
+    {!query.isLoading && !query.isError && Array.isArray(deliveries) && deliveries.length > 0 ? <div className="max-h-[60vh] overflow-auto"><div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500"><th className="px-3 py-2.5">Created</th><th className="px-3 py-2.5">Event</th><th className="px-3 py-2.5">State</th><th className="hidden sm:table-cell px-3 py-2.5">HTTP</th><th className="px-3 py-2.5">Attempts</th><th className="hidden md:table-cell px-3 py-2.5">Failure</th></tr></thead><tbody>{Array.isArray(deliveries) && deliveries.map((delivery) => <tr className="border-b border-white/[0.04]" key={delivery.id}><td className="px-3 py-2.5 whitespace-nowrap">{new Date(delivery.createdAt).toLocaleString()}</td><td className="px-3 py-2.5 font-mono max-w-[120px] truncate">{delivery.eventName}</td><td className="px-3 py-2.5"><Pill tone={delivery.state === "delivered" ? "green" : delivery.state === "failed" ? "red" : "yellow"}>{delivery.state}</Pill></td><td className="hidden sm:table-cell px-3 py-2.5">{delivery.responseStatus ?? "—"}</td><td className="px-3 py-2.5">{delivery.attempt}</td><td className="hidden md:table-cell px-3 py-2.5 text-red-300 max-w-[160px] truncate">{delivery.lastError ?? delivery.responseBodyExcerpt ?? "—"}</td></tr>)}</tbody></table></div></div> : null}
   </Modal>;
 }

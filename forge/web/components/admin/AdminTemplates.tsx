@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ban, Box, Cpu, FileCode, Gamepad2, HardDrive, Layers, Pencil, Plus, Terminal, Trash2 } from "lucide-react";
 import { createTemplate, deleteEgg, fetchTemplates, updateEgg, fetchNests, createEgg } from "@/lib/api";
 import type { ApiEgg, ApiNest, UpdateEggInput } from "@/lib/api";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, Textarea, StatsRow } from "./admin-ui";
+import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, Textarea, StatsRow, AdminPageHeader, AdminPageLayout } from "./admin-ui";
 import { EGG_TEMPLATES, type EggTemplateItem } from "@/lib/egg-templates";
 import { useSearchParams } from "next/navigation";
 import { useToast } from "@/components/ui/toast";
@@ -27,7 +27,7 @@ const emptyForm = {
 export function AdminTemplates() {
   const qc = useQueryClient();
   const templatesQuery = useQuery({ queryKey: ["templates"], queryFn: fetchTemplates });
-  const templates = templatesQuery.data ?? [];
+  const templates = useMemo(() => Array.isArray(templatesQuery.data) ? templatesQuery.data : [], [templatesQuery.data]);
   const isLoading = templatesQuery.isLoading;
 
   const searchParams = useSearchParams();
@@ -41,7 +41,7 @@ export function AdminTemplates() {
   const [importTemplate, setImportTemplate] = useState<EggTemplateItem | null>(null);
 
   const nestsQuery = useQuery({ queryKey: ["nests"], queryFn: fetchNests });
-  const nests = nestsQuery.data ?? [];
+  const nests = useMemo(() => Array.isArray(nestsQuery.data) ? nestsQuery.data : [], [nestsQuery.data]);
 
   const importEggMut = useMutation({
     mutationFn: (params: { nestId: string; template: EggTemplateItem }) => {
@@ -188,10 +188,10 @@ export function AdminTemplates() {
   };
 
   return (
-    <div>
-      <SectionHeader
+    <AdminPageLayout>
+      <AdminPageHeader
         title="Templates"
-        sub="Browse game templates from our catalog. Import them into your nests as eggs."
+        description="Browse game templates from our catalog. Import them into your nests as eggs."
         action={<Btn onClick={openCreate}><Plus size={14} /> New Template</Btn>}
       />
 
@@ -207,7 +207,7 @@ export function AdminTemplates() {
           <EmptyState icon={Box} message="No templates configured. Create one to start deploying servers." />
         ) : (
           <div className="grid gap-4 p-4 md:grid-cols-2 lg:grid-cols-3">
-            {templates.map((tpl) => {
+            {Array.isArray(templates) && templates.map((tpl) => {
               const images = tpl.dockerImages
                 ? (Array.isArray(tpl.dockerImages) ? tpl.dockerImages : Object.values(tpl.dockerImages))
                 : tpl.image
@@ -220,7 +220,7 @@ export function AdminTemplates() {
                 <div key={tpl.id} className="rounded-xl border border-white/[0.06] bg-[#161b28] p-4 space-y-3 hover:border-[#dc2626]/30 transition">
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-semibold text-slate-100">{tpl.name}</h3>
-                    <Pill tone="blue">template</Pill>
+                    <Pill tone="neutral">template</Pill>
                   </div>
 
                   {tpl.description ? (
@@ -338,13 +338,13 @@ export function AdminTemplates() {
         <CardHeader title={`${EGG_TEMPLATES.length} game template${EGG_TEMPLATES.length !== 1 ? "s" : ""}`} icon={Gamepad2} />
         <div className="grid gap-4 p-4 md:grid-cols-2 lg:grid-cols-3">
           {EGG_TEMPLATES.map((t) => (
-            <div key={t.id} className="rounded-xl border border-white/[0.06] bg-[#161b28] p-4 space-y-3 hover:border-sky-400/30 transition">
+            <div key={t.id} className="rounded-xl border border-white/[0.06] bg-[#161b28] p-4 space-y-3 hover:border-white/20 transition">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <h3 className="text-sm font-semibold text-slate-100">{t.name}</h3>
                   <p className="mt-0.5 line-clamp-2 text-xs text-slate-500">{t.description}</p>
                 </div>
-                <Pill tone="blue">{t.game}</Pill>
+                <Pill tone="neutral">{t.game}</Pill>
               </div>
 
               <div className="space-y-2">
@@ -387,7 +387,7 @@ export function AdminTemplates() {
           onClose={() => setImportTemplate(null)}
         />
       ) : null}
-    </div>
+    </AdminPageLayout>
   );
 }
 
@@ -454,7 +454,7 @@ function ImportTemplateModal({
             <select
               value={selectedNest}
               onChange={(e) => setSelectedNest(e.target.value)}
-              className="w-full rounded-lg border border-white/[0.06] bg-[#111722] px-3 py-2 text-sm text-slate-200 focus:border-sky-500/50 focus:outline-none"
+              className="w-full rounded-lg border border-white/[0.06] bg-[#111722] px-3 py-2 text-sm text-slate-200 focus:border-red-400/70 focus:outline-none"
             >
               {nests.map((n) => (
                 <option key={n.id} value={n.id}>{n.name}</option>

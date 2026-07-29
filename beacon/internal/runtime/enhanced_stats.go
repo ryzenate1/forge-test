@@ -111,10 +111,24 @@ func DecodeEnhancedStats(reader io.Reader) (*EnhancedStats, error) {
 }
 
 func CollectEnhancedStats(ctx context.Context, rt Runtime, serverID string) (*EnhancedStats, error) {
+	state, err := rt.Inspect(ctx, serverID)
+	if err != nil {
+		return nil, err
+	}
 	rc, err := rt.StatsStream(ctx, serverID)
 	if err != nil {
 		return nil, err
 	}
 	defer rc.Close()
-	return DecodeEnhancedStats(rc)
+	stats, err := DecodeEnhancedStats(rc)
+	if err != nil {
+		return nil, err
+	}
+	if !state.StartedAt.IsZero() {
+		stats.UptimeSeconds = time.Since(state.StartedAt).Seconds()
+		if stats.UptimeSeconds < 0 {
+			stats.UptimeSeconds = 0
+		}
+	}
+	return stats, nil
 }

@@ -65,7 +65,7 @@ func registerAuthRoutes(protected fiber.Router, cfg Config, mutationLimiter fibe
 			return fiber.NewError(fiber.StatusUnauthorized, "invalid or revoked session")
 		}
 		// Issue new token with same JTI/Exp for continuity
-		newToken, err := issueToken(cfg.AuthSecret, store.User{ID: current.Sub, Email: current.Email, Role: current.Role, SessionVersion: current.SessionVersion})
+		newToken, err := issueConfiguredToken(cfg, store.User{ID: current.Sub, Email: current.Email, Role: current.Role, SessionVersion: current.SessionVersion})
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not issue session token")
 		}

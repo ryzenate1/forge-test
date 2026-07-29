@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { GanttChart, HeartPulse, Network, Plus, Target, Trash2, Zap, type LucideIcon } from "lucide-react";
 import { deleteJSON, fetchJSON, patchJSON, postJSON, putJSON } from "@/lib/api";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
+import { AdminPageLayout, AdminSelect, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
 
 type Algorithm = "round_robin" | "least_connections" | "ip_hash" | "weighted_round_robin";
 type TargetStatus = "healthy" | "unhealthy" | "draining";
@@ -138,7 +138,7 @@ export default function AdminLoadBalancerPage() {
 
   const testSelectionMutation = useMutation({
     mutationFn: (groupId: string) =>
-      fetchJSON<ApiResponse<Target>>(`/admin/load-balancer/groups/${encodeURIComponent(groupId)}/next`),
+      postJSON<ApiResponse<Target>>(`/admin/load-balancer/groups/${encodeURIComponent(groupId)}/next`),
     onSuccess: ({ data }) => setTestResult(data),
   });
 
@@ -147,7 +147,7 @@ export default function AdminLoadBalancerPage() {
     .find((mutation) => mutation.isError)?.error;
 
   return (
-    <div className="space-y-6">
+    <AdminPageLayout>
       <SectionHeader
         title="Load Balancer"
         sub="Manage target groups and traffic routing for game servers."
@@ -204,7 +204,7 @@ export default function AdminLoadBalancerPage() {
       {showCreateGroup && <TargetGroupFormModal title="Create Target Group" form={groupForm} onChange={setGroupForm} onSave={() => createGroupMutation.mutate(groupForm)} onClose={() => setShowCreateGroup(false)} saving={createGroupMutation.isPending} />}
       {editingGroup && <TargetGroupFormModal title="Edit Target Group" form={groupForm} onChange={setGroupForm} onSave={() => updateGroupMutation.mutate({ id: editingGroup.id, data: groupForm })} onClose={() => setEditingGroup(null)} saving={updateGroupMutation.isPending} />}
       {showAddTarget && selectedGroup && <TargetFormModal form={targetForm} onChange={setTargetForm} onSave={() => addTargetMutation.mutate({ groupId: selectedGroup.id, data: targetForm })} onClose={() => setShowAddTarget(false)} saving={addTargetMutation.isPending} />}
-    </div>
+    </AdminPageLayout>
   );
 }
 
@@ -220,7 +220,12 @@ function TargetRow({ target, onStatus, onRemove, removing }: { target: Target; o
 }
 
 function TargetGroupFormModal({ title, form, onChange, onSave, onClose, saving }: { title: string; form: GroupForm; onChange: (form: GroupForm) => void; onSave: () => void; onClose: () => void; saving: boolean }) {
-  return <Modal title={title} onClose={onClose}><div className="grid gap-4"><Input label="Name" value={form.name} onChange={(name) => onChange({ ...form, name })} placeholder="prod-game-servers" /><div><label className="block text-sm font-medium text-slate-300 mb-1.5">Algorithm</label><select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100 outline-none focus:border-[#dc2626]/60 focus:ring-1 focus:ring-[#dc2626]/30" value={form.algorithm} onChange={(event) => onChange({ ...form, algorithm: event.target.value as Algorithm })}><option value="round_robin">Round Robin</option><option value="least_connections">Least Connections</option><option value="ip_hash">IP Hash</option><option value="weighted_round_robin">Weighted Round Robin</option></select></div><Input label="Listening Port" type="number" value={String(form.port)} onChange={(port) => onChange({ ...form, port: Number(port) })} /><Input label="Protocol" value={form.protocol} onChange={(protocol) => onChange({ ...form, protocol })} placeholder="tcp" /></div><ModalFooter onCancel={onClose} onConfirm={onSave} confirmLabel={saving ? "Saving..." : "Save"} disabled={saving || !form.name.trim() || !form.protocol.trim() || form.port < 1 || form.port > 65535} /></Modal>;
+  return <Modal title={title} onClose={onClose}><div className="grid gap-4"><Input label="Name" value={form.name} onChange={(name) => onChange({ ...form, name })} placeholder="prod-game-servers" /><AdminSelect label="Algorithm" value={form.algorithm} onChange={(v) => onChange({ ...form, algorithm: v as Algorithm })} options={[
+    { value: "round_robin", label: "Round Robin" },
+    { value: "least_connections", label: "Least Connections" },
+    { value: "ip_hash", label: "IP Hash" },
+    { value: "weighted_round_robin", label: "Weighted Round Robin" },
+  ]} /><Input label="Listening Port" type="number" value={String(form.port)} onChange={(port) => onChange({ ...form, port: Number(port) })} /><Input label="Protocol" value={form.protocol} onChange={(protocol) => onChange({ ...form, protocol })} placeholder="tcp" /></div><ModalFooter onCancel={onClose} onConfirm={onSave} confirmLabel={saving ? "Saving..." : "Save"} disabled={saving || !form.name.trim() || !form.protocol.trim() || form.port < 1 || form.port > 65535} /></Modal>;
 }
 
 function TargetFormModal({ form, onChange, onSave, onClose, saving }: { form: TargetForm; onChange: (form: TargetForm) => void; onSave: () => void; onClose: () => void; saving: boolean }) {

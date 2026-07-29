@@ -395,6 +395,11 @@ func formatTimestamp(v any) string {
 	switch t := v.(type) {
 	case time.Time:
 		return t.Format(time.RFC3339)
+	case *time.Time:
+		if t != nil {
+			return t.Format(time.RFC3339)
+		}
+		return ""
 	default:
 		return ""
 	}

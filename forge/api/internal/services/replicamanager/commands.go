@@ -99,8 +99,8 @@ func (n NoopCommandDispatcher) GetCommandStatus(_ context.Context, _ string) (st
 
 // instanceCommandID builds an idempotent command identifier scoped to an instance,
 // operation type, and generation.
-func instanceCommandID(instanceID string, typ InstanceCommandType, generation int) string {
-	return fmt.Sprintf("%s-%s-%d", instanceID, string(typ), generation)
+func instanceCommandID(instanceID string, typ InstanceCommandType, generation int, operationID string) string {
+	return fmt.Sprintf("%s-%s-%d-%s", instanceID, string(typ), generation, operationID)
 }
 
 // newOperationID creates a new unique operation identifier for a deploy/scale operation.

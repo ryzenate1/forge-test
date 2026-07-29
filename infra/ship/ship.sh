@@ -108,7 +108,7 @@ ensure_env() {
 
   # Validate critical secrets
   local missing=0
-  for var in POSTGRES_PASSWORD API_AUTH_SECRET FORGE_MASTER_KEY DAEMON_NODE_TOKEN; do
+  for var in POSTGRES_PASSWORD API_AUTH_SECRET FORGE_MASTER_KEY DAEMON_NODE_ID DAEMON_NODE_TOKEN; do
     if [[ -z "${!var:-}" ]]; then
       err "$var is not set in .env"
       missing=1

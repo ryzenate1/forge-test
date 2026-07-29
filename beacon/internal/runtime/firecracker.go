@@ -1,5 +1,5 @@
-//go:build ignore
-// +build ignore
+//go:build firecracker
+// +build firecracker
 
 package runtime
 
@@ -26,53 +26,106 @@ type FirecrackerRuntime struct {
 	config    FirecrackerConfig
 	mu        sync.Mutex
 	instances map[string]*firecrackerInstance
-	fcClient  *http.Client
+	events    chan ContainerEvent
 }
 
+const statusRunning = "running"
+
 type firecrackerInstance struct {
-	vmID      string
-	machineID string
+	vmID       string
+	machineID  string
 	socketPath string
-	pid       int
-	createdAt time.Time
-	running   bool
-	cmd       *exec.Cmd
-	stdout    io.ReadCloser
-	stderr    io.ReadCloser
+	pid        int
+	createdAt  time.Time
+	running    bool
+	cmd        *exec.Cmd
+	stdout     io.ReadCloser
+	stderr     io.ReadCloser
+	done       chan struct{}
+}
+
+type cappedLogBuffer struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (b *cappedLogBuffer) Write(payload []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	originalLength := len(payload)
+	b.data = append(b.data, payload...)
+	if len(b.data) > 1<<20 {
+		b.data = append([]byte(nil), b.data[len(b.data)-(1<<20):]...)
+	}
+	return originalLength, nil
+}
+
+func (b *cappedLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(append([]byte(nil), b.data...))
 }
 
 func NewFirecrackerRuntime(cfg FirecrackerConfig) (*FirecrackerRuntime, error) {
 	if cfg.SocketPath == "" {
-		cfg.SocketPath = "/tmp/firecracker"
+		cfg.SocketPath = "/run/gamepanel/firecracker"
 	}
 	if cfg.FirecrackerBin == "" {
 		cfg.FirecrackerBin = "firecracker"
 	}
 	if cfg.KernelImage == "" {
-		cfg.KernelImage = "/var/lib/forge/kernel/hello-vmlinux.bin"
+		cfg.KernelImage = "/var/lib/gamepanel/firecracker/kernel.bin"
 	}
 	if cfg.RootfsImage == "" {
-		cfg.RootfsImage = "/var/lib/forge/rootfs/rootfs.ext4"
+		cfg.RootfsImage = "/var/lib/gamepanel/firecracker/rootfs.ext4"
+	}
+	if cfg.JailerPath == "" {
+		cfg.JailerPath = "jailer"
 	}
 
-	_ = os.MkdirAll(cfg.SocketPath, 0755)
+	if err := os.MkdirAll(cfg.SocketPath, 0o700); err != nil {
+		return nil, fmt.Errorf("create Firecracker socket directory: %w", err)
+	}
+	if err := os.Chmod(cfg.SocketPath, 0o700); err != nil {
+		return nil, fmt.Errorf("secure Firecracker socket directory: %w", err)
+	}
 
 	return &FirecrackerRuntime{
 		config:    cfg,
 		instances: make(map[string]*firecrackerInstance),
-		fcClient: &http.Client{
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return net.Dial("unix", addr)
-				},
-			},
-			Timeout: 30 * time.Second,
-		},
+		events:    make(chan ContainerEvent, 128),
 	}, nil
 }
 
 func (r *FirecrackerRuntime) Provider() string {
 	return ProviderFirecracker
+}
+
+func (r *FirecrackerRuntime) Close() error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	instances := make([]*firecrackerInstance, 0, len(r.instances))
+	for _, instance := range r.instances {
+		instances = append(instances, instance)
+	}
+	r.mu.Unlock()
+	var closeErrors []error
+	for _, instance := range instances {
+		if instance.cmd != nil && instance.cmd.Process != nil {
+			if err := instance.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				closeErrors = append(closeErrors, err)
+			}
+		}
+		if instance.stdout != nil {
+			_ = instance.stdout.Close()
+		}
+		if instance.stderr != nil {
+			_ = instance.stderr.Close()
+		}
+	}
+	return errors.Join(closeErrors...)
 }
 
 func (r *FirecrackerRuntime) Ping(ctx context.Context) error {
@@ -82,17 +135,10 @@ func (r *FirecrackerRuntime) Ping(ctx context.Context) error {
 	if _, err := exec.LookPath(r.config.FirecrackerBin); err != nil {
 		return fmt.Errorf("firecracker binary %q not found: %w", r.config.FirecrackerBin, err)
 	}
-	return nil
-}
-
-func (r *FirecrackerRuntime) firecrackerURL(vmID, path string) string {
-	r.mu.Lock()
-	inst, ok := r.instances[vmID]
-	r.mu.Unlock()
-	if !ok {
-		return "http://localhost" + path
+	if _, err := exec.LookPath(r.config.JailerPath); err != nil {
+		return fmt.Errorf("firecracker jailer %q not found: %w", r.config.JailerPath, err)
 	}
-	return "http://localhost" + path
+	return nil
 }
 
 func (r *FirecrackerRuntime) fcDo(ctx context.Context, method, socketPath, path string, body interface{}) (*http.Response, error) {
@@ -113,7 +159,7 @@ func (r *FirecrackerRuntime) fcDo(ctx context.Context, method, socketPath, path 
 
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return net.Dial("unix", socketPath)
+			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 		},
 	}
 	client := &http.Client{Transport: transport, Timeout: 30 * time.Second}
@@ -149,23 +195,13 @@ func (r *FirecrackerRuntime) Create(ctx context.Context, req CreateRequest) erro
 }
 
 func (r *FirecrackerRuntime) startFirecrackerProcess(ctx context.Context, vmID, socketPath string) error {
-	jailerBin := r.config.JailerPath
-	var cmd *exec.Cmd
-
-	if jailerBin != "" {
-		args := []string{
-			"--id", vmID,
-			"--exec-file", r.config.FirecrackerBin,
-			"--node", "0",
-			"--chroot-base-dir", r.config.SocketPath,
-		}
-		cmd = exec.CommandContext(ctx, jailerBin, args...)
-	} else {
-		cmd = exec.CommandContext(ctx, r.config.FirecrackerBin,
-			"--api-sock", socketPath,
-			"--id", vmID,
-		)
+	args := []string{
+		"--id", vmID,
+		"--exec-file", r.config.FirecrackerBin,
+		"--node", "0",
+		"--chroot-base-dir", r.config.SocketPath,
 	}
+	cmd := exec.CommandContext(ctx, r.config.JailerPath, args...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -186,10 +222,28 @@ func (r *FirecrackerRuntime) startFirecrackerProcess(ctx context.Context, vmID, 
 		inst.pid = cmd.Process.Pid
 		inst.stdout = stdout
 		inst.stderr = stderr
+		inst.done = make(chan struct{})
+		go r.reapInstance(inst)
 	}
 	r.mu.Unlock()
 
 	return nil
+}
+
+func (r *FirecrackerRuntime) reapInstance(inst *firecrackerInstance) {
+	_ = inst.cmd.Wait()
+	exitCode := 0
+	if inst.cmd.ProcessState != nil {
+		exitCode = inst.cmd.ProcessState.ExitCode()
+	}
+	r.mu.Lock()
+	inst.running = false
+	close(inst.done)
+	r.mu.Unlock()
+	select {
+	case r.events <- ContainerEvent{ServerID: inst.machineID, Action: "die", ExitCode: exitCode}:
+	default:
+	}
 }
 
 func (r *FirecrackerRuntime) configureMicroVM(ctx context.Context, socketPath string, req CreateRequest, vmID string) error {
@@ -206,10 +260,10 @@ func (r *FirecrackerRuntime) configureMicroVM(ctx context.Context, socketPath st
 	}
 
 	if _, err := r.fcDo(ctx, "PUT", socketPath, "/drives/rootfs", map[string]interface{}{
-		"drive_id":      "rootfs",
-		"path_on_host":  r.config.RootfsImage,
+		"drive_id":       "rootfs",
+		"path_on_host":   r.config.RootfsImage,
 		"is_root_device": true,
-		"is_read_only":  false,
+		"is_read_only":   false,
 	}); err != nil {
 		return fmt.Errorf("set rootfs: %w", err)
 	}
@@ -255,7 +309,9 @@ func (r *FirecrackerRuntime) ensureInstanceRunning(ctx context.Context, vmID, so
 		if err := r.startFirecrackerProcess(ctx, vmID, socketPath); err != nil {
 			return err
 		}
-		time.Sleep(500 * time.Millisecond)
+		if err := waitForUnixSocket(ctx, socketPath); err != nil {
+			return err
+		}
 	}
 
 	if err := r.configureMicroVM(ctx, socketPath, req, vmID); err != nil {
@@ -295,6 +351,29 @@ func (r *FirecrackerRuntime) getSocketPath(serverID string) string {
 	return filepath.Join(r.config.SocketPath, containerName(serverID)+".sock")
 }
 
+func waitForUnixSocket(ctx context.Context, socketPath string) error {
+	delay := 10 * time.Millisecond
+	for {
+		info, err := os.Stat(socketPath)
+		if err == nil && info.Mode()&os.ModeSocket != 0 {
+			return nil
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect Firecracker socket: %w", err)
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("wait for Firecracker socket: %w", ctx.Err())
+		}
+		if delay < 250*time.Millisecond {
+			delay *= 2
+		}
+	}
+}
+
 func (r *FirecrackerRuntime) getInstance(serverID string) (*firecrackerInstance, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -324,7 +403,20 @@ func (r *FirecrackerRuntime) Install(ctx context.Context, req InstallRequest) (I
 	if err := r.startFirecrackerProcess(ctx, vmID, socketPath); err != nil {
 		return InstallResult{}, err
 	}
-	time.Sleep(500 * time.Millisecond)
+	var installLogs cappedLogBuffer
+	var drain sync.WaitGroup
+	drain.Add(2)
+	go func() {
+		defer drain.Done()
+		_, _ = io.Copy(&installLogs, inst.stdout)
+	}()
+	go func() {
+		defer drain.Done()
+		_, _ = io.Copy(&installLogs, inst.stderr)
+	}()
+	if err := waitForUnixSocket(ctx, socketPath); err != nil {
+		return InstallResult{}, err
+	}
 
 	if req.Image == "" {
 		req.Image = "alpine:3.21"
@@ -386,25 +478,14 @@ func (r *FirecrackerRuntime) Install(ctx context.Context, req InstallRequest) (I
 	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	done := make(chan struct{})
-	go func() {
-		_ = inst.cmd.Wait()
-		close(done)
-	}()
-
 	select {
-	case <-done:
+	case <-inst.done:
 	case <-waitCtx.Done():
 		_ = r.killInstance(vmID)
 		return InstallResult{}, waitCtx.Err()
 	}
-
-	logs := ""
-	if inst.stdout != nil {
-		var buf bytes.Buffer
-		_, _ = io.Copy(&buf, inst.stdout)
-		logs = buf.String()
-	}
+	drain.Wait()
+	logs := installLogs.String()
 
 	r.mu.Lock()
 	delete(r.instances, vmID)
@@ -428,11 +509,12 @@ func (r *FirecrackerRuntime) Inspect(ctx context.Context, serverID string) (Cont
 	}
 
 	return ContainerState{
-		ServerID: serverID,
-		ID:       vmID,
-		Exists:   true,
-		Running:  running,
-		Status:   statusRunning,
+		ServerID:  serverID,
+		ID:        vmID,
+		Exists:    true,
+		Running:   running,
+		Status:    statusRunning,
+		StartedAt: inst.createdAt,
 	}, nil
 }
 
@@ -449,11 +531,12 @@ func (r *FirecrackerRuntime) List(ctx context.Context) ([]ContainerState, error)
 			}
 		}
 		states = append(states, ContainerState{
-			ServerID: inst.machineID,
-			ID:       inst.vmID,
-			Exists:   true,
-			Running:  running,
-			Status:   statusRunning,
+			ServerID:  inst.machineID,
+			ID:        inst.vmID,
+			Exists:    true,
+			Running:   running,
+			Status:    statusRunning,
+			StartedAt: inst.createdAt,
 		})
 	}
 	return states, nil
@@ -471,7 +554,9 @@ func (r *FirecrackerRuntime) Start(ctx context.Context, serverID string) error {
 		if err := r.startFirecrackerProcess(ctx, vmID, socketPath); err != nil {
 			return err
 		}
-		time.Sleep(500 * time.Millisecond)
+		if err := waitForUnixSocket(ctx, socketPath); err != nil {
+			return err
+		}
 	}
 
 	if _, err := r.fcDo(ctx, "PUT", socketPath, "/actions", map[string]string{
@@ -501,14 +586,8 @@ func (r *FirecrackerRuntime) Stop(ctx context.Context, serverID string) error {
 
 	_ = inst.cmd.Process.Signal(unix.SIGTERM)
 
-	done := make(chan struct{})
-	go func() {
-		_ = inst.cmd.Wait()
-		close(done)
-	}()
-
 	select {
-	case <-done:
+	case <-inst.done:
 	case <-time.After(30 * time.Second):
 		_ = inst.cmd.Process.Kill()
 	case <-ctx.Done():
@@ -541,14 +620,8 @@ func (r *FirecrackerRuntime) WaitForStop(ctx context.Context, serverID string, d
 	waitCtx, cancel := context.WithTimeout(ctx, duration)
 	defer cancel()
 
-	done := make(chan struct{})
-	go func() {
-		_ = inst.cmd.Wait()
-		close(done)
-	}()
-
 	select {
-	case <-done:
+	case <-inst.done:
 		return nil
 	case <-waitCtx.Done():
 		if ctx.Err() != nil {
@@ -559,7 +632,7 @@ func (r *FirecrackerRuntime) WaitForStop(ctx context.Context, serverID string, d
 		}
 		_ = inst.cmd.Process.Signal(unix.SIGTERM)
 		select {
-		case <-done:
+		case <-inst.done:
 			return nil
 		case <-time.After(10 * time.Second):
 			return inst.cmd.Process.Kill()
@@ -586,8 +659,16 @@ func (r *FirecrackerRuntime) Signal(ctx context.Context, serverID, signal string
 	}
 
 	signal = strings.ToUpper(strings.TrimSpace(signal))
-	sig, err := unix.SignalNumber(signal)
-	if err != nil || sig == 0 {
+	signals := map[string]unix.Signal{
+		"SIGTERM": unix.SIGTERM,
+		"SIGKILL": unix.SIGKILL,
+		"SIGINT":  unix.SIGINT,
+		"SIGHUP":  unix.SIGHUP,
+		"SIGUSR1": unix.SIGUSR1,
+		"SIGUSR2": unix.SIGUSR2,
+	}
+	sig, ok := signals[signal]
+	if !ok {
 		return fmt.Errorf("unsupported signal %q", signal)
 	}
 
@@ -617,8 +698,8 @@ func (r *FirecrackerRuntime) Stats(ctx context.Context, serverID string) (Stats,
 	defer resp.Body.Close()
 
 	var vmConfig struct {
-		VcpuCount int    `json:"vcpu_count"`
-		MemSizeMib int   `json:"mem_size_mib"`
+		VcpuCount  int `json:"vcpu_count"`
+		MemSizeMib int `json:"mem_size_mib"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&vmConfig); err != nil {
 		return Stats{}, fmt.Errorf("decode vm config: %w", err)
@@ -632,7 +713,7 @@ func (r *FirecrackerRuntime) Stats(ctx context.Context, serverID string) (Stats,
 	if err == nil {
 		defer metricsResp.Body.Close()
 		var metricsData struct {
-			MemoryUsageMB float64 `json:"memory_usage_mb"`
+			MemoryUsageMB   float64 `json:"memory_usage_mb"`
 			CPUUsagePercent float64 `json:"cpu_usage_percent"`
 		}
 		if err := json.NewDecoder(metricsResp.Body).Decode(&metricsData); err == nil {
@@ -653,12 +734,22 @@ func (r *FirecrackerRuntime) Logs(ctx context.Context, serverID string) (io.Read
 	reader, writer := io.Pipe()
 	go func() {
 		defer writer.Close()
-		if inst.stdout != nil {
-			_, _ = io.Copy(writer, inst.stdout)
+		var copies sync.WaitGroup
+		for _, source := range []io.Reader{inst.stdout, inst.stderr} {
+			if source == nil {
+				continue
+			}
+			copies.Add(1)
+			go func(source io.Reader) {
+				defer copies.Done()
+				_, _ = io.Copy(writer, source)
+			}(source)
 		}
-		if inst.stderr != nil {
-			_, _ = io.Copy(writer, inst.stderr)
-		}
+		copies.Wait()
+	}()
+	go func() {
+		<-ctx.Done()
+		_ = reader.CloseWithError(ctx.Err())
 	}()
 
 	return reader, nil
@@ -673,33 +764,22 @@ func (r *FirecrackerRuntime) LogsStream(ctx context.Context, serverID string, ta
 	reader, writer := io.Pipe()
 	go func() {
 		defer writer.Close()
-		buf := make([]byte, 4096)
-		for {
-			if inst.stdout != nil {
-				n, err := inst.stdout.Read(buf)
-				if n > 0 {
-					_, _ = writer.Write(buf[:n])
-				}
-				if err != nil {
-					return
-				}
+		var copies sync.WaitGroup
+		for _, source := range []io.Reader{inst.stdout, inst.stderr} {
+			if source == nil {
+				continue
 			}
-			if inst.stderr != nil {
-				n, err := inst.stderr.Read(buf)
-				if n > 0 {
-					_, _ = writer.Write(buf[:n])
-				}
-				if err != nil {
-					return
-				}
-			}
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				time.Sleep(100 * time.Millisecond)
-			}
+			copies.Add(1)
+			go func(source io.Reader) {
+				defer copies.Done()
+				_, _ = io.Copy(writer, source)
+			}(source)
 		}
+		copies.Wait()
+	}()
+	go func() {
+		<-ctx.Done()
+		_ = reader.CloseWithError(ctx.Err())
 	}()
 
 	return reader, nil
@@ -737,8 +817,8 @@ func (r *FirecrackerRuntime) StatsStream(ctx context.Context, serverID string) (
 				metricsResp, err := r.fcDo(ctx, "GET", inst.socketPath, "/metrics", nil)
 				if err == nil {
 					var metricsData struct {
-						MemoryUsageMB    float64 `json:"memory_usage_mb"`
-						CPUUsagePercent  float64 `json:"cpu_usage_percent"`
+						MemoryUsageMB   float64 `json:"memory_usage_mb"`
+						CPUUsagePercent float64 `json:"cpu_usage_percent"`
 					}
 					_ = json.NewDecoder(metricsResp.Body).Decode(&metricsData)
 					metricsResp.Body.Close()
@@ -809,7 +889,12 @@ func (r *FirecrackerRuntime) killInstance(vmID string) error {
 
 	if inst.cmd != nil && inst.cmd.Process != nil {
 		_ = inst.cmd.Process.Kill()
-		_ = inst.cmd.Wait()
+		if inst.done != nil {
+			select {
+			case <-inst.done:
+			case <-time.After(10 * time.Second):
+			}
+		}
 	}
 
 	os.Remove(inst.socketPath)
@@ -818,42 +903,25 @@ func (r *FirecrackerRuntime) killInstance(vmID string) error {
 }
 
 func (r *FirecrackerRuntime) WatchEvents(ctx context.Context) (<-chan ContainerEvent, <-chan error) {
-	out := make(chan ContainerEvent)
+	out := make(chan ContainerEvent, 128)
 	errs := make(chan error, 1)
 
 	go func() {
 		defer close(out)
 		defer close(errs)
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
 		for {
 			select {
-			case <-ticker.C:
-				r.mu.Lock()
-				for vmID, inst := range r.instances {
-					if inst.cmd == nil || inst.cmd.Process == nil {
-						continue
-					}
-					if err := inst.cmd.Process.Signal(unix.Signal(0)); err != nil {
-						inst.running = false
-						exitCode := 0
-						if inst.cmd.ProcessState != nil {
-							exitCode = inst.cmd.ProcessState.ExitCode()
-						}
-						select {
-						case out <- ContainerEvent{
-							ServerID: inst.machineID,
-							Action:   "die",
-							ExitCode: exitCode,
-						}:
-						case <-ctx.Done():
-							r.mu.Unlock()
-							return
-						}
-						delete(r.instances, vmID)
+			case event := <-r.events:
+				select {
+				case out <- event:
+				case <-ctx.Done():
+					return
+				default:
+					select {
+					case errs <- errors.New("Firecracker event dropped because the consumer is not keeping up"):
+					default:
 					}
 				}
-				r.mu.Unlock()
 			case <-ctx.Done():
 				return
 			}
@@ -864,8 +932,8 @@ func (r *FirecrackerRuntime) WatchEvents(ctx context.Context) (<-chan ContainerE
 }
 
 type firecrackerConsoleSession struct {
-	reader *io.PipeReader
-	writer *io.PipeWriter
+	reader    *io.PipeReader
+	writer    *io.PipeWriter
 	closeOnce sync.Once
 }
 

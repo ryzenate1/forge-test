@@ -254,10 +254,11 @@ func (c *Client) GitCleanup(ctx context.Context, baseURL, nodeToken, workspaceID
 }
 
 type CapabilitiesResponse struct {
-	NodeID       string            `json:"nodeId,omitempty"`
-	Architecture string            `json:"architecture"`
-	Capabilities []CapabilityEntry `json:"capabilities"`
-	BuildInfo    *BuildCapability  `json:"buildInfo,omitempty"`
+	NodeID        string            `json:"nodeId,omitempty"`
+	BeaconVersion string            `json:"beaconVersion"`
+	Architecture  string            `json:"architecture"`
+	Capabilities  []CapabilityEntry `json:"capabilities"`
+	BuildInfo     *BuildCapability  `json:"buildInfo,omitempty"`
 }
 
 type CapabilityEntry struct {

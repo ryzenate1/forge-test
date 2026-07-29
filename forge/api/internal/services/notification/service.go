@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,14 +35,14 @@ type Store interface {
 }
 
 var EventTypeMapping = map[string]string{
-	"server.crash":          string(events.EventServerCrashed),
+	"server.crash":            string(events.EventServerCrashed),
 	"server.install.complete": string(events.EventServerInstallCompleted),
-	"backup.complete":       string(events.EventServerBackupCreated),
-	"backup.failed":         string(events.EventServerBackupFailed),
-	"deployment.complete":   string(events.EventDeploymentCompleted),
-	"deployment.failed":     string(events.EventDeploymentFailed),
-	"node.down":             string(events.EventNodeOffline),
-	"node.up":               string(events.EventNodeOnline),
+	"backup.complete":         string(events.EventServerBackupCreated),
+	"backup.failed":           string(events.EventServerBackupFailed),
+	"deployment.complete":     string(events.EventDeploymentCompleted),
+	"deployment.failed":       string(events.EventDeploymentFailed),
+	"node.down":               string(events.EventNodeOffline),
+	"node.up":                 string(events.EventNodeOnline),
 }
 
 var ReverseEventTypeMapping map[string]string
@@ -52,18 +55,25 @@ func init() {
 }
 
 type Service struct {
-	store    Store
-	client   *http.Client
-	logger   *slog.Logger
-	mu       sync.RWMutex
-	channels []store.NotificationChannel
+	store         Store
+	client        *http.Client
+	logger        *slog.Logger
+	mu            sync.RWMutex
+	channels      []store.NotificationChannel
+	deliverySlots chan struct{}
 }
 
 func New(s Store, logger *slog.Logger) *Service {
 	return &Service{
-		store:  s,
-		client: &http.Client{Timeout: 15 * time.Second},
-		logger: logger,
+		store: s,
+		client: &http.Client{
+			Timeout: 15 * time.Second,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		logger:        logger,
+		deliverySlots: make(chan struct{}, 32),
 	}
 }
 
@@ -91,6 +101,9 @@ func (svc *Service) ListChannels(ctx context.Context) ([]store.NotificationChann
 }
 
 func (svc *Service) CreateChannel(ctx context.Context, req store.CreateNotificationChannelRequest) (store.NotificationChannel, error) {
+	if err := validateNotificationChannelConfig(req.Type, req.Config); err != nil {
+		return store.NotificationChannel{}, err
+	}
 	ch, err := svc.store.CreateNotificationChannel(ctx, req)
 	if err != nil {
 		return store.NotificationChannel{}, err
@@ -106,6 +119,15 @@ func (svc *Service) GetChannel(ctx context.Context, id string) (store.Notificati
 }
 
 func (svc *Service) UpdateChannel(ctx context.Context, id string, req store.UpdateNotificationChannelRequest) (store.NotificationChannel, error) {
+	if req.Config != nil {
+		current, err := svc.store.GetNotificationChannel(ctx, id)
+		if err != nil {
+			return store.NotificationChannel{}, err
+		}
+		if err := validateNotificationChannelConfig(current.Type, *req.Config); err != nil {
+			return store.NotificationChannel{}, err
+		}
+	}
 	ch, err := svc.store.UpdateNotificationChannel(ctx, id, req)
 	if err != nil {
 		return store.NotificationChannel{}, err
@@ -182,7 +204,15 @@ func (svc *Service) Handle(ctx context.Context, ev events.Envelope) error {
 			continue
 		}
 
-		go svc.deliver(ch, eventName, ev, template)
+		select {
+		case svc.deliverySlots <- struct{}{}:
+			go func(channel store.NotificationChannel) {
+				defer func() { <-svc.deliverySlots }()
+				svc.deliver(channel, eventName, ev, template)
+			}(ch)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return nil
 }
@@ -283,15 +313,14 @@ func (svc *Service) sendTelegram(ctx context.Context, config map[string]any, eve
 	if botToken == "" || chatID == "" {
 		return fmt.Errorf("telegram bot_token and chat_id required")
 	}
-	text := fmt.Sprintf("*%s*\n%s\n\nResource: `%s` (%s)", eventName, formatEventMessage(eventName, ev), ev.ResourceID, ev.ResourceType)
+	text := fmt.Sprintf("%s\n%s\n\nResource: %s (%s)", eventName, formatEventMessage(eventName, ev), ev.ResourceID, ev.ResourceType)
 	if len(ev.Payload) > 0 {
 		details, _ := json.MarshalIndent(ev.Payload, "", "  ")
-		text += "\n\n```json\n" + string(details) + "\n```"
+		text += "\n\n" + string(details)
 	}
 	payload := map[string]any{
-		"chat_id":    chatID,
-		"text":       text,
-		"parse_mode": "Markdown",
+		"chat_id": chatID,
+		"text":    text,
 	}
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", botToken)
 	return svc.postJSON(ctx, apiURL, payload)
@@ -331,6 +360,9 @@ func (svc *Service) postJSON(ctx context.Context, url string, payload any) error
 }
 
 func (svc *Service) postJSONWithHeaders(ctx context.Context, url string, payload any, headers map[string]any) error {
+	if err := validateOutboundNotificationURL(url); err != nil {
+		return err
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -343,6 +375,10 @@ func (svc *Service) postJSONWithHeaders(ctx context.Context, url string, payload
 	req.Header.Set("User-Agent", "GamePanel-Notification/1.0")
 	for k, v := range headers {
 		if s, ok := v.(string); ok {
+			switch strings.ToLower(strings.TrimSpace(k)) {
+			case "host", "content-length", "connection", "transfer-encoding":
+				continue
+			}
 			req.Header.Set(k, s)
 		}
 	}
@@ -353,6 +389,65 @@ func (svc *Service) postJSONWithHeaders(ctx context.Context, url string, payload
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("notification returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func validateNotificationChannelConfig(channelType store.NotificationChannelType, config map[string]any) error {
+	data, err := json.Marshal(config)
+	if err != nil || len(data) > 64<<10 {
+		return fmt.Errorf("notification configuration is invalid or too large")
+	}
+	var rawURL string
+	switch channelType {
+	case store.NotificationChannelSlack, store.NotificationChannelDiscord:
+		rawURL, _ = config["webhook_url"].(string)
+	case store.NotificationChannelWebhook:
+		rawURL, _ = config["url"].(string)
+	case store.NotificationChannelTelegram:
+		token, _ := config["bot_token"].(string)
+		chatID, _ := config["chat_id"].(string)
+		if token == "" || len(token) > 256 || strings.ContainsAny(token, "/?#@") || chatID == "" || len(chatID) > 128 {
+			return fmt.Errorf("invalid Telegram configuration")
+		}
+		return nil
+	case store.NotificationChannelEmail:
+		return nil
+	default:
+		return fmt.Errorf("unsupported notification channel type")
+	}
+	if err := validateOutboundNotificationURL(rawURL); err != nil {
+		return err
+	}
+	u, _ := url.Parse(rawURL)
+	switch channelType {
+	case store.NotificationChannelSlack:
+		if !strings.EqualFold(u.Hostname(), "hooks.slack.com") {
+			return fmt.Errorf("Slack webhook must use hooks.slack.com")
+		}
+	case store.NotificationChannelDiscord:
+		host := strings.ToLower(u.Hostname())
+		if host != "discord.com" && host != "discordapp.com" {
+			return fmt.Errorf("Discord webhook must use an official Discord host")
+		}
+	}
+	return nil
+}
+
+func validateOutboundNotificationURL(rawURL string) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
+		return fmt.Errorf("notification URL must be an absolute HTTPS URL without userinfo")
+	}
+	addresses, err := net.LookupIP(u.Hostname())
+	if err != nil || len(addresses) == 0 {
+		return fmt.Errorf("notification host does not resolve")
+	}
+	for _, address := range addresses {
+		if address.IsLoopback() || address.IsPrivate() || address.IsUnspecified() ||
+			address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() {
+			return fmt.Errorf("notification URL resolves to a non-public address")
+		}
 	}
 	return nil
 }

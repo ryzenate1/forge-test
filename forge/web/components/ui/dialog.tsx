@@ -108,4 +108,11 @@ function DialogFooter({ className, ...props }: React.HTMLAttributes<HTMLDivEleme
   );
 }
 
+Dialog.displayName = "Dialog";
+DialogTrigger.displayName = "DialogTrigger";
+DialogContent.displayName = "DialogContent";
+DialogHeader.displayName = "DialogHeader";
+DialogTitle.displayName = "DialogTitle";
+DialogDescription.displayName = "DialogDescription";
+DialogFooter.displayName = "DialogFooter";
 export { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter };

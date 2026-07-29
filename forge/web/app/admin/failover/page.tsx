@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, BarChart3, Plus, Shield, ShieldAlert, Trash2, Zap } from "lucide-react";
 import { deleteJSON, fetchJSON, postJSON, putJSON } from "@/lib/api";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
+import { AdminPageHeader, AdminPageLayout, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill } from "@/components/admin/admin-ui";
 
 type ApiResponse<T> = { data: T };
 type FailoverAction = "evacuate" | "restart" | "notify";
@@ -86,7 +86,7 @@ export default function AdminFailoverPage() {
     },
   });
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteJSON(`/admin/failover/policies/${id}`),
+    mutationFn: (id: string) => deleteJSON(`/admin/failover/policies/${encodeURIComponent(id)}`),
     onSuccess: invalidate,
   });
   const recordFailureMutation = useMutation({
@@ -113,17 +113,17 @@ export default function AdminFailoverPage() {
   };
 
   return (
-    <div className="space-y-6">
-      <SectionHeader
+    <AdminPageLayout>
+      <AdminPageHeader
         title="Failover Policies"
-        sub="Configure threshold-based recovery actions for node failures."
+        description="Configure threshold-based recovery actions for node failures."
         action={<Btn tone="primary" onClick={() => setShowCreate(true)}><Plus size={14} /> Create Policy</Btn>}
       />
 
       <div className="grid gap-4 md:grid-cols-4">
         <MetricCard icon={Shield} label="Total Policies" value={policies.length} tone="text-slate-100" />
         <MetricCard icon={AlertTriangle} label="Failures Detected" value={metrics?.failuresDetected ?? 0} tone="text-amber-400" />
-        <MetricCard icon={Zap} label="Evacuations" value={metrics?.evacuationsTriggered ?? 0} tone="text-blue-400" />
+        <MetricCard icon={Zap} label="Evacuations" value={metrics?.evacuationsTriggered ?? 0} tone="text-sky-400" />
         <MetricCard icon={BarChart3} label="Restarts / Notices" value={`${metrics?.restartsTriggered ?? 0} / ${metrics?.notificationsSent ?? 0}`} tone="text-emerald-400" />
       </div>
 
@@ -196,7 +196,7 @@ export default function AdminFailoverPage() {
           <ModalFooter onCancel={closeModal} onConfirm={() => showCreate ? createMutation.mutate() : updateMutation.mutate()} confirmLabel="Save" disabled={createMutation.isPending || updateMutation.isPending || !form.nodeId.trim() || form.maxFailures < 1 || form.failureWindowSec < 1 || form.cooldownSec < 1} />
         </Modal>
       )}
-    </div>
+    </AdminPageLayout>
   );
 }
 

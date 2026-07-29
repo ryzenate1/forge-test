@@ -11,6 +11,7 @@ import {
   type FileEntry,
 } from "@/lib/api/host-files";
 import { NodeSelect } from "./node-select";
+import { AdminToolbar } from "./admin-ui";
 
 const btn = cn(
   "inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10",
@@ -278,10 +279,9 @@ export function HostFilesView() {
 
   return (
     <div className="space-y-4">
-      {/* Toolbar */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <AdminToolbar className="items-center">
         <Breadcrumbs directory={directory} onOpen={setDirectory} />
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <NodeSelect value={nodeId} onChange={handleNodeChange} />
           <label className="relative">
             <Search className="absolute left-3 top-2.5 text-slate-500 pointer-events-none" size={14} />
@@ -313,7 +313,7 @@ export function HostFilesView() {
             <input className="sr-only" disabled={busy} multiple onChange={handleUpload} type="file" />
           </label>
         </div>
-      </div>
+      </AdminToolbar>
 
       {/* Error */}
       {(error || files.isError) ? (

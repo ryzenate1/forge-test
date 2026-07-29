@@ -187,7 +187,8 @@ export function EnhancedServerConsole({ serverId, serverName }: EnhancedServerCo
       socket?.close();
       if (wsRef.current === socket) wsRef.current = null;
     };
-  }, [serverId, serverName, nonce]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverId, nonce]);
 
   const sendCommand = useCallback((cmd: string) => {
     if (!cmd.trim() || connectionStatus !== "connected" || !wsRef.current) return;

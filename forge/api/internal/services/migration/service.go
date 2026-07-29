@@ -122,6 +122,10 @@ func (s *Service) EvacuationMigrationStatus(ctx context.Context, migrationID str
 	return migration.Status, err
 }
 
+func (s *Service) ExecutorAvailable() bool {
+	return s != nil && s.daemon != nil && s.runtime != nil
+}
+
 func (s *Service) Metrics() Metrics {
 	if s == nil {
 		return Metrics{}
@@ -676,15 +680,88 @@ func (s *Service) validateTarget(ctx context.Context, server store.Server, sourc
 	if err != nil {
 		return err
 	}
-	if len(filtered) == 0 {
-		return errors.New("target node does not satisfy migration placement constraints")
+	if len(filtered) > 0 {
+		if s.evacuationPlanner != nil {
+			if _, err := s.evacuationPlanner.ValidateCapacity(ctx, target.ID, server); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	if s.evacuationPlanner != nil {
-		if _, err := s.evacuationPlanner.ValidateCapacity(ctx, target.ID, server); err != nil {
-			return err
+
+	failures := []domain.ConstraintFailure{}
+	if target.ActualState != string(domain.NodeActualStateOnline) || target.Maintenance || target.Draining {
+		failures = append(failures, domain.ConstraintFailure{
+			Constraint: "node_state",
+			Required:   "online, not draining, not maintenance",
+			Available:  fmt.Sprintf("%s (draining=%v, maintenance=%v)", target.ActualState, target.Draining, target.Maintenance),
+			Message:    "The target node is not in a state that can receive workloads.",
+		})
+	}
+	if source.RegionID != nil && (target.RegionID == nil || *target.RegionID != *source.RegionID) {
+		failures = append(failures, domain.ConstraintFailure{
+			Constraint: "region",
+			Required:   *source.RegionID,
+			Available:  func() string { if target.RegionID != nil { return *target.RegionID }; return "none" }(),
+			Message:    "The target node is not in the same region as the source node.",
+		})
+	}
+	req.RegionID = "" // unset for eligibility scan
+	snapshot, snapErr := s.store.NodeCapacitySnapshot(ctx, target.ID)
+	if snapErr == nil {
+		if snapshot.TotalCPU > 0 && !schedulersvc.HasCapacity(snapshot.TotalCPU, snapshot.AvailableCPU, server.CPUShares) {
+			failures = append(failures, domain.ConstraintFailure{
+				Constraint: "cpu",
+				Required:   fmt.Sprintf("%d shares", server.CPUShares),
+				Available:  fmt.Sprintf("%d shares", snapshot.AvailableCPU),
+				Message:    "The target node does not have enough available CPU.",
+			})
+		}
+		if snapshot.TotalMemory > 0 && !schedulersvc.HasCapacity(snapshot.TotalMemory, snapshot.AvailableMemory, server.MemoryMB) {
+			failures = append(failures, domain.ConstraintFailure{
+				Constraint: "memory",
+				Required:   fmt.Sprintf("%d MiB", server.MemoryMB),
+				Available:  fmt.Sprintf("%d MiB", snapshot.AvailableMemory),
+				Message:    "The target node does not have enough available memory.",
+			})
+		}
+		if snapshot.TotalDisk > 0 && !schedulersvc.HasCapacity(snapshot.TotalDisk, snapshot.AvailableDisk, server.DiskMB) {
+			failures = append(failures, domain.ConstraintFailure{
+				Constraint: "disk",
+				Required:   fmt.Sprintf("%d MiB", server.DiskMB),
+				Available:  fmt.Sprintf("%d MiB", snapshot.AvailableDisk),
+				Message:    "The target node does not have enough available disk.",
+			})
 		}
 	}
-	return nil
+	if snapErr != nil {
+		failures = append(failures, domain.ConstraintFailure{
+			Constraint: "capacity_snapshot",
+			Required:   "readable capacity data",
+			Available:  snapErr.Error(),
+			Message:    "Could not read capacity data for the target node.",
+		})
+	}
+
+	eligible := []string{}
+	allNodes, listErr := s.store.ListNodes(ctx)
+	if listErr == nil {
+		for _, n := range allNodes {
+			if n.ID == target.ID || n.ID == source.ID {
+				continue
+			}
+			if n.ActualState == string(domain.NodeActualStateOnline) && !n.Maintenance && !n.Draining {
+				eligible = append(eligible, n.ID)
+			}
+		}
+	}
+
+	return &domain.TargetValidationError{
+		Code:            "migration_target_ineligible",
+		Message:         "The selected target node cannot host this server.",
+		Reasons:         failures,
+		EligibleTargets: eligible,
+	}
 }
 
 func newCredential() (string, error) {

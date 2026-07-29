@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/components/ui/toast";
 import {
   AlertTriangle, Ban, Box, Cpu, Database, ExternalLink, HardDrive, Info,
-  KeyRound, Layers, Network, Plus, RefreshCw, Trash2, Zap,
+  KeyRound, Layers, Network, Plus, RefreshCw, Server, Trash2, Zap,
 } from "lucide-react";
 import {
   type ApiServer, type ApiNode, type ApiAllocation, type ApiEgg,
@@ -17,7 +17,7 @@ import {
   cancelServerTransfer, deleteServer, fetchServerTransferStatus, suspendServer, transferServer, unsuspendServer, reinstallServer, updateServer,
   ApiUserSearchResult,
 } from "@/lib/api";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, Textarea, cn } from "./admin-ui";
+import { AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, Textarea, cn } from "./admin-ui";
 
 type ServerTab = "about" | "details" | "build" | "startup" | "allocations" | "database" | "mounts" | "manage" | "delete";
 const SERVER_TABS: Array<{ id: ServerTab; label: string; danger?: boolean }> = [
@@ -34,28 +34,28 @@ const SERVER_TABS: Array<{ id: ServerTab; label: string; danger?: boolean }> = [
 
 export function AdminServers() {
   const serversQuery = useQuery({ queryKey: ["servers"], queryFn: fetchServers });
-  const servers = serversQuery.data ?? [];
+  const servers = useMemo(() => Array.isArray(serversQuery.data) ? serversQuery.data : [], [serversQuery.data]);
   const isLoading = serversQuery.isLoading;
   const isError = serversQuery.isError;
   const error = serversQuery.error;
   const refetch = serversQuery.refetch;
   const usersQuery = useQuery({ queryKey: ["users"], queryFn: fetchUsers });
-  const users = usersQuery.data ?? [];
+  const users = useMemo(() => Array.isArray(usersQuery.data) ? usersQuery.data : [], [usersQuery.data]);
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
-  const nodes = nodesQuery.data ?? [];
+  const nodes = useMemo(() => Array.isArray(nodesQuery.data) ? nodesQuery.data : [], [nodesQuery.data]);
   const allocsQuery = useQuery({ queryKey: ["allocations"], queryFn: fetchAllocations });
-  const allocations = allocsQuery.data ?? [];
+  const allocations = useMemo(() => Array.isArray(allocsQuery.data) ? allocsQuery.data : [], [allocsQuery.data]);
   const eggsQuery = useQuery<ApiEgg[]>({
     queryKey: ["eggs"],
     queryFn: () => fetchEggs("*"),
   });
-  const eggs = eggsQuery.data ?? [];
+  const eggs = useMemo(() => Array.isArray(eggsQuery.data) ? eggsQuery.data : [], [eggsQuery.data]);
   const templatesQuery = useQuery({ queryKey: ["templates"], queryFn: fetchTemplates });
-  const templates = templatesQuery.data ?? [];
+  const templates = useMemo(() => Array.isArray(templatesQuery.data) ? templatesQuery.data : [], [templatesQuery.data]);
   const regionsQuery = useQuery({ queryKey: ["regions"], queryFn: fetchRegions });
-  const regions = regionsQuery.data ?? [];
+  const regions = useMemo(() => Array.isArray(regionsQuery.data) ? regionsQuery.data : [], [regionsQuery.data]);
   const mountsQuery = useQuery({ queryKey: ["mounts"], queryFn: fetchMounts });
-  const mounts = mountsQuery.data ?? [];
+  const mounts = useMemo(() => Array.isArray(mountsQuery.data) ? mountsQuery.data : [], [mountsQuery.data]);
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
@@ -211,53 +211,120 @@ function CreateServerModal({ users, nodes, allocations, templates, eggs, regions
     onError: (error) => toast({ tone: "error", title: "Create failed", message: error instanceof Error ? error.message : "Could not create server" }),
   });
 
+  const inputBase = "h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15";
+  const selectBase = "h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15";
+
+  const iconClasses = "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500";
+
   return (
-    <Modal title="Create Server" onClose={onClose} wide>
-      <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); if (!validationError) createMut.mutate(); }}>
-        <div className="grid gap-4 md:grid-cols-2">
-          <Input label="Server Name" value={name} onChange={setName} required />
-          <label className="block text-sm font-medium text-slate-300">
-            <span className="mb-1.5 block">Owner</span>
-            <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100" value={ownerId} onChange={(event) => setOwnerId(event.target.value)} required>
-              <option value="">Select owner…</option>
-              {users.map((user) => <option key={user.id} value={user.id}>{user.email}</option>)}
-            </select>
-          </label>
-          <label className="block text-sm font-medium text-slate-300">
-            <span className="mb-1.5 block">Node</span>
-            <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100" value={nodeId} onChange={(event) => { setNodeId(event.target.value); setAllocationId(""); }}>
-              <option value="">Select node…</option>
-              {nodes.filter((node) => !regionId || node.regionId === regionId || node.region === regions.find((region) => region.id === regionId)?.slug).map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}
-            </select>
-          </label>
-          <label className="block text-sm font-medium text-slate-300">
-            <span className="mb-1.5 block">Region</span>
-            <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100" value={regionId} onChange={(event) => { setRegionId(event.target.value); setNodeId(""); setAllocationId(""); }}>
-              <option value="">Select region…</option>
-              {regions.filter((region) => region.enabled).map((region) => <option key={region.id} value={region.id}>{region.name}</option>)}
-            </select>
-          </label>
-          <label className="block text-sm font-medium text-slate-300">
-            <span className="mb-1.5 block">Template / Egg</span>
-            <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100" value={templateId} onChange={(event) => setTemplateId(event.target.value)} required>
-              <option value="">Select template…</option>
-              {templateOptions.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}
-            </select>
-          </label>
-          <label className="block text-sm font-medium text-slate-300">
-            <span className="mb-1.5 block">Available Allocation</span>
-            <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100" value={allocationId} onChange={(event) => setAllocationId(event.target.value)} required>
-              <option value="">Select allocation…</option>
-              {availableAllocations.map((allocation) => <option key={allocation.id} value={allocation.id}>{allocation.ip}:{allocation.port}</option>)}
-            </select>
-          </label>
-          <Input label="Memory (MiB)" value={memoryMb} onChange={setMemoryMb} type="number" required />
-          <Input label="CPU Shares" value={cpuShares} onChange={setCpuShares} type="number" required />
-          <Input label="Disk (MiB)" value={diskMb} onChange={setDiskMb} type="number" required />
+    <Modal title={<span className="text-base font-semibold text-slate-100">Create Server</span>} onClose={onClose} wide>
+      <form className="space-y-6" onSubmit={(event) => { event.preventDefault(); if (!validationError) createMut.mutate(); }}>
+        <div>
+          <label className="mb-3 block text-xs font-semibold uppercase tracking-wider text-slate-400">Server Identity</label>
+          <div className="grid gap-5 sm:grid-cols-2">
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Server Name</label>
+              <div className="relative">
+                <Server size={14} className={iconClasses} strokeWidth={1.5} />
+                <input className={cn(inputBase, "pl-9")} value={name} onChange={(e) => setName(e.target.value)} placeholder="My Game Server" required />
+              </div>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Owner</label>
+              <select className={selectBase + " px-3"} value={ownerId} onChange={(event) => setOwnerId(event.target.value)} required>
+                <option value="">Select owner&hellip;</option>
+                {users.map((user) => <option key={user.id} value={user.id}>{user.email}</option>)}
+              </select>
+            </div>
+          </div>
         </div>
-        {validationError && <p className="text-sm text-amber-300">{validationError}</p>}
-        {createMut.error && <p className="text-sm text-red-300">{createMut.error instanceof Error ? createMut.error.message : "Server creation failed."}</p>}
-        <ModalFooter onCancel={onClose} onConfirm={() => { if (!validationError) createMut.mutate(); }} confirmLabel={createMut.isPending ? "Creating…" : "Create Server"} disabled={Boolean(validationError) || createMut.isPending} />
+
+        <div>
+          <label className="mb-3 block text-xs font-semibold uppercase tracking-wider text-slate-400">Deployment</label>
+          <div className="grid gap-5 sm:grid-cols-2">
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Node</label>
+              <select className={selectBase + " px-3"} value={nodeId} onChange={(event) => { setNodeId(event.target.value); setAllocationId(""); }}>
+                <option value="">Select node&hellip;</option>
+                {nodes.filter((node) => !regionId || node.regionId === regionId || node.region === regions.find((region) => region.id === regionId)?.slug).map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Region</label>
+              <select className={selectBase + " px-3"} value={regionId} onChange={(event) => { setRegionId(event.target.value); setNodeId(""); setAllocationId(""); }}>
+                <option value="">Select region&hellip;</option>
+                {regions.filter((region) => region.enabled).map((region) => <option key={region.id} value={region.id}>{region.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Template / Egg</label>
+              <select className={selectBase + " px-3"} value={templateId} onChange={(event) => setTemplateId(event.target.value)} required>
+                <option value="">Select template&hellip;</option>
+                {templateOptions.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Allocation</label>
+              <select className={selectBase + " px-3"} value={allocationId} onChange={(event) => setAllocationId(event.target.value)} required>
+                <option value="">Select allocation&hellip;</option>
+                {availableAllocations.map((allocation) => <option key={allocation.id} value={allocation.id}>{allocation.ip}:{allocation.port}</option>)}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <label className="mb-3 block text-xs font-semibold uppercase tracking-wider text-slate-400">Resources</label>
+          <div className="grid gap-5 sm:grid-cols-3">
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">
+                Memory <span className="font-normal normal-case text-slate-500">(MiB)</span>
+              </label>
+              <div className="relative">
+                <HardDrive size={14} className={iconClasses} strokeWidth={1.5} />
+                <input className={cn(inputBase, "pl-9 [&::-webkit-inner-spin-button]:appearance-none")} type="number" min={64} step={64} value={memoryMb} onChange={(e) => setMemoryMb(e.target.value)} required />
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500">Minimum 64 MiB</p>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">
+                CPU <span className="font-normal normal-case text-slate-500">(shares)</span>
+              </label>
+              <div className="relative">
+                <Cpu size={14} className={iconClasses} strokeWidth={1.5} />
+                <input className={cn(inputBase, "pl-9 [&::-webkit-inner-spin-button]:appearance-none")} type="number" min={1} value={cpuShares} onChange={(e) => setCpuShares(e.target.value)} required />
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500">Relative CPU weight (default 1024)</p>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">
+                Disk <span className="font-normal normal-case text-slate-500">(MiB)</span>
+              </label>
+              <div className="relative">
+                <Database size={14} className={iconClasses} strokeWidth={1.5} />
+                <input className={cn(inputBase, "pl-9 [&::-webkit-inner-spin-button]:appearance-none")} type="number" min={64} step={64} value={diskMb} onChange={(e) => setDiskMb(e.target.value)} required />
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500">Minimum 64 MiB</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-800/50">
+              <Server className="h-5 w-5 text-slate-400" strokeWidth={1.5} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-slate-200">{name || "Unnamed Server"}</p>
+              <p className="text-xs text-slate-500">{memoryMb || "2048"} MiB &middot; {cpuShares || "1024"} CPU &middot; {diskMb || "10240"} MiB disk{templateId ? ` \u00b7 ${templateOptions.find((t) => t.id === templateId)?.label ?? ""}` : ""}</p>
+            </div>
+          </div>
+        </div>
+
+        {validationError && <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/20 bg-amber-950/10 p-3.5 text-sm text-amber-200"><span>{validationError}</span></div>}
+        {createMut.error && <div className="flex items-start gap-2.5 rounded-lg border border-red-500/20 bg-red-950/10 p-3.5 text-sm text-red-200"><span>{createMut.error instanceof Error ? createMut.error.message : "Server creation failed."}</span></div>}
+
+        <ModalFooter onCancel={onClose} onConfirm={() => { if (!validationError) createMut.mutate(); }} confirmLabel={createMut.isPending ? "Creating..." : "Create Server"} disabled={Boolean(validationError) || createMut.isPending} />
       </form>
     </Modal>
   );
@@ -267,7 +334,7 @@ function ServerStatusBadge({ server }: { server: ApiServer }) {
   if (server.suspended) return <Pill tone="red">Suspended</Pill>;
   if (server.status === "installing") return <Pill tone="yellow">Installing</Pill>;
   if (server.status === "running") return <Pill tone="green">Active</Pill>;
-  return <Pill tone="blue">{server.status}</Pill>;
+  return <Pill tone="neutral">{server.status}</Pill>;
 }
 
 function ServerDetailContent({ serverId, tab, setTab, users, nodes, allocations, mounts, onClose }: {
@@ -298,29 +365,7 @@ function ServerDetailContent({ serverId, tab, setTab, users, nodes, allocations,
           Open console <ExternalLink size={12} />
         </a>
       </div>
-      <div className="flex gap-1 border-b border-white/[0.06] overflow-x-auto" role="tablist" aria-label="Server sections">
-        {SERVER_TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.id}
-            disabled={!installed && t.id !== "about" && t.id !== "manage" && t.id !== "delete"}
-            className={cn(
-              "whitespace-nowrap px-3 py-2 text-sm font-medium transition",
-              tab === t.id
-                ? t.danger
-                  ? "border-b-2 border-red-500 text-red-400"
-                  : "border-b-2 border-[#dc2626] text-[#dc2626]"
-                : "text-slate-400 hover:text-slate-200",
-              "disabled:opacity-50"
-            )}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <AdminTabs tabs={SERVER_TABS} active={tab} onChange={(id) => setTab(id as ServerTab)} label="Server sections" />
       {tab === "about" && <ServerAboutTab server={server} users={users} nodes={nodes} allocations={allocations} />}
       {tab === "details" && <ServerDetailsTab server={server} users={users} />}
       {tab === "build" && <ServerBuildTab server={server} users={users} allocations={allocations} />}
@@ -343,53 +388,89 @@ function ServerDetailContent({ serverId, tab, setTab, users, nodes, allocations,
   );
 }
 
-function InfoRow({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
-  return (
-    <li className="flex items-center justify-between px-4 py-3 text-sm">
-      <span className="text-slate-400">{label}</span>
-      <span className={cn("text-slate-200", mono && "font-mono text-xs")}>{value}</span>
-    </li>
-  );
-}
-
 function ServerAboutTab({ server, users, nodes, allocations }: { server: ApiServer; users: ApiUser[]; nodes: ApiNode[]; allocations: ApiAllocation[] }) {
   const owner = users.find((u) => u.id === server.owner)?.email ?? server.owner ?? "—";
   const node = nodes.find((n) => n.id === server.node)?.name ?? server.node ?? "—";
   const alloc = allocations.find((a) => a.id === server.allocation);
+  const fieldClasses = "h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] text-sm leading-10 shadow-inner shadow-black/10";
+  const iconClasses = "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500";
   return (
-    <div className="grid gap-4 lg:grid-cols-3">
-      <Card>
-        <CardHeader title="Information" icon={Info} />
-        <ul className="divide-y divide-white/[0.04]">
-          <InfoRow label="Internal ID" value={server.id.slice(0, 8) + "…"} mono />
-          <InfoRow label="UUID" value={server.uuid ?? server.id} mono />
-          <InfoRow label="Server Name" value={server.name} />
-          <InfoRow label="Memory" value={server.memoryMb != null ? `${server.memoryMb} MiB` : "—"} />
-          <InfoRow label="Disk" value={server.diskMb != null ? `${server.diskMb} MiB` : "—"} />
-          <InfoRow label="Default Connection" value={alloc ? `${alloc.ip}:${alloc.port}` : "—"} mono />
-        </ul>
-      </Card>
-      <div className="space-y-3">
-        <SmallBox color={server.suspended ? "red" : "blue"} label={server.suspended ? "Suspended" : "Status"} value={server.suspended ? "YES" : server.status} />
-        <SmallBox color="purple" label="Owner" value={owner} />
-        <SmallBox color="emerald" label="Node" value={node} />
+    <div className="space-y-5">
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
+        <label className="mb-4 block text-xs font-semibold uppercase tracking-wider text-slate-400">Server Identity</label>
+        <div className="grid gap-5 sm:grid-cols-2">
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Internal ID</label>
+            <div className="relative">
+              <Info size={14} className={iconClasses} strokeWidth={1.5} />
+              <div className={cn(fieldClasses, "pl-9 font-mono text-slate-400")}>{server.id.slice(0, 8)}&hellip;</div>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">UUID</label>
+            <div className="relative">
+              <KeyRound size={14} className={iconClasses} strokeWidth={1.5} />
+              <div className={cn(fieldClasses, "pl-9 font-mono text-slate-400 truncate")}>{server.uuid ?? server.id}</div>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Server Name</label>
+            <div className="relative">
+              <Server size={14} className={iconClasses} strokeWidth={1.5} />
+              <div className={cn(fieldClasses, "pl-9 text-slate-100")}>{server.name}</div>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Default Connection</label>
+            <div className="relative">
+              <Network size={14} className={iconClasses} strokeWidth={1.5} />
+              <div className={cn(fieldClasses, "pl-9 font-mono text-slate-400")}>{alloc ? `${alloc.ip}:${alloc.port}` : "\u2014"}</div>
+            </div>
+          </div>
+        </div>
       </div>
-    </div>
-  );
-}
 
-function SmallBox({ color, label, value }: { color: "orange" | "blue" | "purple" | "emerald" | "red"; label: string; value: string }) {
-  const map: Record<string, string> = {
-    orange: "bg-orange-500/10 text-orange-400 border-orange-500/30",
-    blue: "bg-sky-500/10 text-sky-400 border-sky-500/30",
-    purple: "bg-purple-500/10 text-purple-400 border-purple-500/30",
-    emerald: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
-    red: "bg-red-500/10 text-red-400 border-red-500/30",
-  };
-  return (
-    <div className={cn("rounded-lg border p-4", map[color])}>
-      <div className="text-[10px] font-bold uppercase tracking-widest opacity-70">{label}</div>
-      <div className="mt-1 text-lg font-bold">{value}</div>
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
+        <label className="mb-4 block text-xs font-semibold uppercase tracking-wider text-slate-400">Resources</label>
+        <div className="grid gap-5 sm:grid-cols-2">
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">
+              Memory <span className="font-normal normal-case text-slate-500">(MiB)</span>
+            </label>
+            <div className="relative">
+              <HardDrive size={14} className={iconClasses} strokeWidth={1.5} />
+              <div className={cn(fieldClasses, "pl-9 text-slate-100")}>{server.memoryMb != null ? `${server.memoryMb} MiB` : "\u2014"}</div>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">
+              Disk <span className="font-normal normal-case text-slate-500">(MiB)</span>
+            </label>
+            <div className="relative">
+              <Database size={14} className={iconClasses} strokeWidth={1.5} />
+              <div className={cn(fieldClasses, "pl-9 text-slate-100")}>{server.diskMb != null ? `${server.diskMb} MiB` : "\u2014"}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+          <label className="mb-2 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Status</label>
+          <div className="flex items-center gap-2">
+            <span className={cn("inline-block h-2 w-2 rounded-full", server.suspended ? "bg-red-400" : server.status === "running" ? "bg-emerald-400" : server.status === "installing" ? "bg-amber-400" : "bg-slate-500")} />
+            <span className="text-sm font-semibold text-slate-200">{server.suspended ? "Suspended" : server.status}</span>
+          </div>
+        </div>
+        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+          <label className="mb-2 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Owner</label>
+          <span className="text-sm font-semibold text-slate-200">{owner}</span>
+        </div>
+        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+          <label className="mb-2 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Node</label>
+          <span className="text-sm font-semibold text-slate-200">{node}</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -767,7 +848,7 @@ function ServerMountsTab({ server, mounts }: { server: ApiServer; mounts: ApiMou
                   <td className="px-4 py-2 font-mono text-xs">{mount.source}</td>
                   <td className="px-4 py-2 font-mono text-xs">{mount.target}</td>
                   <td className="px-4 py-2">
-                    {assigned ? <Pill tone="green">Assigned</Pill> : <Pill tone="blue">Not assigned</Pill>}
+                    {assigned ? <Pill tone="green">Assigned</Pill> : <Pill tone="neutral">Not assigned</Pill>}
                   </td>
                   <td className="px-4 py-2 text-right">
                     {assigned ? (

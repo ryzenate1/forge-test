@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Play, Square, RotateCcw, Pause, Trash2, RefreshCw, Plus, Terminal, Download,
@@ -44,9 +44,11 @@ export function ContainersView() {
     queryKey: ["docker", "containers"],
     queryFn: () => listContainers({ all: true }),
     refetchInterval: 15_000,
+    retry: false,
+    staleTime: 10_000,
   });
 
-  const containers = containersQuery.data ?? [];
+  const containers = useMemo(() => Array.isArray(containersQuery.data) ? containersQuery.data : [], [containersQuery.data]);
 
   const operateMut = useMutation({
     mutationFn: ({ id, action, nodeId }: { id: string; action: "start" | "stop" | "restart" | "pause" | "unpause"; nodeId?: string }) =>
@@ -77,8 +79,11 @@ export function ContainersView() {
     }
   }, []);
 
-  const filtered = containers.filter(
-    (c) => !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.image.toLowerCase().includes(search.toLowerCase()) || c.id.toLowerCase().includes(search.toLowerCase()),
+  const filtered = useMemo(
+    () => containers.filter(
+      (c) => !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.image.toLowerCase().includes(search.toLowerCase()) || c.id.toLowerCase().includes(search.toLowerCase()),
+    ),
+    [containers, search],
   );
 
   return (
@@ -99,7 +104,7 @@ export function ContainersView() {
         {containersQuery.isLoading ? (
           <div className="p-8 text-center text-sm text-slate-500">Loading containers...</div>
         ) : containersQuery.isError ? (
-          <div className="p-4 text-sm text-red-400">Failed to load containers. Ensure Beacon is running and nodes are configured.</div>
+          <div className="p-4 text-sm text-red-400">Failed to load containers. Verify the node connection and try again.</div>
         ) : filtered.length === 0 ? (
           <EmptyState icon={Terminal} message={search ? "No containers match your search." : "No containers found. Pull an image and create one."} title={search ? "No results" : "No containers"} />
         ) : (

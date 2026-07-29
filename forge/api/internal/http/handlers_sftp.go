@@ -51,7 +51,7 @@ func registerSFTPRoutes(protected fiber.Router, cfg Config, mutationLimiter fibe
 		return c.JSON(config)
 	})
 
-	admin.Put("/nodes/:nodeId/sftp", func(c *fiber.Ctx) error {
+	admin.Put("/nodes/:nodeId/sftp", mutationLimiter, func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}

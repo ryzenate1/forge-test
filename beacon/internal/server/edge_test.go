@@ -135,7 +135,7 @@ func TestEdgeAgentTryReconnectSuccess(t *testing.T) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if req.Token == "valid-token" {
+			if r.Header.Get("Authorization") == "Bearer valid-token" {
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(connectResponse{Connected: true, NodeID: req.NodeID})
 				return
@@ -149,7 +149,7 @@ func TestEdgeAgentTryReconnectSuccess(t *testing.T) {
 	t.Run("valid token reconnects", func(t *testing.T) {
 		agent := NewEdgeAgent(server.URL, "valid-token", "node-1", "1.0.0")
 		agent.httpClient = server.Client()
-		if !agent.tryReconnect() {
+		if !agent.tryReconnect(context.Background()) {
 			t.Fatal("expected successful reconnect")
 		}
 	})
@@ -157,7 +157,7 @@ func TestEdgeAgentTryReconnectSuccess(t *testing.T) {
 	t.Run("invalid token rejected", func(t *testing.T) {
 		agent := NewEdgeAgent(server.URL, "bad-token", "node-1", "1.0.0")
 		agent.httpClient = server.Client()
-		if agent.tryReconnect() {
+		if agent.tryReconnect(context.Background()) {
 			t.Fatal("expected failed reconnect")
 		}
 	})
@@ -165,7 +165,7 @@ func TestEdgeAgentTryReconnectSuccess(t *testing.T) {
 	t.Run("unreachable server", func(t *testing.T) {
 		agent := NewEdgeAgent("http://localhost:19999", "token", "node-1", "1.0.0")
 		agent.httpClient = &http.Client{Timeout: 100 * time.Millisecond}
-		if agent.tryReconnect() {
+		if agent.tryReconnect(context.Background()) {
 			t.Fatal("expected failed reconnect for unreachable server")
 		}
 	})

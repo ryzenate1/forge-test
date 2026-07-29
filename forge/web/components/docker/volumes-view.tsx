@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Trash2, RefreshCw, Plus, Eraser } from "lucide-react";
 import { listVolumes, createVolume, deleteVolume, pruneVolumes, type DockerVolume } from "@/lib/api/docker";
@@ -27,9 +27,11 @@ export function VolumesView() {
     queryKey: ["docker", "volumes"],
     queryFn: listVolumes,
     refetchInterval: 30_000,
+    retry: false,
+    staleTime: 10_000,
   });
 
-  const volumes = volumesQuery.data ?? [];
+  const volumes = useMemo(() => Array.isArray(volumesQuery.data) ? volumesQuery.data : [], [volumesQuery.data]);
 
   const createMut = useMutation({
     mutationFn: (data: { name: string; driver: string }) =>
@@ -47,8 +49,11 @@ export function VolumesView() {
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["docker", "volumes"] }); setShowPruneConfirm(false); },
   });
 
-  const filtered = volumes.filter(
-    (v) => !search || v.name.toLowerCase().includes(search.toLowerCase()) || v.driver.toLowerCase().includes(search.toLowerCase()),
+  const filtered = useMemo(
+    () => volumes.filter(
+      (v) => !search || v.name.toLowerCase().includes(search.toLowerCase()) || v.driver.toLowerCase().includes(search.toLowerCase()),
+    ),
+    [volumes, search],
   );
 
   return (

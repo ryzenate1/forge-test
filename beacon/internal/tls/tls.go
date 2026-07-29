@@ -95,6 +95,11 @@ func (c *Config) Apply(server *http.Server) error {
 		return nil
 	case ModeManual:
 		cfg := DefaultTLSConfig()
+		certificate, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+		if err != nil {
+			return fmt.Errorf("load manual TLS certificate: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{certificate}
 		server.TLSConfig = cfg
 		return nil
 	case ModeAutoTLS:

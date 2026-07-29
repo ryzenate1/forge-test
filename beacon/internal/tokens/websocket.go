@@ -2,10 +2,7 @@ package tokens
 
 import (
 	"sync"
-	"time"
 )
-
-var bootTime = time.Now()
 
 type WebSocketDenylist struct {
 	mu       sync.RWMutex
@@ -37,8 +34,4 @@ func (d *WebSocketDenylist) IsDenied(serverID, userID string) bool {
 		return false
 	}
 	return users[userID]
-}
-
-func IsBeforeBoot(issuedAt time.Time) bool {
-	return issuedAt.Before(bootTime)
 }

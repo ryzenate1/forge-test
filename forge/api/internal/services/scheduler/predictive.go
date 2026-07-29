@@ -87,6 +87,9 @@ func (s *PredictiveScorer) RecordMetric(ctx context.Context, nodeID string, metr
 func (s *PredictiveScorer) PredictLoad(ctx context.Context, nodeID string) (float64, float64) {
 	s.mu.RLock()
 	metrics, ok := s.metricsHistory[nodeID]
+	if ok {
+		metrics = append([]ResourceMetric(nil), metrics...)
+	}
 	s.mu.RUnlock()
 
 	if !ok || len(metrics) < 2 {
@@ -260,6 +263,23 @@ func (s *PredictiveScorer) RemoveAntiAffinityRule(ctx context.Context, ruleID st
 		}
 	}
 	return nil
+}
+
+func (s *PredictiveScorer) ListAllScores(ctx context.Context) ([]*PredictiveScore, error) {
+	nodes, err := s.store.ListNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var scores []*PredictiveScore
+	for _, n := range nodes {
+		score, err := s.ScorePredictive(ctx, n.ID, domain.PlacementRequest{})
+		if err != nil {
+			continue
+		}
+		score.NodeID = n.ID
+		scores = append(scores, score)
+	}
+	return scores, nil
 }
 
 func (s *PredictiveScorer) ListAffinityRules(ctx context.Context) ([]AffinityRule, error) {

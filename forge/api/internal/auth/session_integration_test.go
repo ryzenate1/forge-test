@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -104,9 +105,9 @@ func TestConcurrentSessionAccess(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			sess := &Session{
-				ID:        "sess-{idx}",
-				UserID:    "user-{idx}",
-				Token:     "token-{idx}",
+				ID:        fmt.Sprintf("sess-%d", idx),
+				UserID:    fmt.Sprintf("user-%d", idx),
+				Token:     fmt.Sprintf("token-%d", idx),
 				CreatedAt: time.Now(),
 				ExpiresAt: time.Now().Add(time.Hour),
 			}
@@ -117,7 +118,7 @@ func TestConcurrentSessionAccess(t *testing.T) {
 
 	activeSessions := 0
 	for i := 0; i < n; i++ {
-		if _, err := store.Get(ctx, "sess-{idx}"); err == nil {
+		if _, err := store.Get(ctx, fmt.Sprintf("sess-%d", i)); err == nil {
 			activeSessions++
 		}
 	}
@@ -128,9 +129,9 @@ func TestConcurrentSessionAccess(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			sess := &Session{
-				ID:        "sess-con-{idx}",
+				ID:        fmt.Sprintf("sess-con-%d", idx),
 				UserID:    "user-concurrent",
-				Token:     "token-con-{idx}",
+				Token:     fmt.Sprintf("token-con-%d", idx),
 				CreatedAt: time.Now(),
 				ExpiresAt: time.Now().Add(time.Hour),
 			}
@@ -154,7 +155,7 @@ func TestConcurrentReadWriteNoDeadlock(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		sess := &Session{
-			ID: "sess-dl-{i}", UserID: "user-dl", Token: "token-dl-{i}",
+			ID: fmt.Sprintf("sess-dl-%d", i), UserID: "user-dl", Token: fmt.Sprintf("token-dl-%d", i),
 			CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
 		}
 		_ = store.Create(ctx, sess)
@@ -267,8 +268,8 @@ func TestSessionStoreMultipleUsers(t *testing.T) {
 	for _, user := range users {
 		for i := 0; i < 3; i++ {
 			sess := &Session{
-				ID: user + "-sess-{i}", UserID: user,
-				Token: user + "-token-{i}",
+				ID: fmt.Sprintf("%s-sess-%d", user, i), UserID: user,
+				Token: fmt.Sprintf("%s-token-%d", user, i),
 				CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
 			}
 			if err := store.Create(ctx, sess); err != nil {

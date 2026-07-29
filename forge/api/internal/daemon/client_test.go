@@ -54,10 +54,11 @@ func TestClientSignsRequestsWithIndependentNodeCredentials(t *testing.T) {
 }
 
 func TestReinstallServerUsesBeaconReinstallContractAndNodeCredential(t *testing.T) {
-	var method, path, timestamp, signature string
+	var method, path, timestamp, nonce, signature string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method, path = r.Method, r.URL.Path
 		timestamp = r.Header.Get("X-Panel-Timestamp")
+		nonce = r.Header.Get("X-Panel-Nonce")
 		signature = r.Header.Get("X-Panel-Signature")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"serverId":"server-a","accepted":true,"mode":"docker","exitCode":0}`))
@@ -71,7 +72,7 @@ func TestReinstallServerUsesBeaconReinstallContractAndNodeCredential(t *testing.
 	if method != http.MethodPost || path != "/servers/server-a/reinstall" {
 		t.Fatalf("request = %s %s, want POST /servers/server-a/reinstall", method, path)
 	}
-	if want := sign("node-id.node-secret", http.MethodPost, "/servers/server-a/reinstall", timestamp, []byte(`{"serverId":"server-a","image":"","entrypoint":"","script":"","env":null}`)); signature != want {
+	if want := sign("node-id.node-secret", http.MethodPost, "/servers/server-a/reinstall", timestamp, []byte(`{"serverId":"server-a","image":"","entrypoint":"","script":"","env":null}`), nonce); signature != want {
 		t.Fatal("request was not signed with the per-node credential")
 	}
 }
@@ -82,11 +83,12 @@ func TestPullRemoteFileUsesBeaconHardenedPullContract(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		timestamp := r.Header.Get("X-Panel-Timestamp")
+		nonce := r.Header.Get("X-Panel-Nonce")
 		if r.Method != http.MethodPost || r.URL.Path != "/servers/server-a/files/pull" {
 			http.Error(w, "wrong route", http.StatusNotFound)
 			return
 		}
-		if r.Header.Get("X-Panel-Signature") != sign(token, r.Method, r.URL.RequestURI(), timestamp, body) {
+		if r.Header.Get("X-Panel-Signature") != sign(token, r.Method, r.URL.RequestURI(), timestamp, body, nonce) {
 			http.Error(w, "bad signature", http.StatusUnauthorized)
 			return
 		}
@@ -108,15 +110,20 @@ func TestPullRemoteFileUsesBeaconHardenedPullContract(t *testing.T) {
 	}
 }
 
-func TestPullRemoteFileReturnsBoundedDaemonErrorDetails(t *testing.T) {
+func TestPullRemoteFileRejectsPrivateSourceBeforeDaemonRequest(t *testing.T) {
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
 		http.Error(w, "private network destination is not allowed", http.StatusForbidden)
 	}))
 	defer server.Close()
 
 	err := NewClient().PullRemoteFile(context.Background(), server.URL, "node.secret", "server-a", "http://127.0.0.1/secret", "", "secret")
-	if err == nil || !strings.Contains(err.Error(), "status 403") || !strings.Contains(err.Error(), "private network") {
+	if err == nil || !strings.Contains(err.Error(), "HTTPS") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatal("daemon should not receive an invalid pull request")
 	}
 }
 
@@ -146,7 +153,8 @@ func TestTransferCredentialRegistrationUsesNodeAuthAndScopedCallsUseOnlyTransfer
 		case "/api/v1/transfers/credentials":
 			body, _ := io.ReadAll(r.Body)
 			timestamp := r.Header.Get("X-Panel-Timestamp")
-			if r.Header.Get("Authorization") != "" || r.Header.Get("X-Panel-Signature") != sign(nodeToken, r.Method, r.URL.RequestURI(), timestamp, body) {
+			nonce := r.Header.Get("X-Panel-Nonce")
+			if r.Header.Get("Authorization") != "" || r.Header.Get("X-Panel-Signature") != sign(nodeToken, r.Method, r.URL.RequestURI(), timestamp, body, nonce) {
 				http.Error(w, "bad node auth", http.StatusUnauthorized)
 				return
 			}
@@ -186,7 +194,8 @@ func TestTransferCredentialRegistrationUsesNodeAuthAndScopedCallsUseOnlyTransfer
 func newSigningTestServer(expectedToken *atomic.Value) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		timestamp := r.Header.Get("X-Panel-Timestamp")
-		expectedSignature := sign(expectedToken.Load().(string), r.Method, r.URL.RequestURI(), timestamp, nil)
+		nonce := r.Header.Get("X-Panel-Nonce")
+		expectedSignature := sign(expectedToken.Load().(string), r.Method, r.URL.RequestURI(), timestamp, nil, nonce)
 		if timestamp == "" || r.Header.Get("X-Panel-Signature") != expectedSignature {
 			http.Error(w, "invalid signature", http.StatusUnauthorized)
 			return

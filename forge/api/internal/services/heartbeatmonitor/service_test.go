@@ -9,12 +9,12 @@ import (
 )
 
 type mockHeartbeatStore struct {
-	listNodesResult           []store.Node
-	listNodesErr              error
-	getNodeResult             store.Node
-	getNodeErr                error
-	listNodeHeartbeatHistory  []store.NodeHeartbeatHistory
-	listNodeHeartbeatHistoryErr error
+	listNodesResult                []store.Node
+	listNodesErr                   error
+	getNodeResult                  store.Node
+	getNodeErr                     error
+	listNodeHeartbeatHistory       []store.NodeHeartbeatHistory
+	listNodeHeartbeatHistoryErr    error
 	setNodeHeartbeatClassification func(ctx context.Context, nodeID string, state store.NodeHeartbeatState, actualState store.NodeActualState, recoveryCount int, reason string) (store.Node, store.Node, error)
 }
 
@@ -126,29 +126,32 @@ func TestClassify_NegativeAge(t *testing.T) {
 	s := NewWithConfig(nil, nil, DefaultConfig())
 	now := time.Now().UTC()
 
-	state, _, ageSeconds, _, _ := s.classify(
+	state, _, _, ageSeconds, reason := s.classify(
 		store.Node{LastSeenAt: &future, HeartbeatState: string(store.NodeHeartbeatStateHealthy)},
 		nil,
 		now,
 	)
 
-	if state != store.NodeHeartbeatStateHealthy {
-		t.Fatalf("expected healthy, got %s", state)
+	if state != store.NodeHeartbeatStateSuspected {
+		t.Fatalf("expected suspected, got %s", state)
 	}
 	if ageSeconds != 0 {
 		t.Fatalf("expected 0 age seconds for future timestamp, got %d", ageSeconds)
 	}
+	if reason == "" {
+		t.Fatal("expected future clock-skew reason")
+	}
 }
 
 type classifyTestCase struct {
-	name           string
-	node           store.Node
-	history        []store.NodeHeartbeatHistory
-	config         Config
-	wantState      store.NodeHeartbeatState
-	wantActual     store.NodeActualState
-	wantRecovery   int
-	wantReasonSub  string
+	name          string
+	node          store.Node
+	history       []store.NodeHeartbeatHistory
+	config        Config
+	wantState     store.NodeHeartbeatState
+	wantActual    store.NodeActualState
+	wantRecovery  int
+	wantReasonSub string
 }
 
 func TestClassify_StateMachineTransitions(t *testing.T) {
@@ -385,38 +388,38 @@ func TestClassify_ConfigBoundaries(t *testing.T) {
 	now := time.Now().UTC()
 
 	tests := []struct {
-		name          string
-		age           time.Duration
-		prevState     string
-		wantState     store.NodeHeartbeatState
-		wantActual    store.NodeActualState
+		name       string
+		age        time.Duration
+		prevState  string
+		wantState  store.NodeHeartbeatState
+		wantActual store.NodeActualState
 	}{
 		{
-			name:      "just under warning threshold",
-			age:       29 * time.Second,
-			prevState: string(store.NodeHeartbeatStateHealthy),
-			wantState: store.NodeHeartbeatStateHealthy,
+			name:       "just under warning threshold",
+			age:        29 * time.Second,
+			prevState:  string(store.NodeHeartbeatStateHealthy),
+			wantState:  store.NodeHeartbeatStateHealthy,
 			wantActual: store.NodeActualStateOnline,
 		},
 		{
-			name:      "at warning threshold",
-			age:       30 * time.Second,
-			prevState: string(store.NodeHeartbeatStateHealthy),
-			wantState: store.NodeHeartbeatStateSuspected,
+			name:       "at warning threshold",
+			age:        30 * time.Second,
+			prevState:  string(store.NodeHeartbeatStateHealthy),
+			wantState:  store.NodeHeartbeatStateSuspected,
 			wantActual: store.NodeActualStateDegraded,
 		},
 		{
-			name:      "just under offline threshold",
-			age:       89 * time.Second,
-			prevState: string(store.NodeHeartbeatStateSuspected),
-			wantState: store.NodeHeartbeatStateSuspected,
+			name:       "just under offline threshold",
+			age:        89 * time.Second,
+			prevState:  string(store.NodeHeartbeatStateSuspected),
+			wantState:  store.NodeHeartbeatStateSuspected,
 			wantActual: store.NodeActualStateDegraded,
 		},
 		{
-			name:      "at offline threshold (previously healthy)",
-			age:       90 * time.Second,
-			prevState: string(store.NodeHeartbeatStateHealthy),
-			wantState: store.NodeHeartbeatStateUnreachable,
+			name:       "at offline threshold (previously healthy)",
+			age:        90 * time.Second,
+			prevState:  string(store.NodeHeartbeatStateHealthy),
+			wantState:  store.NodeHeartbeatStateUnreachable,
 			wantActual: store.NodeActualStateDegraded,
 		},
 	}

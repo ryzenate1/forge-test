@@ -1,9 +1,10 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Server } from "lucide-react";
+import { Clock, Server } from "lucide-react";
 import { Card, CardHeader } from "@/components/admin/admin-ui";
 import { getNodeMetrics } from "@/lib/api/monitoring";
+import { fetchNodes } from "@/lib/api";
 
 function usageBar(pct: number, color: string) {
   return (
@@ -39,6 +40,15 @@ export function NodeList({ onNodeSelect }: { onNodeSelect?: (nodeId: string) => 
     refetchInterval: 15_000,
   });
 
+  const { data: registeredNodes } = useQuery({
+    queryKey: ["nodes-registered"],
+    queryFn: () => fetchNodes(),
+    refetchInterval: 30_000,
+    retry: false,
+  });
+
+  const nodesExist = registeredNodes && registeredNodes.length > 0;
+
   if (isLoading) {
     return (
       <Card>
@@ -65,7 +75,12 @@ export function NodeList({ onNodeSelect }: { onNodeSelect?: (nodeId: string) => 
     return (
       <Card>
         <CardHeader title="Nodes" icon={Server} />
-        <div className="p-4 text-sm text-slate-500">No nodes registered</div>
+        <div className="p-4 text-sm text-slate-500 flex items-center gap-2">
+          <Clock size={14} className="text-slate-400 shrink-0" />
+          {nodesExist
+            ? "Node registered, but no recent metrics have been received."
+            : "No nodes registered"}
+        </div>
       </Card>
     );
   }

@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -41,6 +42,10 @@ export function AdminEndpointDetail() {
     qc.invalidateQueries({ queryKey: ["infra-endpoint-policies", id] });
   };
 
+  const nodes = useMemo(() => nodesQuery.data ?? [], [nodesQuery.data]);
+  const health = useMemo(() => healthQuery.data ?? [], [healthQuery.data]);
+  const policies = useMemo(() => policiesQuery.data ?? [], [policiesQuery.data]);
+
   if (epQuery.isLoading) return <div className="py-10 text-center text-sm text-slate-500">Loading</div>;
   if (epQuery.isError) {
     if (epQuery.error instanceof ApiError && epQuery.error.status === 403) {
@@ -64,9 +69,6 @@ export function AdminEndpointDetail() {
   const ep = epQuery.data!;
   const diag = diagQuery.data;
   const inv = invQuery.data;
-  const nodes = nodesQuery.data ?? [];
-  const health = healthQuery.data ?? [];
-  const policies = policiesQuery.data ?? [];
 
   return (
     <div className="space-y-6">
@@ -185,7 +187,7 @@ export function AdminEndpointDetail() {
       {/* Attached Nodes */}
       <Card>
         <CardHeader title="Attached Nodes" icon={Server} />
-        {nodes.length === 0 ? (
+        {!Array.isArray(nodes) || nodes.length === 0 ? (
           <EmptyState icon={Server} message="No nodes attached to this endpoint." />
         ) : (
           <table className="w-full text-sm">
@@ -196,7 +198,7 @@ export function AdminEndpointDetail() {
               </tr>
             </thead>
             <tbody>
-              {nodes.map((n) => (
+              {Array.isArray(nodes) && nodes.map((n) => (
                 <tr key={n.id} className="border-b border-slate-800/50">
                   <td className="px-4 py-3 font-medium text-slate-200">{n.nodeName}</td>
                   <td className="px-4 py-3"><Pill className={STATUS_COLORS[n.nodeStatus] ?? ""}>{n.nodeStatus}</Pill></td>
@@ -210,7 +212,7 @@ export function AdminEndpointDetail() {
       {/* Access Policies */}
       <Card>
         <CardHeader title="Access Policies" icon={Network} />
-        {policies.length === 0 ? (
+        {!Array.isArray(policies) || policies.length === 0 ? (
           <EmptyState icon={Network} message="No access policies configured." />
         ) : (
           <table className="w-full text-sm">
@@ -222,7 +224,7 @@ export function AdminEndpointDetail() {
               </tr>
             </thead>
             <tbody>
-              {policies.map((p) => (
+              {Array.isArray(policies) && policies.map((p) => (
                 <tr key={p.id} className="border-b border-slate-800/50">
                   <td className="px-4 py-3 text-slate-300">{p.principalType}</td>
                   <td className="px-4 py-3 font-mono text-xs text-slate-300">{p.principalId}</td>
@@ -237,7 +239,7 @@ export function AdminEndpointDetail() {
       {/* Health History */}
       <Card>
         <CardHeader title="Health History" icon={Activity} />
-        {health.length === 0 ? (
+        {!Array.isArray(health) || health.length === 0 ? (
           <EmptyState icon={Activity} message="No health records yet." />
         ) : (
           <table className="w-full text-sm">
@@ -251,7 +253,7 @@ export function AdminEndpointDetail() {
               </tr>
             </thead>
             <tbody>
-              {health.map((r) => (
+              {Array.isArray(health) && health.map((r) => (
                 <tr key={r.id} className="border-b border-slate-800/50">
                   <td className="px-4 py-3 text-xs text-slate-400">{new Date(r.observedAt).toLocaleString()}</td>
                   <td className="px-4 py-3"><Pill className={STATUS_COLORS[r.status] ?? ""}>{r.status}</Pill></td>

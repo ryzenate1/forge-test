@@ -1,17 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, MapPin, Plus, Trash2 } from "lucide-react";
 import { type ApiLocation, createLocation, deleteLocation, fetchLocations, updateLocation } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "./admin-ui";
+import { AdminFormSection, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "./admin-ui";
 
 export function AdminLocations() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const locationsQuery = useQuery({ queryKey: ["locations"], queryFn: fetchLocations });
-  const locations = locationsQuery.data ?? [];
+  const locations = useMemo(() => Array.isArray(locationsQuery.data) ? locationsQuery.data : [], [locationsQuery.data]);
 
  const [modal, setModal] = useState<null | "create" | { id: string; short: string; long: string }>(null);
  const [short, setShort] = useState("");
@@ -78,7 +78,7 @@ export function AdminLocations() {
  </tr>
  </thead>
  <tbody className="divide-y divide-white/[0.04]">
- {locations.map((loc) => (
+  {Array.isArray(locations) && locations.map((loc) => (
  <tr key={loc.id} className="hover:bg-white/[0.02] transition-colors">
  <td className="px-4 py-3 font-mono font-semibold text-[#dc2626]">{loc.short}</td>
  <td className="px-4 py-3 text-slate-300">{loc.long || <span className="text-slate-600">-</span>}</td>
@@ -98,14 +98,14 @@ export function AdminLocations() {
  )}
  </Card>
 
- {modal !== null ? (
- <Modal title={modal === "create" ? "Create Location" : "Edit Location"} onClose={() => setModal(null)}>
- <div className="grid gap-4">
- <Input label="Short code (e.g. US)" value={short} onChange={setShort} placeholder="US" mono required />
- <Input label="Description (e.g. United States)" value={long} onChange={setLong} placeholder="United States" required />
- {(short.trim() === "" || long.trim() === "") ? <p className="text-xs text-amber-300">Short code and description are required.</p> : null}
- {formError ? <div className="flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-xs text-red-200"><AlertCircle size={14} className="mt-0.5 shrink-0" /> <span>{formError}</span></div> : null}
- </div>
+  {modal !== null ? (
+  <Modal title={modal === "create" ? "Create Location" : "Edit Location"} onClose={() => setModal(null)}>
+  <AdminFormSection title="Location Details">
+  <Input label="Short code (e.g. US)" value={short} onChange={setShort} placeholder="US" mono required />
+  <Input label="Description (e.g. United States)" value={long} onChange={setLong} placeholder="United States" required />
+  </AdminFormSection>
+  {(short.trim() === "" || long.trim() === "") ? <p className="text-xs text-amber-300">Short code and description are required.</p> : null}
+  {formError ? <div className="flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-xs text-red-200"><AlertCircle size={14} className="mt-0.5 shrink-0" /> <span>{formError}</span></div> : null}
  <ModalFooter
  onCancel={() => setModal(null)}
  onConfirm={() => {

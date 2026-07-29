@@ -35,7 +35,7 @@ func New(s *store.Store, logger *slog.Logger) (*Service, error) {
 	}
 	return &Service{
 		store:   s,
-		cron:    cron.New(cron.WithSeconds()),
+		cron:    cron.New(),
 		entries: make(map[string]cron.EntryID),
 		logger:  logger,
 	}, nil

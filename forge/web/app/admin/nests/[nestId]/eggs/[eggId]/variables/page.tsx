@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ChevronRight, Container, FileCode, Terminal } from "lucide-react";
 import { fetchEgg, fetchNest } from "@/lib/api";
 import { AdminEggVariables } from "@/components/admin/AdminEggVariables";
-import { Btn, Card, cn } from "@/components/admin/admin-ui";
+import { AdminPageLayout, Btn, Card, cn } from "@/components/admin/admin-ui";
 
 function InfoRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
@@ -68,7 +68,7 @@ export default function EggVariablesPage() {
   })();
 
   return (
-    <div className="space-y-6">
+    <AdminPageLayout>
       {/* Navigation — breadcrumb with readable names */}
       <nav className="flex items-center gap-1.5 text-xs text-slate-500">
         <button onClick={() => router.push("/admin/nests")} className="transition hover:text-slate-300" type="button">Nests</button>
@@ -129,6 +129,6 @@ export default function EggVariablesPage() {
 
       {/* Variables section */}
       <AdminEggVariables egg={egg} />
-    </div>
+    </AdminPageLayout>
   );
 }

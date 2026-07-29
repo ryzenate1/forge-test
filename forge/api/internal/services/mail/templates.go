@@ -2,7 +2,9 @@ package mail
 
 import (
 	"bytes"
+	"errors"
 	"html/template"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -279,6 +281,15 @@ func (tr *TemplateRenderer) Render(t EmailTemplate, data EmailData) (string, str
 	}
 	if data.ProductName == "" {
 		data.ProductName = "GamePanel"
+	}
+	for _, value := range []string{data.PanelURL, data.ResetURL, data.InviteURL} {
+		if value == "" {
+			continue
+		}
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
+			return "", "", errors.New("email action URLs must use absolute HTTPS URLs without credentials")
+		}
 	}
 
 	var htmlBuf bytes.Buffer

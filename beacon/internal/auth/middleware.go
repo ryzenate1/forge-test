@@ -22,7 +22,7 @@ func NewAuthMiddleware(gen *tokens.Generator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
-			if path == "/health" || path == "/metrics" || path == "/ready" {
+			if r.Method == http.MethodGet && (path == "/health" || path == "/ready") {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -59,14 +59,43 @@ func RequireScopes(scopes ...Scope) func(http.Handler) http.Handler {
 				return
 			}
 
-			tokenScope := Scope(claims.Scope)
-			for _, s := range scopes {
-				if tokenScope == s {
-					next.ServeHTTP(w, r)
+			granted := make(map[Scope]struct{})
+			for _, value := range strings.FieldsFunc(string(claims.Scope), func(r rune) bool {
+				return r == ',' || r == ' ' || r == '\t'
+			}) {
+				granted[Scope(value)] = struct{}{}
+			}
+			for _, required := range scopes {
+				if _, ok := granted[required]; !ok {
+					http.Error(w, "insufficient scope", http.StatusForbidden)
 					return
 				}
 			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
 
+// RequireAnyScope authorizes a token when at least one requested scope is
+// present. Use RequireScopes when every supplied scope is required.
+func RequireAnyScope(scopes ...Scope) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			claims := ClaimsFromContext(r.Context())
+			if claims == nil {
+				http.Error(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			for _, granted := range strings.FieldsFunc(string(claims.Scope), func(r rune) bool {
+				return r == ',' || r == ' ' || r == '\t'
+			}) {
+				for _, accepted := range scopes {
+					if Scope(granted) == accepted {
+						next.ServeHTTP(w, r)
+						return
+					}
+				}
+			}
 			http.Error(w, "insufficient scope", http.StatusForbidden)
 		})
 	}

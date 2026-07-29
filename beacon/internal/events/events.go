@@ -1,9 +1,10 @@
 package events
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"sync"
-	"time"
 )
 
 // Event represents an event
@@ -29,7 +30,7 @@ func NewBus() *Bus {
 // Publish publishes an event to all subscribers of the given topic. If a
 // subscriber channel is full, it waits up to 10ms and then drops the oldest
 // message from the channel to make room, matching the Wings SinkPool ring
-// buffer pattern. All channel sends happen concurrently.
+// buffer pattern.
 //
 // Send/close invariant: Publish holds b.mu (RLock) for the entire duration
 // of every send attempt below, and Unsubscribe holds b.mu (Lock) for the
@@ -37,45 +38,35 @@ func NewBus() *Bus {
 // Since a read-lock and a write-lock on the same sync.RWMutex can never be
 // held concurrently, Publish can never be sending on a channel that
 // Unsubscribe is concurrently closing, which is what would otherwise cause
-// a "send on closed channel" panic. The per-channel sends are still
-// dispatched to goroutines (and Publish waits for them via the WaitGroup
-// before releasing the lock) so that one slow/full subscriber can't block
-// delivery to the others.
-func (b *Bus) Publish(topic string, data interface{}) {
+// a "send on closed channel" panic.
+func (b *Bus) Publish(topic string, data interface{}) error {
 	enc, err := json.Marshal(Event{Topic: topic, Data: data})
 	if err != nil {
-		return
+		return err
 	}
 
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
 	if b.closed {
-		return
+		return errors.New("event bus is closed")
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(len(b.listeners[topic]))
 	for _, ch := range b.listeners[topic] {
-		go func(c chan []byte) {
-			defer wg.Done()
+		select {
+		case ch <- enc:
+		default:
 			select {
-			case c <- enc:
-			case <-time.After(10 * time.Millisecond):
-				// Channel is full after 10ms — drop the oldest message
-				// and try again, acting as a ring buffer.
+			case <-ch:
 				select {
-				case <-c:
-					select {
-					case c <- enc:
-					default:
-					}
+				case ch <- enc:
 				default:
 				}
+			default:
 			}
-		}(ch)
+		}
 	}
-	wg.Wait()
+	return nil
 }
 
 // Subscribe subscribes to events
@@ -84,7 +75,20 @@ func (b *Bus) Subscribe(topic string) <-chan []byte {
 	defer b.mu.Unlock()
 
 	ch := make(chan []byte, 32)
+	if b.closed {
+		close(ch)
+		return ch
+	}
 	b.listeners[topic] = append(b.listeners[topic], ch)
+	return ch
+}
+
+func (b *Bus) SubscribeContext(ctx context.Context, topic string) <-chan []byte {
+	ch := b.Subscribe(topic)
+	go func() {
+		<-ctx.Done()
+		b.Unsubscribe(topic, ch)
+	}()
 	return ch
 }
 
@@ -114,8 +118,6 @@ func (b *Bus) Unsubscribe(topic string, ch <-chan []byte) {
 		return
 	}
 }
-
-
 
 // Destroy closes all channels
 func (b *Bus) Destroy() {

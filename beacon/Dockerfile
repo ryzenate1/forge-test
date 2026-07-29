@@ -18,12 +18,12 @@ FROM alpine:3.21
 ARG TARGETARCH
 ARG NIXPACKS_VERSION=1.41.0
 
-LABEL maintainer="GamePanel Team" \
+LABEL maintainer="Forge Plane Team" \
       version="1.0.0" \
-      description="Beacon - GamePanel node agent" \
-      org.opencontainers.image.source="https://github.com/gamepanel/beacon" \
+      description="Beacon - Forge Plane node agent" \
+      org.opencontainers.image.source="https://github.com/forge-plane/beacon" \
       org.opencontainers.image.title="Beacon" \
-      org.opencontainers.image.description="GamePanel per-node Docker, filesystem, console, backup and SFTP agent"
+      org.opencontainers.image.description="Forge Plane per-node Docker, filesystem, console, backup and SFTP agent"
 
 RUN apk add --no-cache ca-certificates curl docker-cli iptables tar tzdata && \
     case "$TARGETARCH" in \

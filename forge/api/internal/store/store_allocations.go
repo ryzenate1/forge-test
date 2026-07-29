@@ -42,6 +42,30 @@ func (s *Store) ListAllocations(ctx context.Context) ([]Allocation, error) {
 	return s.ListAllocationsPaginated(ctx, 0, 1000)
 }
 
+func (s *Store) GetAllocation(ctx context.Context, id string) (Allocation, error) {
+	var allocation Allocation
+	var server, alias sql.NullString
+	err := s.db.QueryRow(ctx, `
+		SELECT a.id::text, n.name, s.name, a.ip::text, a.port, a.container_port,
+		       a.protocol, a.alias, COALESCE(a.notes, '')
+		FROM allocations a
+		JOIN nodes n ON n.id=a.node_id
+		LEFT JOIN servers s ON s.id=a.server_id
+		WHERE a.id=$1
+	`, id).Scan(&allocation.ID, &allocation.Node, &server, &allocation.IP, &allocation.Port,
+		&allocation.ContainerPort, &allocation.Protocol, &alias, &allocation.Notes)
+	if err != nil {
+		return Allocation{}, err
+	}
+	if server.Valid {
+		allocation.Server = &server.String
+	}
+	if alias.Valid && alias.String != "" {
+		allocation.Alias = &alias.String
+	}
+	return allocation, nil
+}
+
 func (s *Store) ListAllocationsWithTotal(ctx context.Context, page, perPage int) ([]Allocation, int, error) {
 	if page < 1 {
 		page = 1

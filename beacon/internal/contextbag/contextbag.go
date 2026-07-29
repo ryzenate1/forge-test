@@ -9,19 +9,25 @@ import (
 type Bag struct {
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
+	closed  bool
 }
 
 func New() *Bag {
 	return &Bag{cancels: make(map[string]context.CancelFunc)}
 }
 
-func (b *Bag) Add(key string, cancel context.CancelFunc) {
+func (b *Bag) Add(key string, cancel context.CancelFunc) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.closed {
+		cancel()
+		return false
+	}
 	if previous := b.cancels[key]; previous != nil {
 		previous()
 	}
 	b.cancels[key] = cancel
+	return true
 }
 
 func (b *Bag) Remove(key string) {
@@ -42,6 +48,7 @@ func (b *Bag) Cancel(key string) {
 
 func (b *Bag) CancelAll() {
 	b.mu.Lock()
+	b.closed = true
 	cancels := b.cancels
 	b.cancels = make(map[string]context.CancelFunc)
 	b.mu.Unlock()

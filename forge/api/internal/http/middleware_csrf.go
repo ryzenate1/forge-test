@@ -93,10 +93,7 @@ func GetCSRFTokenHandler() fiber.Handler {
 
 		SetCSRFCookie(c, token)
 
-		return c.JSON(fiber.Map{
-			"token":   token,
-			"expires": time.Now().Add(CSRFTokenExpiry).Format(time.RFC3339),
-		})
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 }
 

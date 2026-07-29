@@ -55,17 +55,54 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     const csrf = getCSRFToken();
     if (csrf) headers['X-CSRF-Token'] = csrf;
   }
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    credentials: "include",
-    ...options,
-    headers,
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`API ${method} ${path}: ${res.status} ${err}`);
+
+  // Rate limiting retry configuration
+  const maxRetries = 3;
+  const baseDelay = 1000; // 1 second
+    let lastError: Error = new Error("Unknown error");
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(`${API_BASE_URL}${path}`, {
+        credentials: "include",
+        ...options,
+        headers,
+      });
+
+      if (!res.ok) {
+        const err = await res.text();
+
+        // Handle rate limiting (429) with retry
+        if (res.status === 429) {
+          const retryAfterHeader = res.headers.get('Retry-After');
+          const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader) : 5; // Default 5 seconds
+          const delay = Math.min(retryAfter * 1000, 30000); // Max 30 seconds
+
+          if (attempt < maxRetries) {
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue; // Retry the request
+          }
+
+          throw new Error(`API ${method} ${path}: ${res.status} ${err}`);
+        }
+
+        throw new Error(`API ${method} ${path}: ${res.status} ${err}`);
+      }
+
+      const body = await res.json();
+      return body?.data ?? body;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      // For network errors, retry with exponential backoff
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt); // Exponential backoff
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
   }
-  const body = await res.json();
-  return body?.data ?? body;
+
+  throw lastError;
 }
 
 export async function listApps(category?: string, search?: string): Promise<AppStoreApp[]> {

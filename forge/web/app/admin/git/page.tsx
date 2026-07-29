@@ -1,14 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/components/ui/toast";
 import {
   Key, Link, GitBranch, Trash2, Plus, RefreshCw, Webhook,
-  Shield, Globe, CheckCircle, XCircle
+  Shield, Globe, CheckCircle, XCircle, Server
 } from "lucide-react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === "development" ? "http://localhost:8080/api/v1" : "/api/v1");
+import {
+  listGitCredentials, listGitProviderTokens, listGitSources,
+  createGitCredential, deleteGitCredential, generateGitDeployKey,
+  connectGitProviderToken, disconnectGitProviderToken,
+  createGitSource, deleteGitSource,
+  listGitProviderRepos, listGitProviderBranches,
+} from "@/lib/api/git-admin";
 
 interface GitCredential {
   id: string;
@@ -94,6 +99,8 @@ function ProviderIcon({ provider }: { provider: string }) {
   );
 }
 
+import { AdminPageLayout, AdminPageHeader, AdminTabs } from "@/components/admin/admin-ui";
+
 export default function GitPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -106,44 +113,28 @@ export default function GitPage() {
   const [loadingRepos, setLoadingRepos] = useState("");
   const [loadingBranches, setLoadingBranches] = useState("");
 
-  const { data: credentials = [] } = useQuery<GitCredential[]>({
+  const { data: credentialsRaw } = useQuery<GitCredential[]>({
     queryKey: ["git-credentials"],
-    queryFn: async () => {
-      const res = await fetch(`${API_BASE}/git/credentials`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch credentials");
-      return res.json();
-    },
+    queryFn: () => listGitCredentials(),
   });
 
-  const { data: providerTokens = [] } = useQuery<GitProviderToken[]>({
+  const { data: providerTokensRaw } = useQuery<GitProviderToken[]>({
     queryKey: ["git-providers"],
-    queryFn: async () => {
-      const res = await fetch(`${API_BASE}/git/providers`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch providers");
-      return res.json();
-    },
+    queryFn: () => listGitProviderTokens(),
   });
 
-  const { data: sources = [] } = useQuery<GitSource[]>({
+  const { data: sourcesRaw } = useQuery<GitSource[]>({
     queryKey: ["git-sources"],
-    queryFn: async () => {
-      const res = await fetch(`${API_BASE}/git/sources`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch sources");
-      return res.json();
-    },
+    queryFn: () => listGitSources(),
   });
+
+  const credentials = useMemo(() => credentialsRaw ?? [], [credentialsRaw]);
+  const providerTokens = useMemo(() => providerTokensRaw ?? [], [providerTokensRaw]);
+  const sources = useMemo(() => sourcesRaw ?? [], [sourcesRaw]);
 
   const createCredential = useMutation({
-    mutationFn: async (data: { name: string; credentialType: string; credential: string; description: string }) => {
-      const res = await fetch(`${API_BASE}/git/credentials`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(data),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      return res.json();
-    },
+    mutationFn: (data: { name: string; credentialType: string; credential: string; description: string }) =>
+      createGitCredential(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["git-credentials"] });
       setShowCreateCredential(false);
@@ -152,13 +143,7 @@ export default function GitPage() {
   });
 
   const deleteCredential = useMutation({
-    mutationFn: async (id: string) => {
-      const res = await fetch(`${API_BASE}/git/credentials/${id}`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Delete failed");
-    },
+    mutationFn: (id: string) => deleteGitCredential(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["git-credentials"] });
       toast({ tone: "success", title: "Credential deleted" });
@@ -166,34 +151,18 @@ export default function GitPage() {
   });
 
   const generateKey = useMutation({
-    mutationFn: async (id: string) => {
-      const res = await fetch(`${API_BASE}/git/credentials/${id}/generate-key`, {
-        method: "POST",
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error(await res.text());
-      return res.json();
-    },
-    onSuccess: (data) => {
+    mutationFn: (id: string) => generateGitDeployKey(id),
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["git-credentials"] });
-      toast({ tone: "success", title: `Deploy key generated: ${data.type}` });
+      toast({ tone: "success", title: "Deploy key generated" });
     },
   });
 
   const connectProvider = useMutation({
-    mutationFn: async (data: {
+    mutationFn: (data: {
       provider: string; providerName: string; accessToken: string;
       refreshToken: string; tokenType: string; baseUrl: string; username: string;
-    }) => {
-      const res = await fetch(`${API_BASE}/git/providers`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(data),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      return res.json();
-    },
+    }) => connectGitProviderToken(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["git-providers"] });
       setShowConnectProvider(false);
@@ -202,13 +171,7 @@ export default function GitPage() {
   });
 
   const disconnectProvider = useMutation({
-    mutationFn: async (id: string) => {
-      const res = await fetch(`${API_BASE}/git/providers/${id}`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Disconnect failed");
-    },
+    mutationFn: (id: string) => disconnectGitProviderToken(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["git-providers"] });
       toast({ tone: "success", title: "Provider disconnected" });
@@ -216,20 +179,11 @@ export default function GitPage() {
   });
 
   const createSource = useMutation({
-    mutationFn: async (data: {
+    mutationFn: (data: {
       credentialId?: string; providerTokenId?: string; provider: string;
       repositoryUrl: string; repositoryName: string; repositoryOwner: string;
       branch: string; autoDeploy: boolean;
-    }) => {
-      const res = await fetch(`${API_BASE}/git/sources`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(data),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      return res.json();
-    },
+    }) => createGitSource(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["git-sources"] });
       setShowCreateSource(false);
@@ -238,13 +192,7 @@ export default function GitPage() {
   });
 
   const deleteSource = useMutation({
-    mutationFn: async (id: string) => {
-      const res = await fetch(`${API_BASE}/git/sources/${id}`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Delete failed");
-    },
+    mutationFn: (id: string) => deleteGitSource(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["git-sources"] });
       toast({ tone: "success", title: "Git source removed" });
@@ -254,12 +202,10 @@ export default function GitPage() {
   const loadProviderRepos = async (tokenId: string) => {
     setLoadingRepos(tokenId);
     try {
-      const res = await fetch(`${API_BASE}/git/providers/${tokenId}/repos`, { credentials: "include" });
-      if (res.ok) {
-        setSelectedProviderRepos(await res.json());
-      } else {
-        toast({ tone: "error", title: "Failed to load repositories" });
-      }
+      const repos = await listGitProviderRepos(tokenId);
+      setSelectedProviderRepos(repos);
+    } catch {
+      toast({ tone: "error", title: "Failed to load repositories" });
     } finally {
       setLoadingRepos("");
     }
@@ -268,39 +214,23 @@ export default function GitPage() {
   const loadProviderBranches = async (tokenId: string, repoFullName: string) => {
     setLoadingBranches(tokenId);
     try {
-      const res = await fetch(
-        `${API_BASE}/git/providers/${tokenId}/branches?repo=${encodeURIComponent(repoFullName)}`,
-        { credentials: "include" }
-      );
-      if (res.ok) {
-        setSelectedProviderBranches(await res.json());
-      } else {
-        toast({ tone: "error", title: "Failed to load branches" });
-      }
+      const branches = await listGitProviderBranches(tokenId, repoFullName);
+      setSelectedProviderBranches(branches);
+    } catch {
+      toast({ tone: "error", title: "Failed to load branches" });
     } finally {
       setLoadingBranches("");
     }
   };
 
   return (
-    <div className="space-y-6 p-6">
-      <h1 className="text-2xl font-bold">Git Integration</h1>
-
-      <div className="flex gap-2 border-b">
-        {(["credentials", "providers", "sources"] as Tab[]).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm font-medium rounded-t-lg ${
-              tab === t
-                ? "bg-red-600 text-white border-b-2 border-red-600"
-                : "text-slate-400 hover:text-slate-100"
-            }`}
-          >
-            {t.charAt(0).toUpperCase() + t.slice(1)}
-          </button>
-        ))}
-      </div>
+    <AdminPageLayout>
+      <AdminPageHeader title="Git Integration" description="Manage Git credentials, providers, and repository sources." />
+      <AdminTabs tabs={[
+        { id: "credentials", label: "Credentials", icon: Key },
+        { id: "providers", label: "Providers", icon: Globe },
+        { id: "sources", label: "Sources", icon: Server },
+      ]} active={tab} onChange={(id) => setTab(id as Tab)} />
 
       {tab === "credentials" && (
         <div className="space-y-4">
@@ -316,11 +246,11 @@ export default function GitPage() {
             </button>
           </div>
 
-          {(!credentials || credentials.length === 0) && (
+          {(!Array.isArray(credentials) || credentials.length === 0) && (
             <p className="text-slate-400 text-sm">No credentials configured.</p>
           )}
 
-          {credentials?.map((cred) => (
+          {Array.isArray(credentials) && credentials.map((cred) => (
             <div key={cred.id} className="border rounded-lg p-4 space-y-2">
               <div className="flex justify-between items-start">
                 <div>
@@ -386,11 +316,11 @@ export default function GitPage() {
             </button>
           </div>
 
-          {(!providerTokens || providerTokens.length === 0) && (
+          {(!Array.isArray(providerTokens) || providerTokens.length === 0) && (
             <p className="text-slate-400 text-sm">No providers connected.</p>
           )}
 
-          {providerTokens?.map((pt) => (
+          {Array.isArray(providerTokens) && providerTokens.map((pt) => (
             <div key={pt.id} className="border rounded-lg p-4 space-y-2">
               <div className="flex justify-between items-start">
                 <div className="flex items-center gap-2">
@@ -430,7 +360,7 @@ export default function GitPage() {
                       </span>
                       <button
                         onClick={() => loadProviderBranches(pt.id, repo.fullName)}
-                        className="text-blue-500 hover:underline text-xs"
+                        className="text-slate-400 hover:text-slate-200 underline text-xs"
                         disabled={loadingBranches === pt.id}
                       >
                         branches
@@ -476,11 +406,11 @@ export default function GitPage() {
             </button>
           </div>
 
-          {(!sources || sources.length === 0) && (
+          {(!Array.isArray(sources) || sources.length === 0) && (
             <p className="text-slate-400 text-sm">No repositories linked.</p>
           )}
 
-          {sources?.map((src) => (
+          {Array.isArray(sources) && sources.map((src) => (
             <div key={src.id} className="border rounded-lg p-4 space-y-2">
               <div className="flex justify-between items-start">
                 <div>
@@ -530,7 +460,7 @@ export default function GitPage() {
           )}
         </div>
       )}
-    </div>
+    </AdminPageLayout>
   );
 }
 
@@ -730,7 +660,7 @@ function SourceForm({
           className="w-full p-2 border rounded text-sm"
         >
           <option value="">Select credential...</option>
-          {credentials.map((c) => (
+          {Array.isArray(credentials) && credentials.map((c) => (
             <option key={c.id} value={c.id}>{c.name} ({c.credentialType})</option>
           ))}
         </select>
@@ -741,13 +671,13 @@ function SourceForm({
           value={providerTokenId}
           onChange={(e) => {
             setProviderTokenId(e.target.value);
-            const pt = providerTokens.find((t) => t.id === e.target.value);
+            const pt = Array.isArray(providerTokens) ? providerTokens.find((t) => t.id === e.target.value) : undefined;
             if (pt) setProvider(pt.provider);
           }}
           className="w-full p-2 border rounded text-sm"
         >
           <option value="">Select provider...</option>
-          {providerTokens.map((pt) => (
+          {Array.isArray(providerTokens) && providerTokens.map((pt) => (
             <option key={pt.id} value={pt.id}>
               {pt.provider}{pt.providerName ? ` (${pt.providerName})` : ""}
             </option>

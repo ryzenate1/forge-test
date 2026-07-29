@@ -154,7 +154,7 @@ func TestNewAuthMiddleware_PublicEndpointHealth(t *testing.T) {
 	}
 }
 
-func TestNewAuthMiddleware_PublicEndpointMetrics(t *testing.T) {
+func TestNewAuthMiddleware_MetricsRequiresAuthentication(t *testing.T) {
 	gen := tokens.NewGenerator([]byte("test-secret"))
 	mw := NewAuthMiddleware(gen)
 
@@ -166,8 +166,8 @@ func TestNewAuthMiddleware_PublicEndpointMetrics(t *testing.T) {
 	w := httptest.NewRecorder()
 	mw(testHandler).ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 for public endpoint, got %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for unauthenticated metrics endpoint, got %d", w.Code)
 	}
 }
 
@@ -318,12 +318,12 @@ func TestRequireScopes_AdminScopePasses(t *testing.T) {
 	}
 }
 
-func TestRequireScopes_AnyScopeInList(t *testing.T) {
+func TestRequireScopesRequiresEveryScope(t *testing.T) {
 	gen := tokens.NewGenerator([]byte("test-secret"))
 	mw := NewAuthMiddleware(gen)
 
 	claims := tokens.Claims{
-		Scope:     tokens.Scope("backup:read"),
+		Scope:     tokens.Scope("server:read,backup:read"),
 		ServerID:  "srv-1",
 		IssuedAt:  time.Now(),
 		ExpiresAt: time.Now().Add(time.Hour),
@@ -344,7 +344,7 @@ func TestRequireScopes_AnyScopeInList(t *testing.T) {
 	mw(RequireScopes(ScopeServerRead, ScopeBackupRead)(testHandler)).ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 when one of the required scopes matches, got %d", w.Code)
+		t.Errorf("expected 200 when every required scope matches, got %d", w.Code)
 	}
 }
 

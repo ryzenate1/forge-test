@@ -37,7 +37,7 @@ var uploadLocks sync.Map
 func lockUpload(serverID, uploadID string) func() {
 	key := serverID + "/" + uploadID
 	value, _ := uploadLocks.LoadOrStore(key, &sync.Mutex{})
-	mu := value.(*sync.Mutex)
+	mu, _ := value.(*sync.Mutex)
 	mu.Lock()
 	return func() {
 		uploadLocks.Delete(key)
@@ -387,7 +387,11 @@ type archiveCommit struct {
 }
 
 func mergeStaging(fsys *rootfs.FS, stage, destination string) error {
-	backupRoot := ".extract-backup-" + randomHex(12)
+	suffix, err := randomHex(12)
+	if err != nil {
+		return err
+	}
+	backupRoot := ".extract-backup-" + suffix
 	if err := fsys.MkdirAll(backupRoot, 0o700); err != nil {
 		return err
 	}
@@ -486,7 +490,11 @@ func extractArchive(fsys *rootfs.FS, archiveName, destination string, manager *S
 		return 0, errors.New("archive is not a regular file")
 	}
 	limits := archiveLimits{bytes: envBytes("DAEMON_ARCHIVE_MAX_EXPANDED_BYTES", defaultMaxArchiveBytes), entries: defaultMaxArchiveEntries}
-	stage := ".extract-" + randomHex(12)
+	suffix, err := randomHex(12)
+	if err != nil {
+		return 0, err
+	}
+	stage := ".extract-" + suffix
 	if err := fsys.MkdirAll(stage, 0o700); err != nil {
 		return 0, err
 	}

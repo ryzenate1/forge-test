@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"sort"
 	"sync"
 	"time"
 
@@ -356,8 +357,8 @@ func (w *Worker) enforceRetentionBeforeBackup(ctx context.Context, policy store.
 	}
 
 	overLimit := 0
-	if policy.MaxBackups > 0 && countCompleted > policy.MaxBackups {
-		overLimit = countCompleted - policy.MaxBackups
+	if policy.MaxBackups > 0 && countCompleted >= policy.MaxBackups {
+		overLimit = countCompleted - policy.MaxBackups + 1
 	}
 
 	if overLimit > 0 {
@@ -367,6 +368,9 @@ func (w *Worker) enforceRetentionBeforeBackup(ctx context.Context, policy store.
 				toDelete = append(toDelete, b)
 			}
 		}
+		sort.SliceStable(toDelete, func(i, j int) bool {
+			return toDelete[i].CreatedAt.Before(toDelete[j].CreatedAt)
+		})
 		for i := 0; i < overLimit && i < len(toDelete); i++ {
 			b := toDelete[i]
 			if delErr := w.svc.DeleteBackupFromStorage(cleanupCtx, b.ServerID, b.Name, policy.Storage); delErr != nil {

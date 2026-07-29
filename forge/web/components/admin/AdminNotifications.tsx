@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, Globe, MessageSquare, Mail, Send, Trash2, Plus, RefreshCw, Zap } from "lucide-react";
 import {
@@ -18,7 +18,7 @@ import {
   AVAILABLE_EVENTS,
   EVENT_LABELS,
 } from "@/lib/api/notifications";
-import { Btn, Card, CardHeader, EmptyState, Input, Pill, SectionHeader } from "./admin-ui";
+import { AdminFormSection, AdminSelect, Btn, Card, CardHeader, EmptyState, Input, Pill, SectionHeader, Textarea } from "./admin-ui";
 
 const CHANNEL_ICONS: Record<NotificationChannelType, typeof Bell> = {
   slack: MessageSquare,
@@ -63,21 +63,21 @@ export function AdminNotifications() {
     queryKey: ["notification-channels"],
     queryFn: fetchNotificationChannels,
   });
-  const channels = channelsQuery.data ?? [];
+  const channels = useMemo(() => channelsQuery.data ?? [], [channelsQuery.data]);
 
   const logsQuery = useQuery({
     queryKey: ["notification-logs"],
     queryFn: () => fetchNotificationLogs(),
     enabled: view === "logs",
   });
-  const logs = logsQuery.data ?? [];
+  const logs = useMemo(() => logsQuery.data ?? [], [logsQuery.data]);
 
   const subsQuery = useQuery({
     queryKey: ["notification-subs", detailId],
     queryFn: () => (detailId ? fetchSubscriptions(detailId) : Promise.resolve([])),
     enabled: !!detailId,
   });
-  const subscriptions = subsQuery.data ?? [];
+  const subscriptions = useMemo(() => subsQuery.data ?? [], [subsQuery.data]);
 
   function buildConfig(): Record<string, unknown> {
     switch (type) {
@@ -163,48 +163,38 @@ export function AdminNotifications() {
   function renderConfigForm() {
     return (
       <div className="space-y-4">
-        <div>
-          <label className="mb-1.5 block text-sm font-medium text-slate-300">Channel Type</label>
-          <select
-            className="min-h-9 w-full rounded-lg border border-white/10 bg-surface-card-header px-3 text-sm text-slate-200"
-            value={type}
-            onChange={(e) => setType(e.target.value as NotificationChannelType)}
-          >
-            <option value="slack">Slack</option>
-            <option value="discord">Discord</option>
-            <option value="telegram">Telegram</option>
-            <option value="email">Email</option>
-            <option value="webhook">Webhook</option>
-          </select>
-        </div>
-        <Input label="Channel Name" value={name} onChange={setName} placeholder="My Slack Channel" required />
-        <div className="flex items-center gap-2">
-          <input type="checkbox" id="enabled" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="rounded" />
-          <label htmlFor="enabled" className="text-sm text-slate-300">Enabled</label>
-        </div>
+        <AdminFormSection title="Channel Configuration">
+          <AdminSelect label="Channel Type" value={type} onChange={(v) => setType(v as NotificationChannelType)} options={[
+            { value: "slack", label: "Slack" },
+            { value: "discord", label: "Discord" },
+            { value: "telegram", label: "Telegram" },
+            { value: "email", label: "Email" },
+            { value: "webhook", label: "Webhook" },
+          ]} />
+          <Input label="Channel Name" value={name} onChange={setName} placeholder="My Slack Channel" required />
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="rounded accent-[#dc2626]" />
+            Enabled
+          </label>
+        </AdminFormSection>
         {type === "slack" || type === "discord" ? (
-          <Input label={type === "slack" ? "Slack Webhook URL" : "Discord Webhook URL"} value={webhookUrl} onChange={setWebhookUrl} placeholder="https://hooks.slack.com/services/..." />
+          <AdminFormSection title="Webhook">
+            <Input label={type === "slack" ? "Slack Webhook URL" : "Discord Webhook URL"} value={webhookUrl} onChange={setWebhookUrl} placeholder="https://hooks.slack.com/services/..." />
+          </AdminFormSection>
         ) : type === "telegram" ? (
-          <>
+          <AdminFormSection title="Telegram">
             <Input label="Bot Token" value={botToken} onChange={setBotToken} placeholder="123456:ABC-DEF..." />
             <Input label="Chat ID" value={chatId} onChange={setChatId} placeholder="-100123456789" />
-          </>
+          </AdminFormSection>
         ) : type === "email" ? (
-          <Input label="Recipients (comma-separated)" value={recipients} onChange={setRecipients} placeholder="admin@example.com, team@example.com" />
+          <AdminFormSection title="Email">
+            <Input label="Recipients (comma-separated)" value={recipients} onChange={setRecipients} placeholder="admin@example.com, team@example.com" />
+          </AdminFormSection>
         ) : type === "webhook" ? (
-          <>
+          <AdminFormSection title="Webhook">
             <Input label="Webhook URL" value={customUrl} onChange={setCustomUrl} placeholder="https://example.com/hooks/..." />
-            <label className="block text-sm font-medium text-slate-300">
-              <span className="mb-1.5 block">Headers (JSON)</span>
-              <textarea
-                className="min-h-0 w-full rounded-lg border border-white/10 bg-surface-card-header px-3 py-2 font-mono text-xs text-slate-200"
-                rows={4}
-                value={headers}
-                onChange={(e) => setHeaders(e.target.value)}
-                placeholder='{"Authorization": "Bearer ..."}'
-              />
-            </label>
-          </>
+            <Textarea label="Headers (JSON)" value={headers} onChange={setHeaders} placeholder='{"Authorization": "Bearer ..."}' />
+          </AdminFormSection>
         ) : null}
       </div>
     );
@@ -273,7 +263,7 @@ export function AdminNotifications() {
                   <Btn size="sm" tone="ghost" onClick={() => void channelsQuery.refetch()}>Retry</Btn>
                 </div>
               </div>
-            ) : channels.length === 0 ? (
+            ) : !Array.isArray(channels) || channels.length === 0 ? (
               <EmptyState icon={Bell} message="No notification channels configured." />
             ) : (
               <table className="w-full text-sm">
@@ -287,7 +277,7 @@ export function AdminNotifications() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/[0.04]">
-                  {channels.map((ch) => (
+                  {Array.isArray(channels) && channels.map((ch) => (
                     <tr key={ch.id} className="hover:bg-white/[0.02]">
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
@@ -361,7 +351,7 @@ export function AdminNotifications() {
           <CardHeader title="Delivery Logs" icon={RefreshCw} />
           {logsQuery.isLoading ? (
             <div className="py-10 text-center text-sm text-slate-500">Loading...</div>
-          ) : logs.length === 0 ? (
+          ) : !Array.isArray(logs) || logs.length === 0 ? (
             <EmptyState icon={Bell} message="No delivery logs yet." />
           ) : (
             <table className="w-full text-sm">
@@ -374,7 +364,7 @@ export function AdminNotifications() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
-                {logs.map((log) => (
+                  {Array.isArray(logs) && logs.map((log) => (
                   <tr key={log.id} className="hover:bg-white/[0.02]">
                     <td className="px-4 py-3 text-xs text-slate-400">{new Date(log.sentAt).toLocaleString()}</td>
                     <td className="px-4 py-3 text-slate-200">{EVENT_LABELS[log.eventType as keyof typeof EVENT_LABELS] ?? log.eventType}</td>

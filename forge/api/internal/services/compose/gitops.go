@@ -216,7 +216,15 @@ func readComposeFromDir(dir string, composePath string) (string, error) {
 		if !strings.HasPrefix(resolved, filepath.Clean(dir)+string(filepath.Separator)) && resolved != filepath.Clean(dir) {
 			return "", fmt.Errorf("compose path escapes working directory")
 		}
-		content, err := os.ReadFile(resolved)
+		resolved, err := filepath.EvalSymlinks(resolved)
+		if err != nil {
+			return "", fmt.Errorf("resolve compose file at %s: %w", composePath, err)
+		}
+		relative, err := filepath.Rel(filepath.Clean(dir), resolved)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("compose symlink escapes working directory")
+		}
+		content, err := readLimitedComposeFile(resolved)
 		if err != nil {
 			return "", fmt.Errorf("read compose file at %s: %w", composePath, err)
 		}
@@ -260,7 +268,7 @@ func readComposeFromDir(dir string, composePath string) (string, error) {
 	})
 
 	if bestPath != "" {
-		content, err := os.ReadFile(bestPath)
+		content, err := readLimitedComposeFile(bestPath)
 		if err != nil {
 			return "", fmt.Errorf("read compose file: %w", err)
 		}
@@ -272,6 +280,20 @@ func readComposeFromDir(dir string, composePath string) (string, error) {
 	}
 
 	return "", fmt.Errorf("no compose file found in %s", dir)
+}
+
+func readLimitedComposeFile(filePath string) ([]byte, error) {
+	info, err := os.Lstat(filePath)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("compose file must be a regular non-symlink file")
+	}
+	if info.Size() > 5*1024*1024 {
+		return nil, fmt.Errorf("compose file exceeds 5 MiB")
+	}
+	return os.ReadFile(filePath)
 }
 
 func (g *GitOpsService) DeployFromGit(ctx context.Context, req GitDeployFromGitRequest) (*GitDeployResult, error) {

@@ -221,7 +221,8 @@ export function AdminAllocations() {
                       type="checkbox"
                       checked={allVisibleFreeSelected}
                       onChange={toggleSelectAllVisible}
-                      className="h-4 w-4 accent-[#dc2626] cursor-pointer"
+                      className="h-4 w-4 cursor-pointer rounded border-white/20 bg-[#0d131d] text-red-500 focus:ring-red-500/30"
+                      aria-label="Select all visible free allocations"
                       disabled={visibleFreeIds.length === 0}
                     />
                   </th>
@@ -247,7 +248,8 @@ export function AdminAllocations() {
                         disabled={Boolean(alloc.server)}
                         checked={selectedIds.includes(alloc.id)}
                         onChange={() => toggleSelected(alloc.id)}
-                        className="h-4 w-4 accent-[#dc2626] cursor-pointer disabled:cursor-not-allowed disabled:opacity-30"
+                        className="h-4 w-4 cursor-pointer rounded border-white/20 bg-[#0d131d] text-red-500 focus:ring-red-500/30 disabled:cursor-not-allowed disabled:opacity-30"
+                        aria-label={`Select ${alloc.ip}:${alloc.port}`}
                       />
                     </td>
                     <td className="px-4 py-3 font-mono text-sm whitespace-nowrap">
@@ -292,7 +294,7 @@ export function AdminAllocations() {
               <span className="text-slate-600">:</span>
               <span className="text-brand font-bold">{editing.port}</span>
               <Pill tone="neutral">{editing.protocol ?? "tcp"}</Pill>
-              {editing.server ? <Pill tone="blue">{editing.server}</Pill> : <Pill tone="green">free</Pill>}
+              {editing.server ? <Pill tone="neutral">{editing.server}</Pill> : <Pill tone="green">free</Pill>}
             </div>
             <Input label="Alias" value={editAlias} onChange={(value) => { setEditAlias(value); setEditError(null); }} placeholder="minecraft.example.com" />
             {editError ? (

@@ -1,15 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, ArrowLeft, CheckCircle2, EggOff, HardDrive, Link2Off, Plus, Save, Trash2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, EggOff, HardDrive, Link2Off, Plus, Save, Trash2 } from "lucide-react";
 import {
   attachEggsToMount, attachNodesToMount, createMount,
   deleteMount, detachEggFromMount, detachNodeFromMount, fetchEggs, fetchMounts, fetchNests, fetchNodes,
   updateMount, type ApiEgg, type ApiMount, type ApiNode,
 } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, SectionHeader } from "./admin-ui";
+import { AdminBackButton, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, SectionHeader, AdminTable, AdminTHead, AdminTh, AdminTBody, AdminTr, AdminTd } from "./admin-ui";
 
 type FieldErrors = {
   name?: string;
@@ -81,13 +81,13 @@ export function AdminMounts() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const mountsQuery = useQuery({ queryKey: ["mounts"], queryFn: fetchMounts });
-  const mounts = mountsQuery.data ?? [];
+  const mounts = useMemo(() => mountsQuery.data ?? [], [mountsQuery.data]);
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
-  const nodes = nodesQuery.data ?? [];
+  const nodes = useMemo(() => nodesQuery.data ?? [], [nodesQuery.data]);
   const nestsQuery = useQuery({ queryKey: ["nests"], queryFn: fetchNests });
 
   const eggsQuery = useQuery({ queryKey: ["eggs"], queryFn: () => fetchEggs("*") });
-  const eggs = eggsQuery.data ?? [];
+  const eggs = useMemo(() => eggsQuery.data ?? [], [eggsQuery.data]);
 
   const [selectedMountId, setSelectedMountId] = useState<string | null>(null);
 
@@ -218,7 +218,7 @@ export function AdminMounts() {
     return (
       <div>
         <div className="mb-6 flex items-center gap-4">
-          <Btn size="sm" tone="ghost" onClick={() => setSelectedMountId(null)}><ArrowLeft size={14} /> Back</Btn>
+          <AdminBackButton label="Mounts" onClick={() => setSelectedMountId(null)} />
           <div>
             <h2 className="text-lg font-semibold text-slate-100">{selected.name}</h2>
             <p className="text-sm text-slate-400">{selected.description}</p>
@@ -309,34 +309,32 @@ export function AdminMounts() {
                 <h3 className="text-sm font-semibold text-slate-200">Eggs</h3>
                 <Btn size="sm" tone="ghost" onClick={() => setShowAddEggs(true)}><Plus size={12} /> Add Eggs</Btn>
               </div>
-              {selected.templateIds?.length === 0 && (
+              {!Array.isArray(selected.templateIds) || selected.templateIds.length === 0 ? (
                 <div className="px-6 py-4 text-sm text-slate-500">No eggs attached.</div>
-              )}
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs text-slate-500 uppercase tracking-wider">
-                    <th className="px-4 py-3">ID</th>
-                    <th className="px-4 py-3">Name</th>
-                    <th className="px-4 py-3" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/[0.04]">
-                  {(selected.templateIds ?? []).map((eggId) => {
-                    const egg = eggs.find((egg) => egg.id === eggId);
+              ) : null}
+              <AdminTable label="Eggs">
+                <AdminTHead>
+                  <AdminTh>ID</AdminTh>
+                  <AdminTh>Name</AdminTh>
+                  <AdminTh>{' '}</AdminTh>
+                </AdminTHead>
+                <AdminTBody>
+                  {(Array.isArray(selected.templateIds) ? selected.templateIds : []).map((eggId) => {
+                    const egg = Array.isArray(eggs) ? eggs.find((egg) => egg.id === eggId) : undefined;
                     return (
-                      <tr key={eggId}>
-                        <td className="px-4 py-3 font-mono text-xs text-slate-500"><code>{eggId.slice(0, 8)}</code></td>
-                        <td className="px-4 py-3 text-slate-200">{egg?.name ?? `Egg ${eggId.slice(0, 8)}`}</td>
-                        <td className="px-4 py-3">
+                      <AdminTr key={eggId}>
+                        <AdminTd className="font-mono text-xs text-slate-500"><code>{eggId.slice(0, 8)}</code></AdminTd>
+                        <AdminTd className="text-slate-200">{egg?.name ?? `Egg ${eggId.slice(0, 8)}`}</AdminTd>
+                        <AdminTd>
                           <Btn size="sm" tone="danger" onClick={() => detachEggMut.mutate(eggId)} disabled={detachEggMut.isPending}>
                             <EggOff size={12} /> Detach
                           </Btn>
-                        </td>
-                      </tr>
+                        </AdminTd>
+                      </AdminTr>
                     );
                   })}
-                </tbody>
-              </table>
+                </AdminTBody>
+              </AdminTable>
             </Card>
 
             {/* Nodes Panel */}
@@ -345,36 +343,34 @@ export function AdminMounts() {
                 <h3 className="text-sm font-semibold text-slate-200">Nodes</h3>
                 <Btn size="sm" tone="ghost" onClick={() => setShowAddNodes(true)}><Plus size={12} /> Add Nodes</Btn>
               </div>
-              {selected.nodeIds?.length === 0 && (
+              {!Array.isArray(selected.nodeIds) || selected.nodeIds.length === 0 ? (
                 <div className="px-6 py-4 text-sm text-slate-500">No nodes attached.</div>
-              )}
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs text-slate-500 uppercase tracking-wider">
-                    <th className="px-4 py-3">ID</th>
-                    <th className="px-4 py-3">Name</th>
-                    <th className="px-4 py-3">FQDN</th>
-                    <th className="px-4 py-3" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/[0.04]">
-                  {(selected.nodeIds ?? []).map((nodeId) => {
-                    const node = nodes.find(n => n.id === nodeId);
+              ) : null}
+              <AdminTable label="Nodes">
+                <AdminTHead>
+                  <AdminTh>ID</AdminTh>
+                  <AdminTh>Name</AdminTh>
+                  <AdminTh>FQDN</AdminTh>
+                  <AdminTh>{' '}</AdminTh>
+                </AdminTHead>
+                <AdminTBody>
+                  {(Array.isArray(selected.nodeIds) ? selected.nodeIds : []).map((nodeId) => {
+                    const node = Array.isArray(nodes) ? nodes.find(n => n.id === nodeId) : undefined;
                     return (
-                      <tr key={nodeId}>
-                        <td className="px-4 py-3 font-mono text-xs text-slate-500"><code>{nodeId.slice(0, 8)}</code></td>
-                        <td className="px-4 py-3 text-slate-200">{node?.name ?? `Node ${nodeId.slice(0, 8)}`}</td>
-                        <td className="px-4 py-3"><code className="text-xs text-slate-400">{node?.fqdn}</code></td>
-                        <td className="px-4 py-3">
+                      <AdminTr key={nodeId}>
+                        <AdminTd className="font-mono text-xs text-slate-500"><code>{nodeId.slice(0, 8)}</code></AdminTd>
+                        <AdminTd className="text-slate-200">{node?.name ?? `Node ${nodeId.slice(0, 8)}`}</AdminTd>
+                        <AdminTd><code className="text-xs text-slate-400">{node?.fqdn}</code></AdminTd>
+                        <AdminTd>
                           <Btn size="sm" tone="danger" onClick={() => detachNodeMut.mutate(nodeId)} disabled={detachNodeMut.isPending}>
                             <Link2Off size={12} /> Detach
                           </Btn>
-                        </td>
-                      </tr>
+                        </AdminTd>
+                      </AdminTr>
                     );
                   })}
-                </tbody>
-              </table>
+                </AdminTBody>
+              </AdminTable>
             </Card>
           </div>
         </div>
@@ -394,13 +390,13 @@ export function AdminMounts() {
               </div>
             ) : null}
             <div className="space-y-2 max-h-80 overflow-y-auto">
-              {eggsQuery.isError ? null : eggs.filter((egg) => !(selected.templateIds ?? []).includes(egg.id)).map((egg) => (
+              {eggsQuery.isError ? null : Array.isArray(eggs) ? eggs.filter((egg) => !(Array.isArray(selected.templateIds) ? selected.templateIds : []).includes(egg.id)).map((egg) => (
                 <label key={egg.id} className="flex items-center gap-3 rounded-lg border border-white/10 bg-[#0f1419] px-4 py-2.5 text-sm cursor-pointer hover:bg-white/[0.03]">
                   <input type="checkbox" checked={selectedEggIds.includes(egg.id)} onChange={(e) => setSelectedEggIds(e.target.checked ? [...selectedEggIds, egg.id] : selectedEggIds.filter(id => id !== egg.id))} className="accent-[#dc2626]" />
                   <span className="text-slate-200">{egg.name}</span>
                   <span className="ml-auto text-xs text-slate-500">{egg.id.slice(0, 8)}</span>
                 </label>
-              ))}
+              )) : null}
             </div>
             {attachEggsMut.isError ? (
               <div className="mt-4 flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-xs text-red-200">
@@ -427,13 +423,13 @@ export function AdminMounts() {
               </div>
             ) : null}
             <div className="space-y-2 max-h-80 overflow-y-auto">
-              {nodesQuery.isError ? null : nodes.filter(n => !(selected.nodeIds ?? []).includes(n.id)).map((node) => (
+              {nodesQuery.isError ? null : Array.isArray(nodes) ? nodes.filter(n => !(Array.isArray(selected.nodeIds) ? selected.nodeIds : []).includes(n.id)).map((node) => (
                 <label key={node.id} className="flex items-center gap-3 rounded-lg border border-white/10 bg-[#0f1419] px-4 py-2.5 text-sm cursor-pointer hover:bg-white/[0.03]">
                   <input type="checkbox" checked={selectedNodeIds.includes(node.id)} onChange={(e) => setSelectedNodeIds(e.target.checked ? [...selectedNodeIds, node.id] : selectedNodeIds.filter(id => id !== node.id))} className="accent-[#dc2626]" />
                   <span className="text-slate-200">{node.name}</span>
                   <span className="ml-auto text-xs text-slate-400">{node.fqdn}</span>
                 </label>
-              ))}
+              )) : null}
             </div>
             {attachNodesMut.isError ? (
               <div className="mt-4 flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-xs text-red-200">
@@ -475,32 +471,30 @@ export function AdminMounts() {
         ) : mounts.length === 0 ? (
           <EmptyState icon={HardDrive} message="No mounts configured." />
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-white/[0.06] text-left text-xs text-slate-500 uppercase tracking-wider">
-                <th className="px-4 py-3">ID</th>
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Source</th>
-                <th className="px-4 py-3">Target</th>
-                <th className="px-4 py-3 text-center">Eggs</th>
-                <th className="px-4 py-3 text-center">Nodes</th>
-                <th className="px-4 py-3 text-center">Servers</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/[0.04]">
-              {mounts.map((mount) => (
-                <tr key={mount.id} className="hover:bg-white/[0.02] cursor-pointer" onClick={() => openMount(mount)}>
-                  <td className="px-4 py-3 font-mono text-xs text-slate-500"><code>{mount.id.slice(0, 8)}</code></td>
-                  <td className="px-4 py-3 font-medium text-slate-200">{mount.name}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-slate-400">{mount.source}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-slate-400">{mount.target}</td>
-                  <td className="px-4 py-3 text-center text-slate-400">{mount.templateIds?.length ?? 0}</td>
-                  <td className="px-4 py-3 text-center text-slate-400">{mount.nodeIds?.length ?? 0}</td>
-                  <td className="px-4 py-3 text-center text-slate-400">{mount.serverIds?.length ?? 0}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <AdminTable label="Mounts">
+            <AdminTHead>
+              <AdminTh>ID</AdminTh>
+              <AdminTh>Name</AdminTh>
+              <AdminTh>Source</AdminTh>
+              <AdminTh>Target</AdminTh>
+              <AdminTh className="text-center">Eggs</AdminTh>
+              <AdminTh className="text-center">Nodes</AdminTh>
+              <AdminTh className="text-center">Servers</AdminTh>
+            </AdminTHead>
+            <AdminTBody>
+              {Array.isArray(mounts) ? mounts.map((mount) => (
+                <AdminTr key={mount.id} onClick={() => openMount(mount)}>
+                  <AdminTd className="font-mono text-xs text-slate-500"><code>{mount.id.slice(0, 8)}</code></AdminTd>
+                  <AdminTd className="font-medium text-slate-200">{mount.name}</AdminTd>
+                  <AdminTd className="font-mono text-xs text-slate-400">{mount.source}</AdminTd>
+                  <AdminTd className="font-mono text-xs text-slate-400">{mount.target}</AdminTd>
+                  <AdminTd className="text-center text-slate-400">{Array.isArray(mount.templateIds) ? mount.templateIds.length : 0}</AdminTd>
+                  <AdminTd className="text-center text-slate-400">{Array.isArray(mount.nodeIds) ? mount.nodeIds.length : 0}</AdminTd>
+                  <AdminTd className="text-center text-slate-400">{Array.isArray(mount.serverIds) ? mount.serverIds.length : 0}</AdminTd>
+                </AdminTr>
+              )) : null}
+            </AdminTBody>
+          </AdminTable>
         )}
       </Card>
 

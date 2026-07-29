@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"log"
+	"net"
 	"net/http"
 	"time"
 
@@ -41,8 +42,13 @@ func (m *AutoTLSManager) HTTPHandler() http.Handler {
 
 func (m *AutoTLSManager) StartChallengeServer(ctx context.Context) error {
 	srv := &http.Server{
-		Addr:    ":80",
-		Handler: m.HTTPHandler(),
+		Addr:              ":80",
+		Handler:           m.HTTPHandler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    32 << 10,
 	}
 
 	go func() {
@@ -52,8 +58,12 @@ func (m *AutoTLSManager) StartChallengeServer(ctx context.Context) error {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		return err
+	}
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Printf("tls challenge server error: %v", err)
 		}
 	}()

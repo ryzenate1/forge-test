@@ -364,6 +364,18 @@ func (s *Store) SetServerSuspension(ctx context.Context, serverID string, suspen
 	return nil
 }
 
+func (s *Store) CompareAndSetServerSuspension(ctx context.Context, serverID string, expected, suspended bool) (bool, error) {
+	commandTag, err := s.db.Exec(ctx, `
+		UPDATE servers
+		SET suspended = $3
+		WHERE id = $1 AND suspended = $2
+	`, serverID, expected, suspended)
+	if err != nil {
+		return false, err
+	}
+	return commandTag.RowsAffected() == 1, nil
+}
+
 func (s *Store) SetServerSuspended(ctx context.Context, serverID string, suspended bool, actorID *string) error {
 	commandTag, err := s.db.Exec(ctx, `UPDATE servers SET suspended = $1 WHERE id = $2`, suspended, serverID)
 	if err != nil {

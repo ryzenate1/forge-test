@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"gamepanel/forge/internal/store"
 
 	"github.com/google/uuid"
+	"golang.org/x/net/idna"
+	"golang.org/x/net/publicsuffix"
 )
 
 type RoutingRule struct {
@@ -287,8 +290,8 @@ func (s *Service) CreateRoutingRule(ctx context.Context, rule *RoutingRule) erro
 	if rule == nil {
 		return errors.New("rule is required")
 	}
-	if rule.Domain == "" || rule.TargetPort == 0 {
-		return errors.New("domain and targetPort are required")
+	if err := validateRoutingRule(rule); err != nil {
+		return err
 	}
 	if rule.Strategy == "" {
 		rule.Strategy = "round_robin"
@@ -327,6 +330,9 @@ func (s *Service) UpdateRoutingRule(ctx context.Context, rule *RoutingRule) erro
 	if rule.ID == "" {
 		return errors.New("rule id is required")
 	}
+	if err := validateRoutingRule(rule); err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -347,6 +353,52 @@ func (s *Service) UpdateRoutingRule(ctx context.Context, rule *RoutingRule) erro
 	}
 
 	s.rules[rule.ID] = rule
+	return nil
+}
+
+func validateRoutingRule(rule *RoutingRule) error {
+	if rule == nil {
+		return errors.New("rule is required")
+	}
+	domain, err := idna.Lookup.ToASCII(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(rule.Domain)), "."))
+	if err != nil || domain == "" || strings.Contains(domain, "*") {
+		return errors.New("invalid routing domain")
+	}
+	if _, err := publicsuffix.EffectiveTLDPlusOne(domain); err != nil {
+		return errors.New("routing domain must be registrable")
+	}
+	rule.Domain = domain
+	if rule.TargetPort < 1 || rule.TargetPort > 65535 {
+		return errors.New("targetPort is out of range")
+	}
+	if rule.Path == "" {
+		rule.Path = "/"
+	}
+	parsedPath, err := url.ParseRequestURI(rule.Path)
+	if err != nil || !strings.HasPrefix(rule.Path, "/") || strings.HasPrefix(rule.Path, "//") || parsedPath.IsAbs() {
+		return errors.New("invalid routing path")
+	}
+	switch rule.Protocol {
+	case "", "http", "https", "tcp":
+	default:
+		return errors.New("unsupported routing protocol")
+	}
+	if rule.TargetHost != "" {
+		host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(rule.TargetHost)), ".")
+		if strings.ContainsAny(host, "/:@\x00\r\n") {
+			return errors.New("invalid target host")
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			if ip.IsUnspecified() || ip.IsMulticast() {
+				return errors.New("invalid target host")
+			}
+		} else if ascii, err := idna.Lookup.ToASCII(host); err != nil || ascii == "" {
+			return errors.New("invalid target host")
+		} else {
+			host = ascii
+		}
+		rule.TargetHost = host
+	}
 	return nil
 }
 
@@ -590,17 +642,17 @@ func (s *Service) resolveTargets(ctx context.Context, rules []*RoutingRule) ([]*
 
 func (s *Service) resolveTargetHost(ctx context.Context, rule *RoutingRule) (string, bool) {
 	if rule.ServerID == "" {
-		return "localhost", true
+		return rule.TargetHost, rule.TargetHost != ""
 	}
 
 	server, err := s.store.GetServer(ctx, rule.ServerID)
 	if err != nil || server.NodeID == "" {
-		return "localhost", true
+		return "", false
 	}
 
 	node, err := s.store.GetNode(ctx, server.NodeID)
 	if err != nil {
-		return "localhost", true
+		return "", false
 	}
 
 	// Check whether the resolved node is online/healthy
@@ -613,7 +665,7 @@ func (s *Service) resolveTargetHost(ctx context.Context, rule *RoutingRule) (str
 		host = strings.TrimSpace(node.FQDN)
 	}
 	if host == "" {
-		return "localhost", healthy
+		return "", false
 	}
 	return host, healthy
 }
@@ -707,6 +759,7 @@ func (s *Service) WithdrawNodeTargets(ctx context.Context, nodeID string) error 
 	}
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	var ruleIDs []string
 	for _, server := range servers {
@@ -718,7 +771,6 @@ func (s *Service) WithdrawNodeTargets(ctx context.Context, nodeID string) error 
 	}
 
 	if len(ruleIDs) == 0 {
-		s.mu.Unlock()
 		return nil
 	}
 
@@ -737,8 +789,6 @@ func (s *Service) WithdrawNodeTargets(ctx context.Context, nodeID string) error 
 		}
 	}
 	s.healthMu.Unlock()
-
-	s.mu.Unlock()
 
 	if s.proxy != nil {
 		if err := s.proxy.RemoveRoutes(ctx, ruleIDs); err != nil {
@@ -799,11 +849,6 @@ func (s *Service) ReinstateNodeTargets(ctx context.Context, nodeID string) error
 		}
 	}
 
-	if len(reinstated) == 0 {
-		s.mu.Unlock()
-		return nil
-	}
-
 	policies := make(map[string]*TrafficPolicy, len(s.policies))
 	for k, v := range s.policies {
 		policies[k] = v
@@ -816,6 +861,10 @@ func (s *Service) ReinstateNodeTargets(ctx context.Context, nodeID string) error
 		}
 	}
 	s.mu.Unlock()
+
+	if len(reinstated) == 0 {
+		return nil
+	}
 
 	resolved, err := s.resolveTargets(ctx, enabled)
 	if err != nil {

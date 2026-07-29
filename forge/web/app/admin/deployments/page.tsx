@@ -63,6 +63,7 @@ export default function AdminDeploymentsPage() {
   const appDeployments = useMemo(() => appDeploymentsQuery.data ?? [], [appDeploymentsQuery.data]);
 
   const filteredServers = useMemo(() => {
+    if (!Array.isArray(serverDeployments)) return [];
     return serverDeployments.filter((d) => {
       if (search && !d.serverId.toLowerCase().includes(search.toLowerCase()) && !d.image.toLowerCase().includes(search.toLowerCase())) return false;
       if (statusFilter && d.status !== statusFilter) return false;
@@ -72,6 +73,7 @@ export default function AdminDeploymentsPage() {
   }, [serverDeployments, search, statusFilter, strategyFilter]);
 
   const filteredApps = useMemo(() => {
+    if (!Array.isArray(appDeployments)) return [];
     return appDeployments.filter((d) => {
       const searchLower = search.toLowerCase();
       if (search && !d.appId.toLowerCase().includes(searchLower) &&

@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Check, ChevronDown, ChevronUp, Copy, KeyRound, Plus, Shield, Trash2 } from "lucide-react";
 import { createApiKey, deleteApiKey, fetchAdminScopes, fetchApiKeys, verifyBearerToken } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
-import { Btn, Card, CardHeader, EmptyState, Input, SectionHeader } from "./admin-ui";
+import { AdminFormSection, Btn, Card, CardHeader, EmptyState, Input, SectionHeader } from "./admin-ui";
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
@@ -38,7 +38,8 @@ function ScopeLabel({ scope }: { scope: string }) {
 export function AdminApiKeys() {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const { data: keys = [], isLoading } = useQuery({ queryKey: ["api-keys"], queryFn: fetchApiKeys });
+  const { data: keysData = [], isLoading } = useQuery({ queryKey: ["api-keys"], queryFn: fetchApiKeys });
+  const keys = useMemo(() => Array.isArray(keysData) ? keysData : [], [keysData]);
   const scopesQuery = useQuery({ queryKey: ["admin-scopes"], queryFn: fetchAdminScopes });
   const groupedScopes = scopeGroups(scopesQuery.data ?? {});
 
@@ -123,8 +124,11 @@ export function AdminApiKeys() {
         <Card>
           <CardHeader title="Create new API key" icon={KeyRound} />
           <div className="p-4 space-y-4">
+            <AdminFormSection title="Description">
             <Input label="Description" value={desc} onChange={setDesc} placeholder="My automation script" />
+            </AdminFormSection>
 
+            <AdminFormSection title="Permissions">
             {/* Scope selector */}
             <div>
               <button
@@ -190,6 +194,7 @@ export function AdminApiKeys() {
               <AlertTriangle size={14} className="mt-0.5 shrink-0" />
               <span>{isFullAccess ? "Full access keys can perform any action. Use cautiously." : "Select only the permissions your application needs."}</span>
             </div>
+            </AdminFormSection>
             <Btn onClick={() => createMut.mutate()} disabled={desc.trim() === "" || selectedScopes.length === 0 || createMut.isPending}>
               <Plus size={14} /> Create Key
             </Btn>
@@ -219,7 +224,7 @@ export function AdminApiKeys() {
             <EmptyState icon={KeyRound} message="No API keys yet." />
           ) : (
             <ul className="divide-y divide-white/[0.04]">
-              {keys.map((key) => (
+              {Array.isArray(keys) && keys.map((key) => (
                 <li key={key.id} className="px-4 py-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">

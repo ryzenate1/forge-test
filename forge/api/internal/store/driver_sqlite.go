@@ -28,8 +28,13 @@ func newSQLiteDriver(ctx context.Context, cfg DBConfig) (*sqliteDriver, error) {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
 
-	db.ExecContext(ctx, "PRAGMA journal_mode=WAL")
-	db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+	var mode string
+	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode=WAL").Scan(&mode); err != nil {
+		return nil, fmt.Errorf("failed to set WAL mode: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
+	}
 
 	return &sqliteDriver{db: db, cfg: cfg}, nil
 }

@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
+	"path"
+	"strings"
 	"time"
 
 	"gamepanel/forge/internal/store"
@@ -24,13 +28,13 @@ var (
 type ReleaseStatus string
 
 const (
-	StatusPending       ReleaseStatus = "pending"
-	StatusBuilding      ReleaseStatus = "building"
-	StatusDeploying     ReleaseStatus = "deploying"
+	StatusPending        ReleaseStatus = "pending"
+	StatusBuilding       ReleaseStatus = "building"
+	StatusDeploying      ReleaseStatus = "deploying"
 	StatusHealthChecking ReleaseStatus = "health_checking"
-	StatusLive          ReleaseStatus = "live"
-	StatusRolledBack    ReleaseStatus = "rolled_back"
-	StatusFailed        ReleaseStatus = "failed"
+	StatusLive           ReleaseStatus = "live"
+	StatusRolledBack     ReleaseStatus = "rolled_back"
+	StatusFailed         ReleaseStatus = "failed"
 )
 
 type Release struct {
@@ -71,11 +75,16 @@ type DeploymentEvent struct {
 }
 
 type Service struct {
-	store *store.Store
+	store            *store.Store
+	rollbackExecutor func(context.Context, string, string) error
 }
 
 func New(store *store.Store) *Service {
 	return &Service{store: store}
+}
+
+func (s *Service) SetRollbackExecutor(executor func(context.Context, string, string) error) {
+	s.rollbackExecutor = executor
 }
 
 func toServiceRelease(r store.DeploymentRelease) *Release {
@@ -197,10 +206,10 @@ func (s *Service) RunHealthChecks(ctx context.Context, releaseID string) (bool, 
 			elapsed := time.Since(start)
 
 			hcResult := store.ZeroDowntimeHealthCheckResult{
-				ID:              uuid.NewString(),
-				DeploymentID:    releaseID,
-				CheckTimestamp:  time.Now().UTC(),
-				ResponseTimeMs:  int(elapsed.Milliseconds()),
+				ID:             uuid.NewString(),
+				DeploymentID:   releaseID,
+				CheckTimestamp: time.Now().UTC(),
+				ResponseTimeMs: int(elapsed.Milliseconds()),
 			}
 
 			if err != nil {
@@ -240,26 +249,53 @@ func (s *Service) RunHealthChecks(ctx context.Context, releaseID string) (bool, 
 }
 
 func (s *Service) doHealthCheck(ctx context.Context, serverID string, config store.ZeroDowntimeHealthCheckConfig) (int, error) {
-	protocol := config.Protocol
+	server, err := s.store.GetServer(ctx, serverID)
+	if err != nil {
+		return 0, fmt.Errorf("load health-check server: %w", err)
+	}
+	if server.PrimaryAllocationID == nil || *server.PrimaryAllocationID == "" {
+		return 0, errors.New("server has no primary allocation")
+	}
+	allocation, err := s.store.GetAllocation(ctx, *server.PrimaryAllocationID)
+	if err != nil {
+		return 0, fmt.Errorf("load server allocation: %w", err)
+	}
+	protocol := strings.ToLower(strings.TrimSpace(config.Protocol))
 	if protocol == "" {
 		protocol = "http"
 	}
-	path := config.Path
-	if path == "" {
-		path = "/health"
+	if protocol != "http" && protocol != "https" {
+		return 0, errors.New("health-check protocol must be HTTP or HTTPS")
 	}
-	port := config.Port
-	if port <= 0 {
-		port = 80
+	checkPath := config.Path
+	if checkPath == "" {
+		checkPath = "/health"
 	}
-
-	url := fmt.Sprintf("%s://localhost:%d%s", protocol, port, path)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	parsedPath, err := url.Parse(checkPath)
+	if err != nil || parsedPath.IsAbs() || parsedPath.Host != "" || !strings.HasPrefix(parsedPath.Path, "/") {
+		return 0, errors.New("health-check path must be an absolute URL path")
+	}
+	parsedPath.Path = path.Clean(parsedPath.Path)
+	targetURL := (&url.URL{
+		Scheme: protocol,
+		Host:   net.JoinHostPort(allocation.IP, fmt.Sprintf("%d", allocation.Port)),
+		Path:   parsedPath.Path,
+	}).String()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return 0, err
 	}
 
-	client := &http.Client{Timeout: time.Duration(config.TimeoutSeconds) * time.Second}
+	timeout := time.Duration(config.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	client := &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err
@@ -305,6 +341,12 @@ func (s *Service) RollbackRelease(ctx context.Context, releaseID string) (*Relea
 	prevRelease, err := s.getPreviousLiveRelease(ctx, r.ServerID, r.Version)
 	if err != nil {
 		return nil, ErrNoRollback
+	}
+	if s.rollbackExecutor == nil {
+		return nil, errors.New("rollback executor is not configured")
+	}
+	if err := s.rollbackExecutor(ctx, r.ServerID, prevRelease.ImageTag); err != nil {
+		return nil, fmt.Errorf("redeploy previous release: %w", err)
 	}
 
 	now := time.Now().UTC()

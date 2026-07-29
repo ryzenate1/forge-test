@@ -6,14 +6,17 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -65,6 +68,7 @@ type Client struct {
 	developmentFallbackToken string
 	defaultBaseURL           string
 	defaultNodeToken         string
+	allowInsecureHTTP        bool
 }
 
 func (c *Client) SetDefaultNode(baseURL, nodeToken string) {
@@ -179,7 +183,7 @@ func (r *retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 func NewClient() *Client {
 	return &Client{httpClient: &http.Client{
 		Timeout:   15 * time.Minute,
-		Transport: newRetryRoundTripper(http.DefaultTransport),
+		Transport: newRetryRoundTripper(daemonTransport()),
 	}}
 }
 
@@ -189,10 +193,18 @@ func NewClientWithDevelopmentFallback(nodeToken string) *Client {
 	return &Client{
 		httpClient: &http.Client{
 			Timeout:   15 * time.Minute,
-			Transport: newRetryRoundTripper(http.DefaultTransport),
+			Transport: newRetryRoundTripper(daemonTransport()),
 		},
 		developmentFallbackToken: strings.TrimSpace(nodeToken),
+		allowInsecureHTTP:        true,
 	}
+}
+
+func daemonTransport() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ForceAttemptHTTP2 = true
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	return transport
 }
 
 type PowerResponse struct {
@@ -608,6 +620,10 @@ func (c *Client) SendCommandWithOutput(ctx context.Context, baseURL, nodeToken, 
 }
 
 func (c *Client) sendCommandWithBody(ctx context.Context, baseURL, nodeToken, serverID, command string) (string, error) {
+	command = strings.TrimSpace(command)
+	if command == "" || len(command) > 4096 || strings.ContainsAny(command, "\x00\r\n") {
+		return "", errors.New("command must be a single non-empty line of at most 4096 bytes")
+	}
 	body, err := json.Marshal(map[string]string{"command": command})
 	if err != nil {
 		return "", err
@@ -924,6 +940,24 @@ func (c *Client) ReadFile(ctx context.Context, baseURL, nodeToken, serverID, pat
 }
 
 func (c *Client) PullRemoteFile(ctx context.Context, baseURL, nodeToken, serverID, sourceURL, target, fileName string) error {
+	parsedSource, err := url.Parse(sourceURL)
+	if err != nil || parsedSource.Scheme != "https" || parsedSource.Hostname() == "" || parsedSource.User != nil {
+		return errors.New("remote file URL must be an absolute HTTPS URL without credentials")
+	}
+	sourceHost := strings.TrimSuffix(strings.ToLower(parsedSource.Hostname()), ".")
+	if sourceHost == "localhost" {
+		return errors.New("remote file URL must not target localhost")
+	}
+	if ip := net.ParseIP(sourceHost); ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()) {
+		return errors.New("remote file URL must not target a private network")
+	}
+	if strings.ContainsAny(target+fileName, "\x00\\") || filepath.IsAbs(target) || filepath.Base(fileName) != fileName || fileName == "." || fileName == ".." {
+		return errors.New("invalid remote file destination")
+	}
+	cleanTarget := filepath.Clean(target)
+	if cleanTarget == ".." || strings.HasPrefix(cleanTarget, ".."+string(filepath.Separator)) {
+		return errors.New("remote file target escapes the server root")
+	}
 	body, err := json.Marshal(map[string]string{"url": sourceURL, "target": target, "fileName": fileName})
 	if err != nil {
 		return err
@@ -1100,9 +1134,15 @@ func (c *Client) SignedHeaders(nodeToken, method, requestURI string, body []byte
 		return nil, err
 	}
 	timestamp := time.Now().UTC().Format(time.RFC3339)
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return nil, fmt.Errorf("generate request nonce: %w", err)
+	}
+	nonce := hex.EncodeToString(nonceBytes)
 	headers := http.Header{}
 	headers.Set("X-Panel-Timestamp", timestamp)
-	headers.Set("X-Panel-Signature", sign(nodeToken, method, requestURI, timestamp, body))
+	headers.Set("X-Panel-Nonce", nonce)
+	headers.Set("X-Panel-Signature", sign(nodeToken, method, requestURI, timestamp, body, nonce))
 	return headers, nil
 }
 
@@ -1297,6 +1337,9 @@ func (c *Client) newRequest(ctx context.Context, nodeToken, method, url string, 
 	if err != nil {
 		return nil, err
 	}
+	if err := c.validateNodeURL(req.URL); err != nil {
+		return nil, err
+	}
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -1314,6 +1357,9 @@ func (c *Client) newStreamRequest(ctx context.Context, nodeToken, method, url st
 	if err != nil {
 		return nil, err
 	}
+	if err := c.validateNodeURL(req.URL); err != nil {
+		return nil, err
+	}
 	req.Header.Set("Accept", "application/json")
 	headers, err := c.SignedHeaders(nodeToken, method, req.URL.RequestURI(), nil)
 	if err != nil {
@@ -1321,6 +1367,24 @@ func (c *Client) newStreamRequest(ctx context.Context, nodeToken, method, url st
 	}
 	copyHeaders(req.Header, headers)
 	return req, nil
+}
+
+func (c *Client) validateNodeURL(parsed *url.URL) error {
+	if parsed == nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return errors.New("invalid Beacon node URL")
+	}
+	if parsed.User != nil {
+		return errors.New("Beacon node URL must not contain credentials")
+	}
+	if parsed.Scheme == "https" || (c != nil && c.allowInsecureHTTP) {
+		return nil
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	ip := net.ParseIP(host)
+	if host == "localhost" || (ip != nil && ip.IsLoopback()) {
+		return nil
+	}
+	return errors.New("Beacon node URL must use HTTPS")
 }
 
 func (c *Client) resolveNodeToken(nodeToken string) (string, error) {
@@ -1810,13 +1874,17 @@ func (c *Client) adminPostJSON(ctx context.Context, nodeToken, url string, body 
 	return payload, nil
 }
 
-func sign(token, method, requestURI, timestamp string, body []byte) string {
+func sign(token, method, requestURI, timestamp string, body []byte, nonce ...string) string {
 	mac := hmac.New(sha256.New, []byte(token))
 	_, _ = mac.Write([]byte(method))
 	_, _ = mac.Write([]byte("\n"))
 	_, _ = mac.Write([]byte(requestURI))
 	_, _ = mac.Write([]byte("\n"))
 	_, _ = mac.Write([]byte(timestamp))
+	_, _ = mac.Write([]byte("\n"))
+	if len(nonce) > 0 {
+		_, _ = mac.Write([]byte(nonce[0]))
+	}
 	_, _ = mac.Write([]byte("\n"))
 	_, _ = mac.Write(body)
 	return hex.EncodeToString(mac.Sum(nil))

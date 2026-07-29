@@ -95,6 +95,7 @@ export const useServerStore = create<ServerStoreState>()((set) => ({
     currentUser: null,
     mode: "server" as const,
     activeTab: "console" as ServerTab,
+    adminTab: "overview",
     selectedServerId: null,
     consoleLines: [],
     consoleStatus: "Disconnected",

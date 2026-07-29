@@ -3,7 +3,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, RefreshCw } from "lucide-react";
-import { Btn, Card, CardHeader, Pill, SectionHeader } from "@/components/admin/admin-ui";
+import { AdminPageLayout, Btn, Card, CardHeader, Pill, SectionHeader } from "@/components/admin/admin-ui";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { MetricsChart } from "@/components/monitoring/metrics-chart";
 import { SystemMetrics } from "@/components/monitoring/system-metrics";
 import { NodeList } from "@/components/monitoring/node-list";
@@ -55,29 +56,29 @@ export default function AdminMonitoring() {
   });
 
   return (
-    <div className="space-y-6">
+    <AdminPageLayout>
       <SectionHeader title="Monitoring Dashboard" sub="Real-time system monitoring and alerting" />
 
       {/* Summary Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <SystemHealthGauge />
-        <ServerCPUChart height={160} />
-        <ServerMemoryChart height={160} />
-        <ServerDiskChart height={160} />
+        <ErrorBoundary><SystemHealthGauge /></ErrorBoundary>
+        <ErrorBoundary><ServerCPUChart height={160} /></ErrorBoundary>
+        <ErrorBoundary><ServerMemoryChart height={160} /></ErrorBoundary>
+        <ErrorBoundary><ServerDiskChart height={160} /></ErrorBoundary>
       </div>
 
       {/* System Metrics */}
-      <SystemMetrics />
+      <ErrorBoundary><SystemMetrics /></ErrorBoundary>
 
       {/* Resource Usage Bar */}
-      <ResourceUsageBar height={300} />
+      <ErrorBoundary><ResourceUsageBar height={300} /></ErrorBoundary>
 
       {/* Node List & Network Chart */}
       <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
         <div className="xl:col-span-2">
-          <NodeList onNodeSelect={(id) => setSelectedNode(id === selectedNode ? null : id)} />
+          <ErrorBoundary><NodeList onNodeSelect={(id) => setSelectedNode(id === selectedNode ? null : id)} /></ErrorBoundary>
         </div>
-        <ServerNetworkChart height={300} />
+        <ErrorBoundary><ServerNetworkChart height={300} /></ErrorBoundary>
       </div>
 
       {/* Advanced Charts Toggle */}
@@ -93,14 +94,14 @@ export default function AdminMonitoring() {
 
       {showAdvanced && (
         <div className="space-y-6">
-          <MetricsChart />
+          <ErrorBoundary><MetricsChart /></ErrorBoundary>
           <div className="grid gap-4 lg:grid-cols-2">
-            <ServerCPUChart height={350} />
-            <ServerMemoryChart height={350} />
+            <ErrorBoundary><ServerCPUChart height={350} /></ErrorBoundary>
+            <ErrorBoundary><ServerMemoryChart height={350} /></ErrorBoundary>
           </div>
           <div className="grid gap-4 lg:grid-cols-2">
-            <ServerDiskChart height={350} />
-            <ServerNetworkChart height={350} />
+            <ErrorBoundary><ServerDiskChart height={350} /></ErrorBoundary>
+            <ErrorBoundary><ServerNetworkChart height={350} /></ErrorBoundary>
           </div>
         </div>
       )}
@@ -130,6 +131,6 @@ export default function AdminMonitoring() {
           </div>
         )}
       </Card>
-    </div>
+    </AdminPageLayout>
   );
 }

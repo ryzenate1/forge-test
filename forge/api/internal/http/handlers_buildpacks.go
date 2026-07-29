@@ -93,7 +93,9 @@ func registerBuildpackRoutes(protected fiber.Router, cfg Config, buildpackSvc *b
 		var req struct {
 			BuildpackID *string `json:"buildpackId"`
 		}
-		_ = c.BodyParser(&req)
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
 		build, err := buildpackSvc.TriggerBuild(c.Context(), c.Params("id"), req.BuildpackID)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})

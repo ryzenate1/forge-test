@@ -88,10 +88,10 @@ func handleExportActivity(c *fiber.Ctx, cfg Config) error {
 
 	format := strings.ToLower(c.Query("format", "json"))
 
-	// Export uses the same filter contract as the canonical admin activity query,
-	// while requesting the largest result set supported by the service.
 	filter := activityFilterFromRequest(c)
-	filter.Limit = 200
+	if filter.Limit <= 0 || filter.Limit > 10000 {
+		filter.Limit = 10000
+	}
 	filter.Offset = 0
 
 	ctx, cancel := requestContext()

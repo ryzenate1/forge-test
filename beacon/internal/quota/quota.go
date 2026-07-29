@@ -31,6 +31,9 @@ func (NoopTracker) GetUsage(ctx context.Context, path string) (*Usage, error) {
 }
 
 func (NoopTracker) Enforce(ctx context.Context, path string, currentUsed int64, size int64, limit int64) error {
+	if limit > 0 {
+		return ErrNoQuota
+	}
 	return nil
 }
 

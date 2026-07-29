@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"gamepanel/beacon/internal/serverid"
+	"github.com/google/uuid"
 )
 
 type buildJob struct {
@@ -37,8 +38,6 @@ type buildManager struct {
 	mu     sync.RWMutex
 	active map[string]*buildJob
 }
-
-var builds = &buildManager{active: make(map[string]*buildJob)}
 
 const maxLogBufferSize = 100 * 1024 * 1024
 
@@ -144,7 +143,7 @@ func (s *Server) handleDockerfileBuild(w http.ResponseWriter, r *http.Request) {
 	args = append(args, "--shm-size", "256m")
 	args = append(args, sourceDir)
 
-	job := builds.startBuild(r.Context(), imageName, req.WorkspaceID, "docker", req.CredentialPatterns, args[1:]...)
+	job := s.builds.startBuild(r.Context(), imageName, req.WorkspaceID, "docker", req.CredentialPatterns, args[1:]...)
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"id":          job.id,
 		"imageName":   imageName,
@@ -209,7 +208,7 @@ func (s *Server) handleNixpacksBuild(w http.ResponseWriter, r *http.Request) {
 	}
 	args = append(args, "-t", imageName)
 
-	job := builds.startBuild(r.Context(), imageName, req.WorkspaceID, "nixpacks", req.CredentialPatterns, args[1:]...)
+	job := s.builds.startBuild(r.Context(), imageName, req.WorkspaceID, "nixpacks", req.CredentialPatterns, args[1:]...)
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"id":          job.id,
 		"imageName":   imageName,
@@ -225,9 +224,9 @@ func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	builds.mu.RLock()
-	job, ok := builds.active[buildID]
-	builds.mu.RUnlock()
+	s.builds.mu.RLock()
+	job, ok := s.builds.active[buildID]
+	s.builds.mu.RUnlock()
 
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "build not found"})
@@ -300,9 +299,9 @@ func (s *Server) handleBuildCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	builds.mu.RLock()
-	job, ok := builds.active[body.ID]
-	builds.mu.RUnlock()
+	s.builds.mu.RLock()
+	job, ok := s.builds.active[body.ID]
+	s.builds.mu.RUnlock()
 
 	if !ok || job.isTerminal() {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "active build not found"})
@@ -317,10 +316,14 @@ func (m *buildManager) startBuild(ctx context.Context, imageRef, workspaceID str
 	buildCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(buildCtx, command, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1")
+	buildHome, homeErr := os.MkdirTemp("", "beacon-build-home-*")
+	if homeErr == nil {
+		_ = os.Chmod(buildHome, 0o700)
+	}
+	cmd.Env = buildEnvironment(buildHome)
 
 	job := &buildJob{
-		id:          fmt.Sprintf("build-%d", time.Now().UnixNano()),
+		id:          "build-" + uuid.NewString(),
 		workspaceID: workspaceID,
 		cmd:         cmd,
 		cancel:      cancel,
@@ -338,6 +341,9 @@ func (m *buildManager) startBuild(ctx context.Context, imageRef, workspaceID str
 	m.mu.Unlock()
 
 	if err := cmd.Start(); err != nil {
+		if buildHome != "" {
+			_ = os.RemoveAll(buildHome)
+		}
 		job.status = "failed"
 		job.exitCode = -1
 		_, _ = fmt.Fprintf(&job.logBuf, "ERROR: %v\n", err)
@@ -345,12 +351,21 @@ func (m *buildManager) startBuild(ctx context.Context, imageRef, workspaceID str
 	}
 
 	pid := cmd.Process.Pid
+	processDone := make(chan struct{})
 	go func() {
-		<-buildCtx.Done()
-		if cmd.Process != nil {
-			_ = syscall.Kill(-pid, syscall.SIGINT)
-			time.Sleep(2 * time.Second)
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		select {
+		case <-buildCtx.Done():
+			if cmd.Process != nil {
+				_ = syscall.Kill(-pid, syscall.SIGINT)
+				timer := time.NewTimer(2 * time.Second)
+				select {
+				case <-timer.C:
+					_ = syscall.Kill(-pid, syscall.SIGKILL)
+				case <-processDone:
+					timer.Stop()
+				}
+			}
+		case <-processDone:
 		}
 	}()
 
@@ -377,6 +392,10 @@ func (m *buildManager) startBuild(ctx context.Context, imageRef, workspaceID str
 
 	go func() {
 		err := cmd.Wait()
+		close(processDone)
+		if buildHome != "" {
+			_ = os.RemoveAll(buildHome)
+		}
 		job.mu.Lock()
 		defer job.mu.Unlock()
 
@@ -404,6 +423,19 @@ func (m *buildManager) startBuild(ctx context.Context, imageRef, workspaceID str
 	return job
 }
 
+func buildEnvironment(home string) []string {
+	env := []string{"DOCKER_BUILDKIT=1"}
+	for _, key := range []string{"PATH", "DOCKER_HOST", "DOCKER_CONFIG", "XDG_RUNTIME_DIR", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
+		if value := os.Getenv(key); value != "" {
+			env = append(env, key+"="+value)
+		}
+	}
+	if home != "" {
+		env = append(env, "HOME="+home)
+	}
+	return env
+}
+
 func (j *buildJob) isTerminal() bool {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
@@ -425,18 +457,18 @@ func (m *buildManager) reapAbandoned() {
 	}
 }
 
-func StartBuildReaper(ctx context.Context, dataDir string) {
+func (s *Server) startBuildReaper(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 
-		cleanupOrphanedClones(dataDir)
+		cleanupOrphanedClones(s.dataDir)
 
 		for {
 			select {
 			case <-ticker.C:
-				builds.reapAbandoned()
-				cleanupStaleClones(dataDir)
+				s.builds.reapAbandoned()
+				cleanupStaleClones(s.dataDir)
 			case <-ctx.Done():
 				return
 			}

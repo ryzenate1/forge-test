@@ -32,7 +32,7 @@ export function CrashBanner({ serverId }: CrashBannerProps) {
     onSuccess: () => void refreshServer(),
   });
 
-  if (isLoading || !crashes || crashes.length === 0) return null;
+  if (isLoading || !Array.isArray(crashes) || crashes.length === 0) return null;
 
   const recentCrashes = crashes.slice(0, 5);
   const lastCrash = recentCrashes[0];

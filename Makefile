@@ -4,15 +4,15 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 lint: ## Run all linters
-	./scripts/lint.sh
+	./scripts/dev/lint.sh
 
 format: ## Format all code
-	./scripts/format.sh
+	./scripts/dev/format.sh
 
 test: ## Run all tests
-	cd forge/api && go test -race -timeout 10m -count=1 ./... && cd ../..
-	cd beacon && go test -race -timeout 10m -count=1 ./... && cd ../..
-	cd forge/web && npm test && cd ../..
+	cd forge/api && go test -race -timeout 10m -count=1 ./...; echo "forge/api: $$?"
+	cd beacon && go test -race -timeout 10m -count=1 ./...; echo "beacon: $$?"
+	cd forge/web && npm test; echo "forge/web: $$?"
 
 build: ## Build all components
 	cd forge/api && go build ./cmd/api && cd ../..

@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Box, ChevronRight, Copy, ExternalLink, Plus, Settings, Tag, Trash2, Download, Upload } from "lucide-react";
 import { type ApiNest, type ApiEgg, createEgg, createNest, deleteEgg, deleteNest, fetchEggs, fetchNests, updateEgg, updateNest } from "@/lib/api";
 import { useRouter } from "next/navigation";
 import { useToast } from "@/components/ui/toast";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, SectionHeader, Textarea, cn } from "./admin-ui";
+import { AdminFormSection, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, SectionHeader, Textarea, cn } from "./admin-ui";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -29,7 +29,7 @@ export function AdminNestsEggs() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const nestsQuery = useQuery({ queryKey: ["nests"], queryFn: fetchNests });
-  const nests = nestsQuery.data ?? [];
+  const nests = useMemo(() => Array.isArray(nestsQuery.data) ? nestsQuery.data : [], [nestsQuery.data]);
   const isLoading = nestsQuery.isLoading;
   const nestsError = nestsQuery.isError;
   const nestsErrorObj = nestsQuery.error;
@@ -61,7 +61,7 @@ export function AdminNestsEggs() {
   queryFn: () => fetchEggs(selectedNest!.id),
   enabled: Boolean(selectedNest?.id),
   });
-  const eggs = eggsQuery.data ?? [];
+  const eggs = useMemo(() => Array.isArray(eggsQuery.data) ? eggsQuery.data : [], [eggsQuery.data]);
   const eggsLoading = eggsQuery.isLoading;
   const eggsError = eggsQuery.isError;
   const eggsErrorObj = eggsQuery.error;
@@ -238,8 +238,8 @@ export function AdminNestsEggs() {
    : nests.length === 0 ? (
  <EmptyState icon={Box} message="No nests yet." />
  ) : (
- <ul className="divide-y divide-white/[0.04]">
- {nests.map((nest) => {
+  <ul className="divide-y divide-white/[0.04]">
+  {Array.isArray(nests) && nests.map((nest) => {
  const eggCount = nest.eggCount ?? nest.eggs ?? 0;
  const isSelected = selectedNest?.id === nest.id;
  return (
@@ -306,7 +306,7 @@ export function AdminNestsEggs() {
  </tr>
  </thead>
  <tbody className="divide-y divide-white/[0.04]">
- {eggs.map((egg) => (
+  {Array.isArray(eggs) && eggs.map((egg) => (
  <tr key={egg.id} className="hover:bg-white/[0.02]">
   <td className="px-4 py-3">
   <p className="font-medium text-slate-200">{egg.name}</p>
@@ -340,13 +340,13 @@ export function AdminNestsEggs() {
  </div>
 
  {/* Nest modal */}
- {nestModal !== null ? (
- <Modal title={nestModal === "create" ? "Create Nest" : "Edit Nest"} onClose={() => setNestModal(null)}>
- <div className="grid gap-4">
- <Input label="Name" value={nestName} onChange={setNestName} placeholder="Minecraft" />
- <Input label="Description" value={nestDesc} onChange={setNestDesc} placeholder="Games based on Minecraft" />
- </div>
- <ModalFooter
+  {nestModal !== null ? (
+  <Modal title={nestModal === "create" ? "Create Nest" : "Edit Nest"} onClose={() => setNestModal(null)}>
+  <AdminFormSection title="Nest Details">
+  <Input label="Name" value={nestName} onChange={setNestName} placeholder="Minecraft" />
+  <Input label="Description" value={nestDesc} onChange={setNestDesc} placeholder="Games based on Minecraft" />
+  </AdminFormSection>
+  <ModalFooter
  onCancel={() => setNestModal(null)}
  onConfirm={() => nestModal === "create" ? createNestMut.mutate() : updateNestMut.mutate((nestModal as ApiNest).id)}
  disabled={nestName.trim() === "" || createNestMut.isPending || updateNestMut.isPending}
@@ -356,28 +356,34 @@ export function AdminNestsEggs() {
  ) : null}
 
  {/* Egg modal */}
- {eggModal !== null ? (
- <Modal title={eggModal === "create" ? "Create Egg" : "Edit Egg"} onClose={() => setEggModal(null)} wide>
- <div className="grid gap-4 md:grid-cols-2">
- <Input label="Name" value={eggName} onChange={setEggName} placeholder="Minecraft Java Edition" />
- <Input label="Description" value={eggDesc} onChange={setEggDesc} placeholder="Minecraft Java Edition server" />
- <div className="md:col-span-2">
- <Textarea label="Docker images (one per line)" value={eggImages} onChange={setEggImages} rows={3} />
- </div>
- <div className="md:col-span-2">
- <Input label="Startup command" value={eggStartup} onChange={setEggStartup} placeholder="java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar server.jar" mono />
- </div>
- <Input label="Stop command" value={eggStop} onChange={setEggStop} placeholder="stop" mono />
- <Input label="Install container" value={eggInstallContainer} onChange={setEggInstallContainer} placeholder="alpine:3.21" mono />
- <Input label="Install entrypoint" value={eggInstallEntry} onChange={setEggInstallEntry} placeholder="sh" mono />
- <div>
- <Textarea label="Features (one per line)" value={eggFeatures} onChange={setEggFeatures} rows={3} />
- </div>
- <div className="md:col-span-2">
- <Textarea label="Install script" value={eggInstallScript} onChange={setEggInstallScript} rows={8} />
- </div>
- </div>
- <ModalFooter
+  {eggModal !== null ? (
+  <Modal title={eggModal === "create" ? "Create Egg" : "Edit Egg"} onClose={() => setEggModal(null)} wide>
+  <div className="grid gap-4 md:grid-cols-2">
+  <AdminFormSection title="Basic Info">
+  <Input label="Name" value={eggName} onChange={setEggName} placeholder="Minecraft Java Edition" />
+  <Input label="Description" value={eggDesc} onChange={setEggDesc} placeholder="Minecraft Java Edition server" />
+  </AdminFormSection>
+  <AdminFormSection title="Configuration">
+  <div className="md:col-span-2">
+  <Textarea label="Docker images (one per line)" value={eggImages} onChange={setEggImages} rows={3} />
+  </div>
+  <div className="md:col-span-2">
+  <Input label="Startup command" value={eggStartup} onChange={setEggStartup} placeholder="java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar server.jar" mono />
+  </div>
+  <Input label="Stop command" value={eggStop} onChange={setEggStop} placeholder="stop" mono />
+  <Input label="Install container" value={eggInstallContainer} onChange={setEggInstallContainer} placeholder="alpine:3.21" mono />
+  <Input label="Install entrypoint" value={eggInstallEntry} onChange={setEggInstallEntry} placeholder="sh" mono />
+  <div>
+  <Textarea label="Features (one per line)" value={eggFeatures} onChange={setEggFeatures} rows={3} />
+  </div>
+  </AdminFormSection>
+  <AdminFormSection title="Install Script">
+  <div className="md:col-span-2">
+  <Textarea label="Install script" value={eggInstallScript} onChange={setEggInstallScript} rows={8} />
+  </div>
+  </AdminFormSection>
+  </div>
+  <ModalFooter
  onCancel={() => setEggModal(null)}
  onConfirm={() => eggModal === "create" ? createEggMut.mutate(undefined) : updateEggMut.mutate((eggModal as ApiEgg).id)}
  disabled={eggName.trim() === "" || createEggMut.isPending || updateEggMut.isPending}

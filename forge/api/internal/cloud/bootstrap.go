@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/distribution/reference"
 )
 
 type BeaconBackupConfig struct {
@@ -26,11 +28,11 @@ func BeaconCloudInit(nodeID, nodeCredential, panelAPIURL, beaconImage string, ba
 		}
 	}
 	parsed, err := url.Parse(panelAPIURL)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return "", errors.New("Beacon panel API URL must be an absolute http(s) URL")
+	if err != nil || parsed.Host == "" || parsed.Scheme != "https" || parsed.User != nil {
+		return "", errors.New("Beacon panel API URL must be an absolute HTTPS URL without credentials")
 	}
-	if strings.ContainsAny(beaconImage, "\r\n\t ") {
-		return "", errors.New("Beacon image must be a single container image reference")
+	if _, err := reference.ParseNormalizedNamed(beaconImage); err != nil {
+		return "", errors.New("Beacon image must be a valid container image reference")
 	}
 	encode := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
 	backup := BeaconBackupConfig{Adapter: "local", UsePathStyle: "true"}
@@ -63,11 +65,17 @@ Architectures: $(dpkg --print-architecture)
 Signed-By: /etc/apt/keyrings/docker.asc
 EOF
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl jq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 systemctl enable --now docker
 node_id=$(printf '%%s' '%s' | base64 -d)
-node_token=$(printf '%%s' '%s' | base64 -d)
+bootstrap_token=$(printf '%%s' '%s' | base64 -d)
 panel_url=$(printf '%%s' '%s' | base64 -d)
+exchange_response=$(curl --fail --silent --show-error --proto '=https' \
+  -H 'Content-Type: application/json' \
+  --data "$(jq -nc --arg token "$bootstrap_token" '{token:$token}')" \
+  "${panel_url%%/}/onboarding/exchange")
+node_token=$(printf '%%s' "$exchange_response" | jq -er '.nodeToken')
+unset bootstrap_token exchange_response
 backup_adapter=$(printf '%%s' '%s' | base64 -d)
 s3_bucket=$(printf '%%s' '%s' | base64 -d)
 s3_region=$(printf '%%s' '%s' | base64 -d)

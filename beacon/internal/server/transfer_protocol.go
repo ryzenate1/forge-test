@@ -100,7 +100,7 @@ func (s *Server) pushTransferSource(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) pushArchive(ctx context.Context, migrationID, sourceCredential string, request sourcePushRequest) (transfer.Metadata, error) {
 	endpoint := strings.TrimRight(request.DestinationURL, "/") + "/api/v1/transfers/" + migrationID + "/destination/archive"
-	client := &http.Client{Timeout: 0}
+	client := &http.Client{Timeout: 30 * time.Minute}
 	for attempts := 0; attempts < 4; attempts++ {
 		head, err := http.NewRequestWithContext(ctx, http.MethodHead, endpoint, nil)
 		if err != nil {

@@ -27,7 +27,7 @@ func NewCaddyTLSManager(adminAddr string) *CaddyTLSManager {
 	}
 	return &CaddyTLSManager{
 		adminAddr: adminAddr,
-		client:    &http.Client{Timeout: 30 * time.Second},
+		client:    caddyHTTPClient(30 * time.Second),
 	}
 }
 
@@ -71,8 +71,8 @@ func (m *CaddyTLSManager) UploadCustomCert(ctx context.Context, domain *store.Pr
 		return fmt.Errorf("marshal cert payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("http://%s/tls/certificates/%s", addr, domain.Hostname),
+	req, err := newCaddyAdminRequest(ctx, "POST", addr,
+		fmt.Sprintf("/tls/certificates/%s", domain.Hostname),
 		bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("upload cert request: %w", err)
@@ -100,8 +100,8 @@ func (m *CaddyTLSManager) RemoveCert(ctx context.Context, hostname string) error
 	defer m.mu.Unlock()
 
 	addr := m.adminAddr
-	req, err := http.NewRequestWithContext(ctx, "DELETE",
-		fmt.Sprintf("http://%s/tls/certificates/%s", addr, hostname), nil)
+	req, err := newCaddyAdminRequest(ctx, "DELETE", addr,
+		fmt.Sprintf("/tls/certificates/%s", hostname), nil)
 	if err != nil {
 		return fmt.Errorf("remove cert request: %w", err)
 	}
@@ -110,6 +110,7 @@ func (m *CaddyTLSManager) RemoveCert(ctx context.Context, hostname string) error
 	if err != nil {
 		return fmt.Errorf("remove cert api: %w", err)
 	}
+	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	return nil
 }
@@ -119,8 +120,8 @@ func (m *CaddyTLSManager) RenewCert(ctx context.Context, hostname string) error 
 	defer m.mu.Unlock()
 
 	addr := m.adminAddr
-	req, err := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("http://%s/tls/certificates/%s/renew", addr, hostname), nil)
+	req, err := newCaddyAdminRequest(ctx, "POST", addr,
+		fmt.Sprintf("/tls/certificates/%s/renew", hostname), nil)
 	if err != nil {
 		return fmt.Errorf("renew cert request: %w", err)
 	}
@@ -144,8 +145,8 @@ func (m *CaddyTLSManager) CertStatus(ctx context.Context, hostname string) (*Cer
 	defer m.mu.Unlock()
 
 	addr := m.adminAddr
-	req, err := http.NewRequestWithContext(ctx, "GET",
-		fmt.Sprintf("http://%s/tls/certificates/%s", addr, hostname), nil)
+	req, err := newCaddyAdminRequest(ctx, "GET", addr,
+		fmt.Sprintf("/tls/certificates/%s", hostname), nil)
 	if err != nil {
 		return nil, fmt.Errorf("cert status request: %w", err)
 	}
@@ -187,7 +188,7 @@ func (m *CaddyTLSManager) buildTLSConfig(domain *store.ProxyDomain, email string
 		"apps": map[string]any{
 			"http": map[string]any{
 				"servers": map[string]any{
-					"srv-" + domain.Hostname: map[string]any{
+					"gamepanel-domains": map[string]any{
 						"listen": []string{":443"},
 						"routes": []map[string]any{
 							{
@@ -211,7 +212,7 @@ func (m *CaddyTLSManager) buildTLSConfig(domain *store.ProxyDomain, email string
 						"tls_connection_policies": []map[string]any{
 							{
 								"match": map[string]any{
-									"snif": []string{domain.Hostname},
+									"sni": []string{domain.Hostname},
 								},
 							},
 						},
@@ -237,23 +238,14 @@ func (m *CaddyTLSManager) buildTLSConfig(domain *store.ProxyDomain, email string
 }
 
 func (m *CaddyTLSManager) validateConfig(ctx context.Context, addr string, configJSON []byte) error {
-	req, err := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("http://%s/load", addr),
-		bytes.NewReader(configJSON))
-	if err != nil {
-		return fmt.Errorf("validate request: %w", err)
+	_ = ctx
+	_ = addr
+	var config map[string]any
+	if err := json.Unmarshal(configJSON, &config); err != nil {
+		return fmt.Errorf("config is not valid JSON: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := m.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("validate api: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("config invalid: HTTP %d - %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	if len(config) == 0 {
+		return fmt.Errorf("config is empty")
 	}
 	return nil
 }
@@ -264,8 +256,8 @@ func (m *CaddyTLSManager) applyConfig(ctx context.Context, addr string, config m
 		return fmt.Errorf("marshal apply config: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("http://%s/config/", addr),
+	req, err := newCaddyAdminRequest(ctx, "POST", addr,
+		"/config/",
 		bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("apply request: %w", err)
@@ -283,6 +275,6 @@ func (m *CaddyTLSManager) applyConfig(ctx context.Context, addr string, config m
 		return fmt.Errorf("apply failed: HTTP %d - %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
-	slog.Info("caddy tls config applied", "hostname", config)
+	slog.Info("caddy tls config applied")
 	return nil
 }

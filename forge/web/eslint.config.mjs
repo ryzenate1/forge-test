@@ -13,6 +13,7 @@ const eslintConfig = [
   {
     ignores: [
       ".next/**",
+      ".next.rollback-cache/**",
       "coverage/**",
       "next-env.d.ts",
       "tsconfig.tsbuildinfo",

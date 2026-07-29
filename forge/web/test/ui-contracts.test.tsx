@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminShell } from "@/components/admin/admin-shell";
 import { AdminUsers } from "@/components/admin/AdminUsers";
+import { AdminOAuthClients } from "@/components/admin/AdminAccess";
 import { adminPagesForRole } from "@/components/admin/admin-registry";
 import { BackupsView } from "@/components/server/backups-view";
 import { FilesView } from "@/components/server/files-view";
@@ -11,8 +12,9 @@ import { NetworkView } from "@/components/server/network-view";
 import SetupPage from "@/app/setup/page";
 import AccountPage from "@/app/account/page";
 import ServersPage from "@/app/servers/page";
+import AdminOrganizationsPage from "@/app/admin/organizations/page";
 import { useServerStore } from "@/stores/use-server-store";
-import { jsonResponse, mockFetch } from "@/test/fetch-mock";
+import { jsonResponse, mockFetch, requestJSON } from "@/test/fetch-mock";
 import { renderWithQuery } from "@/test/render";
 
 const replace = vi.fn();
@@ -79,6 +81,28 @@ describe("account security", () => {
 });
 
 describe("admin mutation protections", () => {
+  it("keeps OAuth client creation reachable before an owner is selected", async () => {
+    mockFetch(jsonResponse([{ id: "u1", email: "owner@example.com", role: "user" }]));
+    renderWithQuery(<AdminOAuthClients />);
+    await userEvent.click(await screen.findByRole("button", { name: /new client/i }));
+    expect(screen.getByRole("dialog", { name: /create oauth client/i })).toBeInTheDocument();
+    expect(screen.getByLabelText("OAuth client owner")).toBeInTheDocument();
+  });
+
+  it("creates an organization through the API and opens its persisted detail route", async () => {
+    const fetch = mockFetch(
+      jsonResponse([]),
+      jsonResponse({ id: "org-1", name: "Acme Games", slug: "acme-games", ownerId: "u1", ownerName: "admin", createdAt: "2026-01-01T00:00:00Z" }, 201),
+      jsonResponse([{ id: "org-1", name: "Acme Games", slug: "acme-games", ownerId: "u1", ownerName: "admin", createdAt: "2026-01-01T00:00:00Z" }]),
+    );
+    renderWithQuery(<AdminOrganizationsPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /new organization/i }));
+    await userEvent.type(screen.getByLabelText("Organization name"), "Acme Games");
+    await userEvent.click(screen.getByRole("button", { name: "Create organization" }));
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/organizations/acme-games"));
+    expect(requestJSON(fetch.calls[1])).toEqual({ name: "Acme Games", slug: "acme-games" });
+  });
+
   it("disables user deletion when the user owns a server", async () => {
     mockFetch(
       jsonResponse([{ id: "u1", email: "owner@example.com", role: "user" }]),
@@ -86,7 +110,7 @@ describe("admin mutation protections", () => {
     );
     renderWithQuery(<AdminUsers />);
     await userEvent.click(await screen.findByText("owner@example.com"));
-    expect(await screen.findByText("Owned Servers")).toBeInTheDocument();
+    expect((await screen.findAllByText("Owned Servers")).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: /delete/i })).toBeDisabled();
   });
 });

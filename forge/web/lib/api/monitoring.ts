@@ -55,7 +55,7 @@ export async function getNodeMetrics(params?: { nodeId?: string; period?: string
 }
 
 export function getSystemInfo(): Promise<SystemInfo> {
-  return fetchJSON<SystemInfo>('/admin/monitoring/summary');
+  return fetchJSON<SystemInfo>('/monitoring/summary');
 }
 
 export function getProcessList(sort?: 'cpu' | 'mem'): Promise<ProcessInfo[]> {
@@ -63,14 +63,15 @@ export function getProcessList(sort?: 'cpu' | 'mem'): Promise<ProcessInfo[]> {
   return fetchJSON<ProcessInfo[]>(`/monitoring/nodes/processes${query}`);
 }
 
-export function getAlertHistory(params?: { page?: number; limit?: number }): Promise<AlertEvent[]> {
+export async function getAlertHistory(params?: { page?: number; limit?: number }): Promise<AlertEvent[]> {
   const query = new URLSearchParams();
   if (params?.page) query.set('page', String(params.page));
   if (params?.limit) query.set('limit', String(params.limit));
   const qs = query.toString();
-  return fetchJSON<AlertEvent[]>(`/alerting/events${qs ? `?${qs}` : ''}`);
+  const res = await fetchJSON<{ alerts: AlertEvent[] }>(`/alerts${qs ? `?${qs}` : ''}`);
+  return res.alerts ?? [];
 }
 
 export function acknowledgeAlert(id: string): Promise<void> {
-  return postJSON<void>(`/alerting/events/${encodeURIComponent(id)}/acknowledge`);
+  return postJSON<void>(`/alerts/${encodeURIComponent(id)}/acknowledge`);
 }

@@ -6,7 +6,7 @@ import {
   Activity, BarChart3, Cpu, GanttChart, HardDrive, Network, Plus, Trash2, Zap,
 } from "lucide-react";
 import { fetchJSON, postJSON, deleteJSON } from "@/lib/api";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, cn } from "@/components/admin/admin-ui";
+import { AdminPageHeader, AdminPageLayout, AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, cn } from "@/components/admin/admin-ui";
 
 type NodeScore = {
   nodeId: string;
@@ -63,17 +63,17 @@ export default function AdminSchedulerPage() {
 
   const scoresQuery = useQuery({
     queryKey: ["admin", "scheduler", "scores"],
-    queryFn: () => fetchJSON<NodeScore[]>("/admin/scheduler/scores"),
+    queryFn: () => fetchJSON<{ data: NodeScore[] }>("/admin/scheduler/predictive/scores").then(r => r.data),
   });
 
   const affinityQuery = useQuery({
     queryKey: ["admin", "scheduler", "affinity"],
-    queryFn: () => fetchJSON<AffinityRule[]>("/admin/scheduler/affinity"),
+    queryFn: () => fetchJSON<{ data: AffinityRule[] }>("/admin/scheduler/predictive/affinity-rules").then(r => r.data),
   });
 
   const constraintsQuery = useQuery({
     queryKey: ["admin", "scheduler", "constraints"],
-    queryFn: () => fetchJSON<Constraint[]>("/admin/scheduler/constraints"),
+    queryFn: () => fetchJSON<{ data: Constraint[] }>("/admin/scheduler/constraints").then(r => r.data),
   });
 
   const scores = useMemo(() => scoresQuery.data ?? [], [scoresQuery.data]);
@@ -81,7 +81,7 @@ export default function AdminSchedulerPage() {
   const constraints = useMemo(() => constraintsQuery.data ?? [], [constraintsQuery.data]);
 
   const createAffinityMutation = useMutation({
-    mutationFn: () => postJSON("/admin/scheduler/affinity", {
+    mutationFn: () => postJSON("/admin/scheduler/predictive/affinity-rules", {
       ...affinityForm,
       targetIds: affinityForm.targetIds.split(",").map((s) => s.trim()),
     }),
@@ -93,7 +93,7 @@ export default function AdminSchedulerPage() {
   });
 
   const deleteAffinityMutation = useMutation({
-    mutationFn: (id: string) => deleteJSON(`/admin/scheduler/affinity/${id}`),
+    mutationFn: (id: string) => deleteJSON(`/admin/scheduler/predictive/affinity-rules/${encodeURIComponent(id)}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin", "scheduler", "affinity"] }),
   });
 
@@ -107,36 +107,20 @@ export default function AdminSchedulerPage() {
   });
 
   const deleteConstraintMutation = useMutation({
-    mutationFn: (id: string) => deleteJSON(`/admin/scheduler/constraints/${id}`),
+    mutationFn: (id: string) => deleteJSON(`/admin/scheduler/constraints/${encodeURIComponent(id)}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin", "scheduler", "constraints"] }),
   });
-
-  const tabs: Array<{ id: typeof tab; label: string }> = [
-    { id: "scores", label: "Scores" },
-    { id: "affinity", label: "Affinity" },
-    { id: "constraints", label: "Constraints" },
-  ];
 
   const maxScore = Math.max(...scores.map((s) => s.score), 1);
 
   return (
-    <div className="space-y-6">
-      <SectionHeader
+    <AdminPageLayout>
+      <AdminPageHeader
         title="Scheduler Configuration"
-        sub="Predictive scoring, affinity rules, and constraint-based placement configuration."
+        description="Predictive scoring, affinity rules, and constraint-based placement configuration."
       />
 
-      <div className="flex gap-1 rounded-lg border border-white/[0.06] bg-[#161b28] p-1 w-fit">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            className={`px-4 py-2 text-xs font-semibold rounded-md transition ${tab === t.id ? "bg-[#dc2626] text-white" : "text-slate-400 hover:text-slate-200"}`}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <AdminTabs tabs={[{ id: "scores", label: "Scores" }, { id: "affinity", label: "Affinity" }, { id: "constraints", label: "Constraints" }]} active={tab} onChange={(id) => setTab(id as typeof tab)} />
 
       {tab === "scores" && (
         <Card>
@@ -161,7 +145,7 @@ export default function AdminSchedulerPage() {
                       className={cn(
                         "h-full rounded-full",
                         node.score / maxScore > 0.8 ? "bg-emerald-500" :
-                        node.score / maxScore > 0.5 ? "bg-blue-500" :
+                        node.score / maxScore > 0.5 ? "bg-sky-500" :
                         node.score / maxScore > 0.3 ? "bg-amber-500" : "bg-red-500"
                       )}
                       style={{ width: `${(node.score / maxScore) * 100}%` }}
@@ -399,6 +383,6 @@ export default function AdminSchedulerPage() {
           />
         </Modal>
       )}
-    </div>
+    </AdminPageLayout>
   );
 }

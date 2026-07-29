@@ -189,15 +189,15 @@ func (s *Scheduler) FilterNodes(ctx context.Context, req domain.PlacementRequest
 			s.recordPlacementRejection()
 			continue
 		}
-		if !hasCapacity(snapshot.TotalCPU, snapshot.AvailableCPU, req.CPU) {
+		if !HasCapacity(snapshot.TotalCPU, snapshot.AvailableCPU, req.CPU) {
 			s.recordCapacityExceeded(ctx, node.ID, "cpu", snapshot.AvailableCPU, req.CPU)
 			continue
 		}
-		if !hasCapacity(snapshot.TotalMemory, snapshot.AvailableMemory, req.MemoryMB) {
+		if !HasCapacity(snapshot.TotalMemory, snapshot.AvailableMemory, req.MemoryMB) {
 			s.recordCapacityExceeded(ctx, node.ID, "memory", snapshot.AvailableMemory, req.MemoryMB)
 			continue
 		}
-		if !hasCapacity(snapshot.TotalDisk, snapshot.AvailableDisk, req.DiskMB) {
+		if !HasCapacity(snapshot.TotalDisk, snapshot.AvailableDisk, req.DiskMB) {
 			s.recordCapacityExceeded(ctx, node.ID, "disk", snapshot.AvailableDisk, req.DiskMB)
 			continue
 		}
@@ -654,6 +654,7 @@ func nodeToCandidate(snapshot store.NodeCapacitySnapshot, node store.Node) place
 		Draining:        node.Draining,
 		Status:          status,
 		StorageLocality: storageLocality,
+		RuntimeProvider: node.RuntimeProvider,
 	}
 }
 
@@ -689,7 +690,7 @@ func normalizeRequest(req domain.PlacementRequest) domain.PlacementRequest {
 	return req
 }
 
-func hasCapacity(total, available, requested int) bool {
+func HasCapacity(total, available, requested int) bool {
 	if requested <= 0 || total <= 0 {
 		return true
 	}

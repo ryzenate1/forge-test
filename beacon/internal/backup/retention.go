@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -49,6 +50,9 @@ func (p RetentionPolicy) Apply(ctx context.Context, store Store, serverID string
 	if len(backups) == 0 {
 		return nil
 	}
+	sort.SliceStable(backups, func(i, j int) bool {
+		return backups[i].CompletedAt.After(backups[j].CompletedAt)
+	})
 
 	now := time.Now()
 	keep := make(map[string]bool, len(backups))
@@ -113,9 +117,8 @@ func (p RetentionPolicy) Apply(ctx context.Context, store Store, serverID string
 		}
 	}
 
-	// Safety rail: always keep the single most recent backup (backups is
-	// ordered newest-first by Store.List), no matter what the rules above
-	// computed. See the doc comment on Apply for the rationale.
+	// Safety rail: always keep the single most recent backup. Sorting above
+	// makes this independent of the backing store's ordering guarantees.
 	keep[backups[0].ID] = true
 
 	// Delete anything not marked for keeping

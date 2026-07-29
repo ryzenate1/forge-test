@@ -53,6 +53,7 @@ export type ApiAppDetail = ApiApp & {
   healthCheckUrl?: string;
   healthCheckInterval?: number;
   resourceLimits: ResourceLimits;
+  serverId?: string;
 };
 
 export type AppPort = {

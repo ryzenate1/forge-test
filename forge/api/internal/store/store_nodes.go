@@ -44,12 +44,17 @@ func nodeTokenHashMatches(stored, token string) bool {
 }
 
 func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
-	return s.ListNodesPaginated(ctx, 0, 0)
+	nodes, _, err := s.ListNodesPaginated(ctx, 0, 0)
+	return nodes, err
 }
 
-func (s *Store) ListNodesPaginated(ctx context.Context, offset, limit int) ([]Node, error) {
+func (s *Store) ListNodesPaginated(ctx context.Context, offset, limit int) ([]Node, int, error) {
 	if limit <= 0 {
 		limit = 1000
+	}
+	var total int
+	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM nodes`).Scan(&total); err != nil {
+		return nil, 0, err
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT n.id::text, COALESCE(n.uuid, n.id)::text, n.name, COALESCE(l.long, n.region), n.base_url,
@@ -92,7 +97,7 @@ func (s *Store) ListNodesPaginated(ctx context.Context, offset, limit int) ([]No
 		LIMIT $1 OFFSET $2
 	`, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -129,7 +134,7 @@ func (s *Store) ListNodesPaginated(ctx context.Context, offset, limit int) ([]No
 			&node.Tags,
 			&node.SchedulerType, &schedulerConfig,
 		); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if schedulerConfig.Valid && schedulerConfig.String != "" {
 			raw := json.RawMessage(schedulerConfig.String)
@@ -137,7 +142,7 @@ func (s *Store) ListNodesPaginated(ctx context.Context, offset, limit int) ([]No
 		}
 		nodes = append(nodes, node)
 	}
-	return nodes, rows.Err()
+	return nodes, total, rows.Err()
 }
 
 func (s *Store) GetNode(ctx context.Context, nodeID string) (Node, error) {

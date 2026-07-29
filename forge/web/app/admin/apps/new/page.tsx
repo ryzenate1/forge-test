@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import {
-  ArrowLeft, Box, Cloud, Container, GitBranch, Globe, Layers,
+  Box, Cloud, Container, GitBranch, Globe, Layers,
   Play, Zap, CheckCircle2, AlertCircle, LoaderCircle,
 } from "lucide-react";
 import {
@@ -12,7 +12,7 @@ import {
   type AppType, type AppPort, type AppVolume, type CreateAppInput,
 } from "@/lib/api/apps";
 import { fetchNodes, fetchRegions } from "@/lib/api";
-import { Btn, Card, CardHeader, Input, SectionHeader, Pill, cn } from "@/components/admin/admin-ui";
+import { AdminFormSection, AdminPageHeader, Btn, Card, CardHeader, Input, Pill, cn } from "@/components/admin/admin-ui";
 import { EnvVarEditor, PortMapper, VolumeEditor } from "@/components/admin/AdminAppsShared";
 import { Switch } from "@/components/ui/primitives";
 
@@ -170,7 +170,7 @@ export default function CreateAppPage() {
   };
 
   const applyTemplate = (templateId: string) => {
-    const tpl = (templates ?? []).find((t) => t.id === templateId);
+    const tpl = (Array.isArray(templates) ? templates : []).find((t) => t.id === templateId);
     if (!tpl) return;
     setSelectedTemplate(templateId);
     setSourceType(tpl.type);
@@ -273,18 +273,15 @@ export default function CreateAppPage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 px-1 sm:px-0">
-      <div className="flex items-center gap-3">
-        <Btn tone="ghost" size="sm" onClick={() => {
+      <AdminPageHeader
+        title="Create Application"
+        description="Deploy a Docker image, Git repository, or Compose stack"
+        backAction={() => {
           const prev = STEPS[STEPS.indexOf(step) - 1];
           if (prev) { setStep(prev); setFieldErrors({}); } else router.push("/admin/apps");
-        }}>
-          <ArrowLeft size={14} />
-        </Btn>
-        <SectionHeader
-          title="Create Application"
-          sub="Deploy a Docker image, Git repository, or Compose stack"
-        />
-      </div>
+        }}
+        backLabel="Apps"
+      />
 
       <div className="flex gap-1 border-b border-white/[0.06] pb-4 sm:gap-2">
         {STEPS.map((s, i) => (
@@ -355,7 +352,7 @@ export default function CreateAppPage() {
           <Card>
             <CardHeader title="Quick Templates (Optional)" icon={Zap} />
             <div className="p-4">
-              {!templates || templates.length === 0 ? (
+              {!Array.isArray(templates) || templates.length === 0 ? (
                 <p className="text-sm text-slate-500">No templates available.</p>
               ) : (
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -405,25 +402,29 @@ export default function CreateAppPage() {
         <div className="space-y-6">
           <Card>
             <CardHeader title="Basic Information" icon={Layers} />
-            <div className="grid gap-4 p-4 sm:grid-cols-2">
-              <div>
-                <Input
-                  label="App Name"
-                  value={name}
-                  onChange={(v) => { setName(v); setFieldErrors((e) => ({ ...e, name: "" })); setFieldsDirty(true); }}
-                  placeholder="my-app"
-                  required
-                />
-                {fieldErrors.name && (
-                  <p className="mt-1 text-xs text-red-400">{fieldErrors.name}</p>
-                )}
-              </div>
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-300">Type</label>
-                <div className="flex h-9 items-center rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 text-sm text-slate-400">
-                  <Pill tone="neutral">{typeLabel(sourceType)}</Pill>
+            <div className="p-4">
+              <AdminFormSection title="Basic Information">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <Input
+                      label="App Name"
+                      value={name}
+                      onChange={(v) => { setName(v); setFieldErrors((e) => ({ ...e, name: "" })); setFieldsDirty(true); }}
+                      placeholder="my-app"
+                      required
+                    />
+                    {fieldErrors.name && (
+                      <p className="mt-1 text-xs text-red-400">{fieldErrors.name}</p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-slate-300">Type</label>
+                    <div className="flex h-9 items-center rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 text-sm text-slate-400">
+                      <Pill tone="neutral">{typeLabel(sourceType)}</Pill>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              </AdminFormSection>
             </div>
           </Card>
 
@@ -580,51 +581,59 @@ export default function CreateAppPage() {
 
           <Card>
             <CardHeader title="Deployment Target" icon={Cloud} />
-            <div className="grid gap-4 p-4 sm:grid-cols-2">
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-300">Node</label>
-                <select
-                  className="h-10 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
-                  value={nodeId}
-                  onChange={(e) => setNodeId(e.target.value)}
-                >
-                  <option value="">Auto-select</option>
-                  {(nodes ?? []).map((n: { id: string; name: string }) => (
-                    <option key={n.id} value={n.id}>{n.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-300">Region</label>
-                <select
-                  className="h-10 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
-                  value={regionId}
-                  onChange={(e) => setRegionId(e.target.value)}
-                >
-                  <option value="">Auto-select</option>
-                  {(regions ?? []).map((r: { id: string; name: string }) => (
-                    <option key={r.id} value={r.id}>{r.name}</option>
-                  ))}
-                </select>
-              </div>
+            <div className="p-4">
+              <AdminFormSection title="Deployment Target">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-slate-300">Node</label>
+                    <select
+                      className="h-10 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                      value={nodeId}
+                      onChange={(e) => setNodeId(e.target.value)}
+                    >
+                      <option value="">Auto-select</option>
+                        {(Array.isArray(nodes) ? nodes : []).map((n: { id: string; name: string }) => (
+                        <option key={n.id} value={n.id}>{n.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-slate-300">Region</label>
+                    <select
+                      className="h-10 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                      value={regionId}
+                      onChange={(e) => setRegionId(e.target.value)}
+                    >
+                      <option value="">Auto-select</option>
+                        {(Array.isArray(regions) ? regions : []).map((r: { id: string; name: string }) => (
+                        <option key={r.id} value={r.id}>{r.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </AdminFormSection>
             </div>
           </Card>
 
           <Card>
             <CardHeader title="Resources" icon={Zap} />
-            <div className="grid gap-4 p-4 sm:grid-cols-3">
-              <div>
-                <Input label="CPU (cores)" value={cpu} onChange={(v) => { setCpu(v); setFieldErrors((e) => ({ ...e, cpu: "" })); setFieldsDirty(true); }} placeholder="1.0" />
-                {fieldErrors.cpu && <p className="mt-1 text-xs text-red-400">{fieldErrors.cpu}</p>}
-              </div>
-              <div>
-                <Input label="Memory (MiB)" value={memory} onChange={(v) => { setMemory(v); setFieldErrors((e) => ({ ...e, memory: "" })); setFieldsDirty(true); }} placeholder="1024" />
-                {fieldErrors.memory && <p className="mt-1 text-xs text-red-400">{fieldErrors.memory}</p>}
-              </div>
-              <div>
-                <Input label="Disk (MiB)" value={disk} onChange={(v) => { setDisk(v); setFieldErrors((e) => ({ ...e, disk: "" })); setFieldsDirty(true); }} placeholder="10240" />
-                {fieldErrors.disk && <p className="mt-1 text-xs text-red-400">{fieldErrors.disk}</p>}
-              </div>
+            <div className="p-4">
+              <AdminFormSection title="Resources">
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <div>
+                    <Input label="CPU (cores)" value={cpu} onChange={(v) => { setCpu(v); setFieldErrors((e) => ({ ...e, cpu: "" })); setFieldsDirty(true); }} placeholder="1.0" />
+                    {fieldErrors.cpu && <p className="mt-1 text-xs text-red-400">{fieldErrors.cpu}</p>}
+                  </div>
+                  <div>
+                    <Input label="Memory (MiB)" value={memory} onChange={(v) => { setMemory(v); setFieldErrors((e) => ({ ...e, memory: "" })); setFieldsDirty(true); }} placeholder="1024" />
+                    {fieldErrors.memory && <p className="mt-1 text-xs text-red-400">{fieldErrors.memory}</p>}
+                  </div>
+                  <div>
+                    <Input label="Disk (MiB)" value={disk} onChange={(v) => { setDisk(v); setFieldErrors((e) => ({ ...e, disk: "" })); setFieldsDirty(true); }} placeholder="10240" />
+                    {fieldErrors.disk && <p className="mt-1 text-xs text-red-400">{fieldErrors.disk}</p>}
+                  </div>
+                </div>
+              </AdminFormSection>
             </div>
           </Card>
 
@@ -651,23 +660,25 @@ export default function CreateAppPage() {
 
           <Card>
             <CardHeader title="Domain & TLS" icon={Globe} />
-            <div className="space-y-4 p-4">
-              <div>
-                <Input
-                  label="Domains (comma-separated)"
-                  value={domains}
-                  onChange={(v) => { setDomains(v); setFieldErrors((e) => ({ ...e, domains: "" })); setFieldsDirty(true); }}
-                  placeholder="example.com, www.example.com"
+            <div className="p-4">
+              <AdminFormSection title="Domain & TLS">
+                <div>
+                  <Input
+                    label="Domains (comma-separated)"
+                    value={domains}
+                    onChange={(v) => { setDomains(v); setFieldErrors((e) => ({ ...e, domains: "" })); setFieldsDirty(true); }}
+                    placeholder="example.com, www.example.com"
+                  />
+                  {fieldErrors.domains && (
+                    <p className="mt-1 text-xs text-red-400">{fieldErrors.domains}</p>
+                  )}
+                </div>
+                <Switch
+                  checked={enableTls}
+                  onCheckedChange={setEnableTls}
+                  label="TLS/SSL"
                 />
-                {fieldErrors.domains && (
-                  <p className="mt-1 text-xs text-red-400">{fieldErrors.domains}</p>
-                )}
-              </div>
-              <Switch
-                checked={enableTls}
-                onCheckedChange={setEnableTls}
-                label="TLS/SSL"
-              />
+              </AdminFormSection>
             </div>
           </Card>
 
@@ -765,13 +776,13 @@ export default function CreateAppPage() {
               {nodeId && (
                 <div className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                   <span className="text-slate-400">Node</span>
-                  <span className="text-slate-200">{(nodes ?? []).find((n: { id: string; name: string }) => n.id === nodeId)?.name ?? nodeId}</span>
+                   <span className="text-slate-200">{(Array.isArray(nodes) ? nodes : []).find((n: { id: string; name: string }) => n.id === nodeId)?.name ?? nodeId}</span>
                 </div>
               )}
               {regionId && (
                 <div className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                   <span className="text-slate-400">Region</span>
-                  <span className="text-slate-200">{(regions ?? []).find((r: { id: string; name: string }) => r.id === regionId)?.name ?? regionId}</span>
+                   <span className="text-slate-200">{(Array.isArray(regions) ? regions : []).find((r: { id: string; name: string }) => r.id === regionId)?.name ?? regionId}</span>
                 </div>
               )}
             </div>

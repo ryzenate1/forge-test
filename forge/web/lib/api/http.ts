@@ -66,8 +66,8 @@ export async function requestJSON<T>(path: string, init: RequestInit = {}): Prom
   }
 }
 
-export async function fetchJSON<T>(path: string): Promise<T> {
-  return requestJSON<T>(path);
+export async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
+  return requestJSON<T>(path, init);
 }
 
 export async function postJSON<T>(path: string, body?: unknown): Promise<T> {

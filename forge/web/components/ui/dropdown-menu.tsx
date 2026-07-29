@@ -109,4 +109,10 @@ function DropdownMenuItem({ className, children, onClick, ...props }: React.HTML
   );
 }
 
+DropdownMenu.displayName = "DropdownMenu";
+DropdownMenuTrigger.displayName = "DropdownMenuTrigger";
+DropdownMenuContent.displayName = "DropdownMenuContent";
+DropdownMenuLabel.displayName = "DropdownMenuLabel";
+DropdownMenuSeparator.displayName = "DropdownMenuSeparator";
+DropdownMenuItem.displayName = "DropdownMenuItem";
 export { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuItem };

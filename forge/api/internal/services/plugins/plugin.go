@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+var pluginNamePattern = regexp.MustCompile(`\A[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}\z`)
 
 type PluginState string
 
@@ -92,9 +96,24 @@ func (s *Service) Get(ctx context.Context, id string) (*Plugin, error) {
 }
 
 func (s *Service) Install(ctx context.Context, name, source, manifestJSON string) (*Plugin, error) {
+	if !pluginNamePattern.MatchString(name) {
+		return nil, fmt.Errorf("plugin name may only contain letters, numbers, dot, underscore, and hyphen")
+	}
+	if len(manifestJSON) > 1024*1024 {
+		return nil, fmt.Errorf("plugin manifest exceeds 1 MiB")
+	}
 	var manifest PluginManifest
 	if err := json.Unmarshal([]byte(manifestJSON), &manifest); err != nil {
 		return nil, fmt.Errorf("invalid manifest: %w", err)
+	}
+	if manifest.Name != "" && manifest.Name != name {
+		return nil, fmt.Errorf("manifest name %q does not match plugin name %q", manifest.Name, name)
+	}
+	if manifest.Entrypoint != "" {
+		cleanEntrypoint := filepath.Clean(manifest.Entrypoint)
+		if filepath.IsAbs(cleanEntrypoint) || cleanEntrypoint == ".." || strings.HasPrefix(cleanEntrypoint, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("plugin entrypoint must remain inside the plugin directory")
+		}
 	}
 
 	existing, err := s.store.FindPluginByName(ctx, name)
@@ -103,7 +122,10 @@ func (s *Service) Install(ctx context.Context, name, source, manifestJSON string
 	}
 
 	if s.pluginsDir != "" {
-		pluginDir := filepath.Join(s.pluginsDir, name)
+		pluginDir, err := safePluginPath(s.pluginsDir, name)
+		if err != nil {
+			return nil, err
+		}
 		if err := os.MkdirAll(pluginDir, 0755); err != nil {
 			return nil, fmt.Errorf("create plugin directory: %w", err)
 		}
@@ -138,8 +160,13 @@ func (s *Service) Uninstall(ctx context.Context, id string) error {
 	}
 
 	if s.pluginsDir != "" {
-		pluginDir := filepath.Join(s.pluginsDir, plugin.Name)
-		os.RemoveAll(pluginDir)
+		pluginDir, err := safePluginPath(s.pluginsDir, plugin.Name)
+		if err != nil {
+			return err
+		}
+		if err := os.RemoveAll(pluginDir); err != nil {
+			return fmt.Errorf("remove plugin directory: %w", err)
+		}
 	}
 
 	return s.store.DeletePlugin(ctx, id)
@@ -181,7 +208,9 @@ func (s *Service) ExecuteHook(ctx context.Context, hook string, args map[string]
 			continue
 		}
 
-		result, err := h.handler(ctx, plugin, args)
+		hookCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		result, err := h.handler(hookCtx, plugin, args)
+		cancel()
 		if err != nil {
 			continue
 		}
@@ -202,11 +231,15 @@ func (s *Service) Discover(ctx context.Context) ([]Plugin, error) {
 
 	var discovered []Plugin
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || !pluginNamePattern.MatchString(entry.Name()) {
 			continue
 		}
 
-		manifestPath := filepath.Join(s.pluginsDir, entry.Name(), "manifest.json")
+		pluginDir, err := safePluginPath(s.pluginsDir, entry.Name())
+		if err != nil {
+			continue
+		}
+		manifestPath := filepath.Join(pluginDir, "manifest.json")
 		data, err := os.ReadFile(manifestPath)
 		if err != nil {
 			continue
@@ -240,4 +273,20 @@ func (s *Service) Discover(ctx context.Context) ([]Plugin, error) {
 	}
 
 	return discovered, nil
+}
+
+func safePluginPath(root, name string) (string, error) {
+	if !pluginNamePattern.MatchString(name) {
+		return "", fmt.Errorf("invalid plugin name")
+	}
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve plugin root: %w", err)
+	}
+	candidate := filepath.Join(absoluteRoot, name)
+	relative, err := filepath.Rel(absoluteRoot, candidate)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("plugin path escapes plugin root")
+	}
+	return candidate, nil
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -49,7 +50,6 @@ import (
 	"gamepanel/forge/internal/services/clustermanager"
 	"gamepanel/forge/internal/services/clustermembership"
 	composesvc "gamepanel/forge/internal/services/compose"
-	"gamepanel/forge/internal/services/configvalidator"
 	"gamepanel/forge/internal/services/crashdetector"
 	cronjobsvc "gamepanel/forge/internal/services/cronjob"
 	"gamepanel/forge/internal/services/crossnode"
@@ -104,22 +104,40 @@ import (
 const readinessHealthPath = "/api/v1/health/ready"
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
-		healthcheck("http://127.0.0.1" + healthcheckPort(env("API_ADDR", ":8080")) + readinessHealthPath)
-		return
+	if err := run(); err != nil {
+		log.Printf("forge API startup failed: %v", err)
+		os.Exit(1)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+}
+
+func run() error {
+	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
+		return healthcheck("http://127.0.0.1" + healthcheckPort(env("API_ADDR", ":8080")) + readinessHealthPath)
+	}
+	// Database migrations and operational-secret rotations can legitimately take
+	// longer than 30 seconds on a large installation. Bound startup, but do not
+	// cancel it halfway through a normal migration.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	appEnv := env("APP_ENV", "development")
 	production := strings.EqualFold(strings.TrimSpace(appEnv), "production")
 	seedDemo, err := demoSeedEnabled(appEnv, os.Getenv("API_SEED_DEMO"))
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	authSecret := env("API_AUTH_SECRET", "dev-api-secret")
-	if production && (authSecret == "" || authSecret == "dev-api-secret" || len(authSecret) < 32) {
-		log.Fatal("API_AUTH_SECRET must be set to a production secret with at least 32 characters")
+	authSecret := strings.TrimSpace(os.Getenv("API_AUTH_SECRET"))
+	if authSecret == "" {
+		if production {
+			return errors.New("API_AUTH_SECRET must be set to a production secret with at least 32 characters")
+		}
+		authSecret, err = randomEncodedSecret(32)
+		if err != nil {
+			return fmt.Errorf("generate development API auth secret: %w", err)
+		}
+	}
+	if production && len(authSecret) < 32 {
+		return errors.New("API_AUTH_SECRET must be at least 32 characters")
 	}
 
 	slogLogger := logger.New(logger.Config{
@@ -133,7 +151,7 @@ func main() {
 	if databaseURL := os.Getenv("DATABASE_URL"); databaseURL != "" {
 		kr, ephemeral, err := masterKeyringFromEnvironment(production)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		masterKeyring = kr
 		keyring := kr
@@ -142,32 +160,32 @@ func main() {
 		}
 		connected, err := store.ConnectWithKeyring(ctx, databaseURL, keyring)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		defer connected.Close()
 		if err := connected.RunMigrations(ctx, env("MIGRATIONS_DIR", "migrations")); err != nil {
-			log.Fatal(err)
+			return err
 		}
 		if err := eventstore.Migrate(connected.GetDB()); err != nil {
-			log.Fatal(err)
+			return err
 		}
 		if err := connected.MigrateOperationalSecrets(ctx); err != nil {
-			log.Fatal(err)
+			return err
 		}
 		if len(os.Args) > 1 && os.Args[1] == "rotate-master-key" {
 			slogLogger.Info("secret rotation completed", slog.String("active_key", keyring.ActiveKeyID()))
-			return
+			return nil
 		}
 		if len(os.Args) > 1 && os.Args[1] == "restore-plaintext-secrets" {
 			if err := connected.RestoreOperationalSecrets(ctx); err != nil {
-				log.Fatal(err)
+				return err
 			}
 			slogLogger.Info("legacy plaintext secret columns restored; ciphertext retained")
-			return
+			return nil
 		}
 		if seedDemo {
 			if err := connected.Seed(ctx); err != nil {
-				log.Fatal(err)
+				return err
 			}
 		}
 		db = connected
@@ -177,7 +195,19 @@ func main() {
 	redisEnabled := false
 	if redisAddr := os.Getenv("REDIS_ADDR"); redisAddr != "" {
 		redisEnabled = true
-		redisClient = redis.NewClient(&redis.Options{Addr: redisAddr, Password: os.Getenv("REDIS_PASSWORD")})
+		redisPassword := strings.TrimSpace(os.Getenv("REDIS_PASSWORD"))
+		redisTLS := envBool("REDIS_TLS", production)
+		if production && redisPassword == "" {
+			return errors.New("REDIS_PASSWORD is required when Redis is enabled in production")
+		}
+		if production && !redisTLS {
+			return errors.New("REDIS_TLS must be enabled when Redis is used in production")
+		}
+		redisOptions := &redis.Options{Addr: redisAddr, Password: redisPassword}
+		if redisTLS {
+			redisOptions.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		}
+		redisClient = redis.NewClient(redisOptions)
 		defer redisClient.Close()
 		if err := redisClient.Ping(ctx).Err(); err != nil {
 			slogLogger.Warn("redis ping failed at startup", slog.String("error", err.Error()))
@@ -186,12 +216,12 @@ func main() {
 
 	daemonClient := daemon.NewClient()
 	if production && os.Getenv("DAEMON_NODE_TOKEN") == "" {
-		log.Fatal("DAEMON_NODE_TOKEN must be set in production")
+		return errors.New("DAEMON_NODE_TOKEN must be set in production")
 	}
-	if !production {
+	if !production && strings.TrimSpace(os.Getenv("DAEMON_NODE_TOKEN")) != "" {
 		// Backward-compatible Phase 0 fallback for development only. Normal
 		// outbound requests always pass the current target node credential.
-		daemonClient = daemon.NewClientWithDevelopmentFallback(env("DAEMON_NODE_TOKEN", "dev-node-token"))
+		daemonClient = daemon.NewClientWithDevelopmentFallback(strings.TrimSpace(os.Getenv("DAEMON_NODE_TOKEN")))
 	}
 
 	// Build the service graph. All services are nil-safe when db == nil;
@@ -312,8 +342,7 @@ func main() {
 		cm = clustermanager.New(db, dockerRT, sched, resMgr, outboxPub)
 
 		// Initialize Beacon HTTP client for replicamanager
-		beaconBaseURL := env("BEACON_BASE_URL", "http://127.0.0.1:9090")
-		beaconHTTPClient := replicamanager.NewBeaconHTTPClient(db, daemonClient, beaconBaseURL, slogLogger)
+		beaconHTTPClient := replicamanager.NewBeaconHTTPClient(db, daemonClient, slogLogger)
 
 		// Initialize replicamanager with all required dependencies
 		replicaMgr = replicamanager.New(db, placeEngine, sched, resMgr, nil, beaconHTTPClient, slogLogger, outboxPub)
@@ -371,12 +400,12 @@ func main() {
 		registerPowerJob(queue.JobServerKill, "kill")
 		composeLifecycle, err = composesvc.New(db, outboxPub)
 		if err != nil {
-			log.Fatalf("failed to create compose service: %v", err)
+			return fmt.Errorf("create compose service: %w", err)
 		}
 		composeLifecycle.WithReservationManager(resMgr).WithScheduler(sched)
 		composeQH, err := composesvc.NewQueueHandler(composeLifecycle)
 		if err != nil {
-			log.Fatalf("failed to create compose queue handler: %v", err)
+			return fmt.Errorf("create compose queue handler: %w", err)
 		}
 		queueSvc.RegisterHandler(queue.JobComposeDeploy, func(ctx context.Context, job *queue.Job) error {
 			return composeQH.HandleDeploy(ctx, job.Payload)
@@ -398,7 +427,10 @@ func main() {
 		})
 
 		gitSvc = gitsvc.NewService(db, slogLogger)
-		gitDeploySvc = gitsvc.NewDeployService(gitSvc, db, slogLogger, "", "")
+		gitDeploySvc = gitsvc.NewDeployService(gitSvc, db, slogLogger,
+			env("REGISTRY_HOST", ""),
+			env("GIT_TEMP_DIR", ""),
+		)
 		gitDeployMgmtSvc = gitsvc.NewDeploymentManagementService(db, slogLogger, gitDeploySvc)
 		gitProviderSvc = gitprovidersvc.NewService(db, slogLogger)
 		gitOpsController, err = composesvc.NewGitOpsController(
@@ -411,13 +443,13 @@ func main() {
 			env("GITOPS_WORKER_ID", ""),
 		)
 		if err != nil {
-			log.Fatalf("failed to create gitops controller: %v", err)
+			return fmt.Errorf("create gitops controller: %w", err)
 		}
 		gitOpsController.Start(appCtx)
 
 		appStoreSvc, err = appstoresvc.New(db, composeLifecycle)
 		if err != nil {
-			log.Fatalf("failed to create app store service: %v", err)
+			return fmt.Errorf("create app store service: %w", err)
 		}
 
 		queueSvc.Start(appCtx)
@@ -465,15 +497,21 @@ func main() {
 
 		runtimeRegistry = runtimesvc.NewRegistry()
 
+		var waSessionStore webauthn.SessionStore
+		if redisClient != nil {
+			waSessionStore = webauthn.NewRedisSessionStore(redisClient)
+		} else {
+			waSessionStore = newInMemoryWebAuthnSessionStore()
+		}
 		waSvc, err = webauthn.New(
 			env("WEBAUTHN_RP_ID", "localhost"),
 			env("WEBAUTHN_RP_DISPLAY_NAME", "GamePanel"),
 			env("WEBAUTHN_RP_ORIGIN", "http://localhost:3000"),
 			webauthn.NewPostgresCredentialStore(db.GetDB()),
-			webauthn.NewRedisSessionStore(redisClient),
+			waSessionStore,
 		)
 		if err != nil {
-			log.Fatalf("failed to create webauthn service: %v", err)
+			return fmt.Errorf("create webauthn service: %w", err)
 		}
 
 		autoSvc = autoscaler.New(db, cm, dockerRT, outboxPub)
@@ -638,7 +676,7 @@ func main() {
 		bkWorker = backup.NewWorker(db, bkSvc, daemonClient)
 		dnsSvc, err = dnssvc.New(db)
 		if err != nil {
-			log.Fatalf("failed to create dns service: %v", err)
+			return fmt.Errorf("create dns service: %w", err)
 		}
 		caddyProxy := trafficmanager.NewCaddyReverseProxy(env("CADDY_ADMIN_ADDR", "127.0.0.1:2019"))
 		acmeSvc = acmesvc.New(db, slogLogger)
@@ -729,18 +767,24 @@ func main() {
 
 		cronJobSvc, err = cronjobsvc.New(db, slogLogger)
 		if err != nil {
-			log.Fatalf("failed to create cron job service: %v", err)
+			return fmt.Errorf("create cron job service: %w", err)
 		}
 
 		zdSvc = zerodowntime.New(db)
+		zdSvc.SetRollbackExecutor(func(ctx context.Context, serverID, imageTag string) error {
+			if _, err := db.UpdateServer(ctx, serverID, store.UpdateServerRequest{DockerImage: &imageTag}, nil); err != nil {
+				return err
+			}
+			return cm.SyncServerConfiguration(ctx, serverID)
+		})
 
 		processSvc = processsvc.New(db, &processDaemonAdapter{store: db, daemon: daemonClient}, slogLogger)
 		buildpackSvc = buildpacksvc.NewService(db, buildSvc)
 		if err := buildSvc.Start(appCtx); err != nil {
-			log.Fatalf("failed to start build recovery: %v", err)
+			return fmt.Errorf("start build recovery: %w", err)
 		}
 		if err := buildpackSvc.Start(appCtx); err != nil {
-			log.Fatalf("failed to recover app builds: %v", err)
+			return fmt.Errorf("recover app builds: %w", err)
 		}
 
 		certSvc = services.NewCertService(db, db, slogLogger)
@@ -969,9 +1013,11 @@ func main() {
 	}
 
 	if cfg.App.Key == "" && strings.HasPrefix(cfg.App.Cipher, "AES-") {
-		log.Fatal("APP_KEY must be non-empty when APP_CIPHER is AES-based")
+		return errors.New("APP_KEY must be non-empty when APP_CIPHER is AES-based")
 	}
-	validateConfig(&cfg, db != nil, slogLogger)
+	if err := validateConfig(&cfg, slogLogger); err != nil {
+		return err
+	}
 
 	appCfg := http.Config{
 		Logger:                     slogLogger,
@@ -1081,15 +1127,14 @@ func main() {
 	defer stopSignals()
 	select {
 	case <-signalCtx.Done():
-		appCancel()
-		shutdownServices(app, nil, slogLogger, mailWorker, whSvc, queueSvc, opSvc, procedureSvc, gitOpsController, eventRelay, replicaMgr, discoverySvc, ingressSync, healthFilter, resMgr, hbm, rec, mig, ep, failSvc, bkWorker, healthCheckRunner, lbSvc, autoSvc, tmSvc, cleanupSvc, cronJobSvc, domainSvc, acmeSvc)
+		shutdownServices(app, appCancel, nil, slogLogger, mailWorker, whSvc, queueSvc, opSvc, procedureSvc, gitOpsController, eventRelay, replicaMgr, discoverySvc, ingressSync, healthFilter, resMgr, hbm, rec, mig, ep, failSvc, bkWorker, healthCheckRunner, lbSvc, autoSvc, tmSvc, cleanupSvc, cronJobSvc, domainSvc, acmeSvc)
 	case err := <-listenErr:
-		appCancel()
-		shutdownServices(app, err, slogLogger, mailWorker, whSvc, queueSvc, opSvc, procedureSvc, gitOpsController, eventRelay, replicaMgr, discoverySvc, ingressSync, healthFilter, resMgr, hbm, rec, mig, ep, failSvc, bkWorker, healthCheckRunner, lbSvc, autoSvc, tmSvc, cleanupSvc, cronJobSvc, domainSvc, acmeSvc)
+		shutdownServices(app, appCancel, err, slogLogger, mailWorker, whSvc, queueSvc, opSvc, procedureSvc, gitOpsController, eventRelay, replicaMgr, discoverySvc, ingressSync, healthFilter, resMgr, hbm, rec, mig, ep, failSvc, bkWorker, healthCheckRunner, lbSvc, autoSvc, tmSvc, cleanupSvc, cronJobSvc, domainSvc, acmeSvc)
 	}
+	return nil
 }
 
-func shutdownServices(app *fiber.App, listenErr error, log *slog.Logger,
+func shutdownServices(app *fiber.App, cancelBackground context.CancelFunc, listenErr error, log *slog.Logger,
 	mailWorker *mailservice.Worker,
 	whSvc *webhook.Service,
 	queueSvc *queue.Service,
@@ -1120,6 +1165,9 @@ func shutdownServices(app *fiber.App, listenErr error, log *slog.Logger,
 	if err := app.Shutdown(); err != nil {
 		log.Warn("api shutdown error", slog.String("error", err.Error()))
 	}
+	// Drain HTTP first so no new background work is admitted, then cancel the
+	// shared service context before waiting for workers to finish.
+	cancelBackground()
 	if mailWorker != nil {
 		mailWorker.Wait()
 	}
@@ -1215,25 +1263,24 @@ func healthcheckPort(addr string) string {
 	return ":8080"
 }
 
-func healthcheck(target string) {
+func healthcheck(target string) error {
 	client := nethttp.Client{Timeout: 3 * time.Second}
 	res, err := client.Get(target)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return err
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, res.Body)
 		res.Body.Close()
 	}()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		fmt.Fprintf(os.Stderr, "unhealthy status %d\n", res.StatusCode)
-		os.Exit(1)
+		return fmt.Errorf("unhealthy status %d", res.StatusCode)
 	}
+	return nil
 }
 
 func env(key, fallback string) string {
-	value := os.Getenv(key)
+	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
 		return fallback
 	}
@@ -1309,14 +1356,22 @@ func parsePreviousMasterKeys(raw string) (map[string]string, error) {
 	return keys, nil
 }
 
-func validateConfig(cfg *config.Config, _ bool, log *slog.Logger) {
-	if errs := configvalidator.Validate(cfg); len(errs) > 0 {
+func validateConfig(cfg *config.Config, log *slog.Logger) error {
+	if errs := cfg.ValidateAll(); len(errs) > 0 {
 		for _, e := range errs {
 			log.Error("config validation error", slog.String("field", e.Field), slog.String("message", e.Message))
 		}
-		log.Error("invalid configuration; see errors above")
-		os.Exit(1)
+		return errors.New("invalid configuration; see errors above")
 	}
+	return nil
+}
+
+func randomEncodedSecret(size int) (string, error) {
+	raw := make([]byte, size)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
 func demoSeedEnabled(appEnv, raw string) (bool, error) {
@@ -1336,6 +1391,47 @@ func demoSeedEnabled(appEnv, raw string) (bool, error) {
 		return false, fmt.Errorf("API_SEED_DEMO is only allowed in development/local/test environments, got %q", appEnv)
 	}
 	return true, nil
+}
+
+func newInMemoryWebAuthnSessionStore() *inMemoryWebAuthnSessionStore {
+	return &inMemoryWebAuthnSessionStore{data: make(map[string]inMemoryWebAuthnSessionEntry)}
+}
+
+type inMemoryWebAuthnSessionEntry struct {
+	data   []byte
+	expiry time.Time
+}
+
+type inMemoryWebAuthnSessionStore struct {
+	mu   sync.Mutex
+	data map[string]inMemoryWebAuthnSessionEntry
+}
+
+func (s *inMemoryWebAuthnSessionStore) Save(_ context.Context, key string, data []byte, expiry time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data[key] = inMemoryWebAuthnSessionEntry{data: data, expiry: time.Now().Add(expiry)}
+	return nil
+}
+
+func (s *inMemoryWebAuthnSessionStore) Get(_ context.Context, key string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.data[key]
+	if !ok || time.Now().After(entry.expiry) {
+		if ok {
+			delete(s.data, key)
+		}
+		return nil, fmt.Errorf("session not found")
+	}
+	return entry.data, nil
+}
+
+func (s *inMemoryWebAuthnSessionStore) Delete(_ context.Context, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.data, key)
+	return nil
 }
 
 // processDaemonAdapter adapts *daemon.Client to process.DaemonClient.

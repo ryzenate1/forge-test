@@ -36,8 +36,13 @@ export function TenancyHydrator() {
     const orgs = orgsQuery.data ?? [];
     setOrganizations(orgs);
 
-    if (orgs.length > 0 && !useTenancyStore.getState().activeOrg) {
-      setActiveOrg(orgs[0]);
+    const currentActiveOrg = useTenancyStore.getState().activeOrg;
+    if (orgs.length > 0) {
+      if (!currentActiveOrg || !orgs.some((o) => o.id === currentActiveOrg.id)) {
+        setActiveOrg(orgs[0]);
+      }
+    } else if (currentActiveOrg) {
+      setActiveOrg(null);
     }
   }, [orgsQuery.data, orgsQuery.error, orgsQuery.isPending, setOrganizations, setActiveOrg, setLoading, setError]);
 
@@ -54,8 +59,13 @@ export function TenancyHydrator() {
     if (!activeOrg) return;
     const projects = projectsQuery.data ?? [];
     setProjects(projects);
-    if (projects.length > 0 && !useTenancyStore.getState().activeProject) {
-      setActiveProject(projects[0]);
+    const currentActiveProject = useTenancyStore.getState().activeProject;
+    if (projects.length > 0) {
+      if (!currentActiveProject || !projects.some((p) => p.id === currentActiveProject.id)) {
+        setActiveProject(projects[0]);
+      }
+    } else if (currentActiveProject) {
+      setActiveProject(null);
     }
   }, [projectsQuery.data, activeOrg, setProjects, setActiveProject]);
 
@@ -72,8 +82,13 @@ export function TenancyHydrator() {
     if (!activeProject) return;
     const envs = envsQuery.data ?? [];
     setEnvironments(envs);
-    if (envs.length > 0 && !useTenancyStore.getState().activeEnvironment) {
-      setActiveEnvironment(envs[0]);
+    const currentActiveEnv = useTenancyStore.getState().activeEnvironment;
+    if (envs.length > 0) {
+      if (!currentActiveEnv || !envs.some((e) => e.id === currentActiveEnv.id)) {
+        setActiveEnvironment(envs[0]);
+      }
+    } else if (currentActiveEnv) {
+      setActiveEnvironment(null);
     }
   }, [envsQuery.data, activeProject, setEnvironments, setActiveEnvironment]);
 

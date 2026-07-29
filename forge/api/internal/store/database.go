@@ -57,7 +57,7 @@ func (c DBConfig) DSN() string {
 		if c.SSLMode == "require" || c.SSLMode == "enable" {
 			tls = "true"
 		}
-		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?tls=%s&parseTime=true&multiStatements=true",
+		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?tls=%s&parseTime=true",
 			c.User, c.Password, c.Host, c.Port, c.Database, tls)
 	case DatabaseSQLite:
 		if c.SQLitePath == "" {

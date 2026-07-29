@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -40,6 +41,11 @@ var globalMemLimiter = &memRateLimiter{bkt: make(map[string]*memBucket)}
 
 func init() {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("rate limiter cleanup panicked", "panic", r)
+			}
+		}()
 		ticker := time.NewTicker(5 * time.Minute)
 		for range ticker.C {
 			globalMemLimiter.cleanup()

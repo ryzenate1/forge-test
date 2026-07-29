@@ -1,6 +1,7 @@
 package http
 
 import (
+	"log/slog"
 	"strings"
 
 	"gamepanel/forge/internal/store"
@@ -95,6 +96,11 @@ func registerManagedDatabaseRoutes(protected fiber.Router, cfg Config, mutationL
 		}
 		if cfg.DBContainerService != nil {
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("managed database provisioning panicked", "panic", r)
+					}
+				}()
 				pCtx, pCancel := requestContext()
 				defer pCancel()
 				container, pErr := cfg.DBContainerService.Provision(pCtx, req.ServerID, req.Engine, req.Version, req.MemoryMB, req.CPUShares)

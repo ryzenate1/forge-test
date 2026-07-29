@@ -2,10 +2,6 @@ package http
 
 import (
 	"context"
-	"crypto/hmac"
-
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,16 +12,20 @@ import (
 	"gamepanel/forge/internal/store"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
-var tokenTTL = 24 * time.Hour
+const (
+	defaultTokenTTL = 24 * time.Hour
+	maxTokenTTL     = 7 * 24 * time.Hour
+)
 
 const (
-	RoleAdmin          = "admin"
-	RoleUser           = "user"
-	sessionCookieName  = "__Host-forge_session"
-	csrfCookieName     = "__Host-forge_csrf"
+	RoleAdmin         = "admin"
+	RoleUser          = "user"
+	sessionCookieName = "__Host-forge_session"
+	csrfCookieName    = "__Host-forge_csrf"
 )
 
 type tokenClaims struct {
@@ -39,51 +39,100 @@ type tokenClaims struct {
 }
 
 func issueToken(secret string, user store.User) (string, error) {
+	return issueTokenWithTTL(secret, user, defaultTokenTTL)
+}
+
+func issueTokenWithTTL(secret string, user store.User, ttl time.Duration) (string, error) {
+	if ttl <= 0 || ttl > maxTokenTTL {
+		return "", errors.New("token TTL must be between 1ns and 7 days")
+	}
+	now := time.Now()
 	claims := tokenClaims{
 		Sub:            user.ID,
 		Email:          user.Email,
 		Role:           user.Role,
 		JTI:            uuid.NewString(),
 		SessionVersion: user.SessionVersion,
-		Iat:            time.Now().Unix(),
-		Exp:            time.Now().Add(tokenTTL).Unix(),
+		Iat:            now.Unix(),
+		Exp:            now.Add(ttl).Unix(),
 	}
-	payload, err := json.Marshal(claims)
-	if err != nil {
-		return "", err
-	}
-	encodedPayload := base64.RawURLEncoding.EncodeToString(payload)
-	signature := signToken(secret, encodedPayload)
-	return encodedPayload + "." + signature, nil
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub":   claims.Sub,
+		"email": claims.Email,
+		"role":  claims.Role,
+		"jti":   claims.JTI,
+		"ver":   claims.SessionVersion,
+		"iat":   claims.Iat,
+		"exp":   claims.Exp,
+	})
+	return token.SignedString([]byte(secret))
 }
 
 func parseToken(secret, token string) (tokenClaims, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 2 {
+	parser := jwt.NewParser(
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithExpirationRequired(),
+		jwt.WithIssuedAt(),
+		jwt.WithLeeway(30*time.Second),
+	)
+	parsed, err := parser.Parse(token, func(parsedToken *jwt.Token) (any, error) {
+		return []byte(secret), nil
+	})
+	if err != nil || !parsed.Valid {
 		return tokenClaims{}, errors.New("invalid token")
 	}
-	expected := signToken(secret, parts[0])
-	if !hmac.Equal([]byte(parts[1]), []byte(expected)) {
-		return tokenClaims{}, errors.New("invalid token signature")
+	values, ok := parsed.Claims.(jwt.MapClaims)
+	if !ok {
+		return tokenClaims{}, errors.New("invalid token claims")
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return tokenClaims{}, err
+	claims := tokenClaims{
+		Sub:            stringFromClaim(values["sub"]),
+		Email:          stringFromClaim(values["email"]),
+		Role:           stringFromClaim(values["role"]),
+		JTI:            stringFromClaim(values["jti"]),
+		SessionVersion: int64FromClaim(values["ver"]),
+		Iat:            int64FromClaim(values["iat"]),
+		Exp:            int64FromClaim(values["exp"]),
 	}
-	var claims tokenClaims
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return tokenClaims{}, err
+	if claims.Sub == "" || claims.JTI == "" || claims.Exp == 0 {
+		return tokenClaims{}, errors.New("invalid token claims")
 	}
-	if claims.Exp <= time.Now().Unix() {
+	if claims.Iat > time.Now().Add(30*time.Second).Unix() {
+		return tokenClaims{}, errors.New("token issued in the future")
+	}
+	if time.Unix(claims.Exp, 0).Sub(time.Unix(claims.Iat, 0)) > maxTokenTTL {
+		return tokenClaims{}, errors.New("token TTL exceeds maximum")
+	}
+	if claims.Exp <= time.Now().Add(-30*time.Second).Unix() {
 		return tokenClaims{}, errors.New("token expired")
 	}
 	return claims, nil
 }
 
-func signToken(secret, payload string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(payload))
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+func configuredTokenTTL(cfg Config) time.Duration {
+	ttl := cfg.TokenTTL
+	if ttl <= 0 {
+		return defaultTokenTTL
+	}
+	if ttl > maxTokenTTL {
+		return maxTokenTTL
+	}
+	return ttl
+}
+
+func tokenExpiry(cfg Config) time.Time {
+	return time.Now().Add(configuredTokenTTL(cfg))
+}
+
+func issueConfiguredToken(cfg Config, user store.User) (string, error) {
+	if strings.TrimSpace(cfg.AuthSecret) == "" {
+		return "", errors.New("auth secret is required")
+	}
+	token, err := issueTokenWithTTL(cfg.AuthSecret, user, configuredTokenTTL(cfg))
+	if err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 func stringFromClaim(v any) string {
@@ -305,7 +354,7 @@ func authMiddlewareWithStore(secret string, st authenticationStore, verifyOAuth 
 
 		user, scopes, keyErr := st.ValidateApiKey(ctx, rawToken, c.IP())
 		if keyErr == nil && user != nil {
-			c.Locals("user", claimsFromUser(*user, "", time.Now().Add(tokenTTL).Unix()))
+			c.Locals("user", claimsFromUser(*user, "", time.Now().Add(defaultTokenTTL).Unix()))
 			c.Locals("apiScopes", scopes)
 			c.Locals("scopedAuth", true)
 			c.Locals("authSource", authSourceAPIKey)
@@ -460,44 +509,30 @@ type confirmationClaims struct {
 }
 
 func issue2FAConfirmationToken(secret string, userID string) (string, error) {
-	claims := confirmationClaims{
-		Sub:  userID,
-		Type: "2fa_confirmation",
-		Exp:  time.Now().Add(5 * time.Minute).Unix(),
-	}
-	payload, err := json.Marshal(claims)
-	if err != nil {
-		return "", err
-	}
-	encodedPayload := base64.RawURLEncoding.EncodeToString(payload)
-	signature := signToken(secret, encodedPayload)
-	return encodedPayload + "." + signature, nil
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub":  userID,
+		"type": "2fa_confirmation",
+		"iat":  time.Now().Unix(),
+		"exp":  time.Now().Add(5 * time.Minute).Unix(),
+	})
+	return token.SignedString([]byte(secret))
 }
 
 func parse2FAConfirmationToken(secret string, token string) (string, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 2 {
+	parser := jwt.NewParser(jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired(), jwt.WithLeeway(30*time.Second))
+	parsed, err := parser.Parse(token, func(_ *jwt.Token) (any, error) { return []byte(secret), nil })
+	if err != nil || !parsed.Valid {
 		return "", errors.New("invalid confirmation token")
 	}
-	expected := signToken(secret, parts[0])
-	if !hmac.Equal([]byte(parts[1]), []byte(expected)) {
-		return "", errors.New("invalid confirmation token signature")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return "", err
-	}
-	var claims confirmationClaims
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", err
-	}
-	if claims.Type != "2fa_confirmation" {
+	values, ok := parsed.Claims.(jwt.MapClaims)
+	if !ok || stringFromClaim(values["type"]) != "2fa_confirmation" {
 		return "", errors.New("invalid token type")
 	}
-	if claims.Exp <= time.Now().Unix() {
-		return "", errors.New("confirmation token expired")
+	subject := stringFromClaim(values["sub"])
+	if subject == "" {
+		return "", errors.New("invalid confirmation token subject")
 	}
-	return claims.Sub, nil
+	return subject, nil
 }
 
 // Routes excluded from 2FA enforcement so users can set up 2FA
@@ -520,10 +555,25 @@ func userHasTwoFactor(user store.User) bool {
 	return user.UseTOTP
 }
 
+func userHasConfiguredTwoFactor(ctx context.Context, cfg Config, user store.User) bool {
+	if user.UseTOTP {
+		return true
+	}
+	if cfg.WebAuthnService == nil {
+		return false
+	}
+	credentials, err := cfg.WebAuthnService.ListCredentials(ctx, user.ID)
+	return err == nil && len(credentials) > 0
+}
+
 // 2FA enforcement middleware with configurable policy levels
 // Policy levels: "none" (no requirement), "admin" (require for admin users only), "all" (require for all users)
-func requireTwoFactorAuthentication(st *store.Store) fiber.Handler {
+func requireTwoFactorAuthentication(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		if source, _ := c.Locals("authSource").(string); source != authSourceCookieSession {
+			return c.Next()
+		}
+		st := cfg.Store
 		if st == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
@@ -561,7 +611,7 @@ func requireTwoFactorAuthentication(st *store.Store) fiber.Handler {
 		}
 
 		// Check if 2FA is enabled for the user
-		has2FA := userHasTwoFactor(user)
+		has2FA := userHasConfiguredTwoFactor(ctx, cfg, user)
 
 		// Apply policy logic
 		switch settings.Require2FA {

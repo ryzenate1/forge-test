@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -36,6 +38,9 @@ func (s *NomadScheduler) Name() string {
 }
 
 func (s *NomadScheduler) nomad(ctx context.Context, args ...string) (string, error) {
+	if err := validateNomadAddr(s.config.Addr); err != nil {
+		return "", err
+	}
 	env := []string{}
 	if s.config.Addr != "" {
 		env = append(env, fmt.Sprintf("NOMAD_ADDR=%s", s.config.Addr))
@@ -47,7 +52,7 @@ func (s *NomadScheduler) nomad(ctx context.Context, args ...string) (string, err
 		env = append(env, fmt.Sprintf("NOMAD_NAMESPACE=%s", s.config.Namespace))
 	}
 	cmd := exec.CommandContext(ctx, "nomad", args...)
-	cmd.Env = append(cmd.Env, env...)
+	cmd.Env = append(os.Environ(), env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -55,6 +60,23 @@ func (s *NomadScheduler) nomad(ctx context.Context, args ...string) (string, err
 		return "", fmt.Errorf("nomad %s: %w\nstderr: %s", strings.Join(args, " "), err, stderr.String())
 	}
 	return stdout.String(), nil
+}
+
+func validateNomadAddr(addr string) error {
+	u, err := url.Parse(strings.TrimSpace(addr))
+	if err != nil || u.Host == "" || u.User != nil {
+		return fmt.Errorf("invalid Nomad address")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("Nomad address must use HTTP or HTTPS")
+	}
+	host := u.Hostname()
+	ip := net.ParseIP(host)
+	isLoopback := strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback())
+	if u.Scheme != "https" && !isLoopback {
+		return fmt.Errorf("remote Nomad address must use HTTPS")
+	}
+	return nil
 }
 
 func (s *NomadScheduler) Deploy(ctx context.Context, req DeployRequest) (DeployResponse, error) {
@@ -281,18 +303,40 @@ func (s *NomadScheduler) buildJobSpec(name string, req DeployRequest) string {
 	portLabels := ""
 	for _, p := range req.Ports {
 		ports += fmt.Sprintf("    port %q { static = %d }\n", p.Name, p.Port)
-		portLabels += fmt.Sprintf("      \"%s\",\n", p.Name)
+		portLabels += fmt.Sprintf("      %q,\n", p.Name)
 	}
-	mounts := ""
+	volumes := ""
 	for _, m := range req.Mounts {
-		mounts += fmt.Sprintf("    template {\n      data = <<EOH\n%s\nEOH\n      destination = %q\n    }\n", "", m.Target)
+		mode := "rw"
+		if m.ReadOnly {
+			mode = "ro"
+		}
+		volumes += fmt.Sprintf("          %q,\n", m.Source+":"+m.Target+":"+mode)
+	}
+	volumeConfig := ""
+	if volumes != "" {
+		volumeConfig = "        volumes = [\n" + volumes + "        ]\n"
+	}
+	commandConfig := ""
+	if len(req.Command) > 0 {
+		commandConfig = fmt.Sprintf("        command = %q\n", req.Command[0])
+		if len(req.Command) > 1 {
+			commandConfig += "        args = ["
+			for i, arg := range req.Command[1:] {
+				if i > 0 {
+					commandConfig += ", "
+				}
+				commandConfig += fmt.Sprintf("%q", arg)
+			}
+			commandConfig += "]\n"
+		}
 	}
 
-	return fmt.Sprintf(`job "%s" {
-  datacenters = ["%s"]
+	return fmt.Sprintf(`job %q {
+  datacenters = [%q]
   type = "service"
 
-  group "%s" {
+  group %q {
     count = %d
 
     network {
@@ -300,12 +344,13 @@ func (s *NomadScheduler) buildJobSpec(name string, req DeployRequest) string {
 %s
     }
 
-    task "%s" {
+    task %q {
       driver = "docker"
 
       config {
-        image = "%s"
+        image = %q
         ports = [%s]
+%s%s
       }
 
       env {
@@ -316,11 +361,10 @@ func (s *NomadScheduler) buildJobSpec(name string, req DeployRequest) string {
         memory = %d
         cpu = %d
       }
-%s
     }
   }
 }
-`, name, s.config.Datacenter, name, replicas, ports, name, req.Image, portLabels, envVars, memMB, cpuMHz, mounts)
+`, name, s.config.Datacenter, name, replicas, ports, name, req.Image, portLabels, volumeConfig, commandConfig, envVars, memMB, cpuMHz)
 }
 
 func writeTempHCL(content string) (string, error) {

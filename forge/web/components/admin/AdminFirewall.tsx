@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Network, Plus, Shield, Trash2 } from "lucide-react";
 import {
@@ -24,7 +24,7 @@ import {
   updateFirewallRule,
 } from "@/lib/api/firewall";
 import { useToast } from "@/components/ui/toast";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, cn } from "./admin-ui";
+import { AdminFormSection, AdminSelect, AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, cn } from "./admin-ui";
 
 type FirewallTab = "rules" | "forwards";
 
@@ -32,7 +32,7 @@ export function AdminFirewall() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
-  const nodes = nodesQuery.data ?? [];
+  const nodes = useMemo(() => nodesQuery.data ?? [], [nodesQuery.data]);
   const [nodeId, setNodeId] = useState("");
   const activeNodeId = nodeId || (nodes.length > 0 ? nodes[0].id : "");
 
@@ -50,14 +50,14 @@ export function AdminFirewall() {
     queryFn: () => fetchFirewallRules(activeNodeId),
     enabled: !!activeNodeId,
   });
-  const rules = rulesQuery.data ?? [];
+  const rules = useMemo(() => rulesQuery.data ?? [], [rulesQuery.data]);
 
   const forwardsQuery = useQuery({
     queryKey: ["firewall-forwards", activeNodeId],
     queryFn: () => fetchPortForwards(activeNodeId),
     enabled: !!activeNodeId,
   });
-  const forwards = forwardsQuery.data ?? [];
+  const forwards = useMemo(() => forwardsQuery.data ?? [], [forwardsQuery.data]);
 
   const enableMut = useMutation({
     mutationFn: () => enableFirewall(activeNodeId),
@@ -92,19 +92,7 @@ export function AdminFirewall() {
       />
 
       <div className="flex flex-wrap items-center gap-4">
-        <label className="flex items-center gap-2 text-sm text-slate-300">
-          <span className="text-xs font-semibold uppercase tracking-widest text-slate-500">Node</span>
-          <select
-            className="h-9 rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100"
-            value={nodeId}
-            onChange={(e) => setNodeId(e.target.value)}
-          >
-            <option value="">Auto-select first node</option>
-            {nodes.map((n) => (
-              <option key={n.id} value={n.id}>{n.name}</option>
-            ))}
-          </select>
-        </label>
+        <AdminSelect label="Node" value={nodeId} onChange={setNodeId} placeholder="Auto-select first node" options={Array.isArray(nodes) ? nodes.map((n) => ({ value: n.id, label: n.name })) : []} />
         {statusLoading ? (
           <Pill tone="neutral">Loading status…</Pill>
         ) : statusError ? (
@@ -131,7 +119,7 @@ export function AdminFirewall() {
         ) : null}
         {selectedNode && (
           <a
-            className="flex items-center gap-1 text-xs text-sky-400 hover:underline ml-auto"
+            className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-200 underline ml-auto"
             href={`/admin/nodes`}
           >
             <ExternalLink size={12} />
@@ -140,27 +128,7 @@ export function AdminFirewall() {
         )}
       </div>
 
-      <div className="flex gap-1 border-b border-white/[0.06]">
-        {([
-          { id: "rules" as const, label: "Firewall Rules" },
-          { id: "forwards" as const, label: "Port Forwards" },
-        ]).map((t) => (
-          <button
-            key={t.id}
-            aria-current={tab === t.id ? "page" : undefined}
-            className={cn(
-              "flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition border-b-2 -mb-px",
-              tab === t.id
-                ? "border-[#dc2626] text-[#dc2626]"
-                : "border-transparent text-slate-400 hover:text-slate-200",
-            )}
-            onClick={() => setTab(t.id)}
-            type="button"
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <AdminTabs tabs={[{ id: "rules", label: "Firewall Rules" }, { id: "forwards", label: "Port Forwards" }]} active={tab} onChange={(id) => setTab(id as FirewallTab)} />
 
       {tab === "rules" && (
         <div className="space-y-4">
@@ -182,7 +150,7 @@ export function AdminFirewall() {
                   Could not load rules: {rulesQuery.error instanceof Error ? rulesQuery.error.message : "Unknown error"}
                 </div>
               </div>
-            ) : rules.length === 0 ? (
+            ) : !Array.isArray(rules) || rules.length === 0 ? (
               <EmptyState icon={Shield} message="No firewall rules." />
             ) : (
               <div className="overflow-x-auto">
@@ -198,7 +166,7 @@ export function AdminFirewall() {
                     </tr>
                   </thead>
                   <tbody>
-                    {rules.map((rule) => (
+                    {Array.isArray(rules) && rules.map((rule) => (
                       <RuleRow
                         key={rule.id}
                         rule={rule}
@@ -234,7 +202,7 @@ export function AdminFirewall() {
                   Could not load forwards: {forwardsQuery.error instanceof Error ? forwardsQuery.error.message : "Unknown error"}
                 </div>
               </div>
-            ) : forwards.length === 0 ? (
+            ) : !Array.isArray(forwards) || forwards.length === 0 ? (
               <EmptyState icon={Network} message="No port forwards." />
             ) : (
               <div className="overflow-x-auto">
@@ -250,7 +218,7 @@ export function AdminFirewall() {
                     </tr>
                   </thead>
                   <tbody>
-                    {forwards.map((pf) => (
+                    {Array.isArray(forwards) && forwards.map((pf) => (
                       <ForwardRow key={pf.id} forward={pf} nodeId={activeNodeId} />
                     ))}
                   </tbody>
@@ -374,23 +342,19 @@ function AddRuleModal({ nodeId, onClose }: { nodeId: string; onClose: () => void
   return (
     <Modal title="Add Firewall Rule" onClose={onClose}>
       <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); addMut.mutate(); }}>
-        <Input label="Port" value={port} onChange={setPort} type="number" placeholder="e.g. 80" />
-        <label className="block text-sm font-medium text-slate-300">
-          <span className="mb-1.5 block">Protocol</span>
-          <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100" value={protocol} onChange={(e) => setProtocol(e.target.value)}>
-            <option value="tcp">TCP</option>
-            <option value="udp">UDP</option>
-          </select>
-        </label>
-        <Input label="Source IP" value={source} onChange={setSource} placeholder="e.g. 0.0.0.0/0" />
-        <label className="block text-sm font-medium text-slate-300">
-          <span className="mb-1.5 block">Action</span>
-          <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100" value={action} onChange={(e) => setAction(e.target.value)}>
-            <option value="allow">ALLOW</option>
-            <option value="deny">DENY</option>
-          </select>
-        </label>
-        <Input label="Description" value={description} onChange={setDescription} placeholder="Optional description" />
+        <AdminFormSection title="Rule Details">
+          <Input label="Port" value={port} onChange={setPort} type="number" placeholder="e.g. 80" />
+          <AdminSelect label="Protocol" value={protocol} onChange={setProtocol} options={[
+            { value: "tcp", label: "TCP" },
+            { value: "udp", label: "UDP" },
+          ]} />
+          <Input label="Source IP" value={source} onChange={setSource} placeholder="e.g. 0.0.0.0/0" />
+          <AdminSelect label="Action" value={action} onChange={setAction} options={[
+            { value: "allow", label: "ALLOW" },
+            { value: "deny", label: "DENY" },
+          ]} />
+          <Input label="Description" value={description} onChange={setDescription} placeholder="Optional description" />
+        </AdminFormSection>
         {addMut.error && <p className="text-sm text-red-300">{addMut.error instanceof Error ? addMut.error.message : "Failed to add rule."}</p>}
         <ModalFooter onCancel={onClose} onConfirm={() => addMut.mutate()} confirmLabel={addMut.isPending ? "Adding…" : "Add Rule"} disabled={addMut.isPending} />
       </form>
@@ -425,23 +389,19 @@ function EditRuleModal({ rule, nodeId, onClose }: { rule: FirewallRule; nodeId: 
   return (
     <Modal title="Edit Firewall Rule" onClose={onClose}>
       <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); updateMut.mutate(); }}>
-        <Input label="Port" value={port} onChange={setPort} type="number" placeholder="e.g. 80" />
-        <label className="block text-sm font-medium text-slate-300">
-          <span className="mb-1.5 block">Protocol</span>
-          <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100" value={protocol} onChange={(e) => setProtocol(e.target.value)}>
-            <option value="tcp">TCP</option>
-            <option value="udp">UDP</option>
-          </select>
-        </label>
-        <Input label="Source IP" value={source} onChange={setSource} placeholder="e.g. 0.0.0.0/0" />
-        <label className="block text-sm font-medium text-slate-300">
-          <span className="mb-1.5 block">Action</span>
-          <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100" value={action} onChange={(e) => setAction(e.target.value)}>
-            <option value="allow">ALLOW</option>
-            <option value="deny">DENY</option>
-          </select>
-        </label>
-        <Input label="Description" value={description} onChange={setDescription} placeholder="Optional description" />
+        <AdminFormSection title="Rule Details">
+          <Input label="Port" value={port} onChange={setPort} type="number" placeholder="e.g. 80" />
+          <AdminSelect label="Protocol" value={protocol} onChange={setProtocol} options={[
+            { value: "tcp", label: "TCP" },
+            { value: "udp", label: "UDP" },
+          ]} />
+          <Input label="Source IP" value={source} onChange={setSource} placeholder="e.g. 0.0.0.0/0" />
+          <AdminSelect label="Action" value={action} onChange={setAction} options={[
+            { value: "allow", label: "ALLOW" },
+            { value: "deny", label: "DENY" },
+          ]} />
+          <Input label="Description" value={description} onChange={setDescription} placeholder="Optional description" />
+        </AdminFormSection>
         {updateMut.error && <p className="text-sm text-red-300">{updateMut.error instanceof Error ? updateMut.error.message : "Failed to update rule."}</p>}
         <ModalFooter onCancel={onClose} onConfirm={() => updateMut.mutate()} confirmLabel={updateMut.isPending ? "Saving…" : "Save Changes"} disabled={updateMut.isPending} />
       </form>
@@ -478,17 +438,16 @@ function AddForwardModal({ nodeId, onClose }: { nodeId: string; onClose: () => v
   return (
     <Modal title="Add Port Forward" onClose={onClose}>
       <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); if (!validationError) addMut.mutate(); }}>
-        <Input label="From Port" value={fromPort} onChange={setFromPort} type="number" required />
-        <Input label="To Port" value={toPort} onChange={setToPort} type="number" required />
-        <Input label="To IP" value={toIp} onChange={setToIp} placeholder="e.g. 10.0.0.5" required />
-        <label className="block text-sm font-medium text-slate-300">
-          <span className="mb-1.5 block">Protocol</span>
-          <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100" value={protocol} onChange={(e) => setProtocol(e.target.value)}>
-            <option value="tcp">TCP</option>
-            <option value="udp">UDP</option>
-          </select>
-        </label>
-        <Input label="Description" value={description} onChange={setDescription} placeholder="Optional description" />
+        <AdminFormSection title="Forward Details">
+          <Input label="From Port" value={fromPort} onChange={setFromPort} type="number" required />
+          <Input label="To Port" value={toPort} onChange={setToPort} type="number" required />
+          <Input label="To IP" value={toIp} onChange={setToIp} placeholder="e.g. 10.0.0.5" required />
+          <AdminSelect label="Protocol" value={protocol} onChange={setProtocol} options={[
+            { value: "tcp", label: "TCP" },
+            { value: "udp", label: "UDP" },
+          ]} />
+          <Input label="Description" value={description} onChange={setDescription} placeholder="Optional description" />
+        </AdminFormSection>
         {validationError && <p className="text-sm text-amber-300">{validationError}</p>}
         {addMut.error && <p className="text-sm text-red-300">{addMut.error instanceof Error ? addMut.error.message : "Failed to add forward."}</p>}
         <ModalFooter onCancel={onClose} onConfirm={() => { if (!validationError) addMut.mutate(); }} confirmLabel={addMut.isPending ? "Adding…" : "Add Forward"} disabled={Boolean(validationError) || addMut.isPending} />

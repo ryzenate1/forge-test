@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -155,12 +156,16 @@ func (d *DeployService) cloneWithOptions(ctx context.Context, repoURL, branch, c
 
 	args := []string{"clone", "--depth", "1", "--single-branch", "--branch", branch, "--no-tags", "--config", "core.symlinks=false"}
 
-	args = append(args, repoURL, safeDir)
+	args = append(args, "--", repoURL, safeDir)
 
 	cmd := exec.CommandContext(cloneCtx, "git", args...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	if sshKeyFile != "" {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("GIT_SSH_COMMAND=ssh -i %q -o StrictHostKeyChecking=accept-new", sshKeyFile))
+		knownHosts := strings.TrimSpace(os.Getenv("GIT_SSH_KNOWN_HOSTS"))
+		if knownHosts == "" {
+			return nil, errors.New("GIT_SSH_KNOWN_HOSTS is required for SSH repository cloning")
+		}
+		cmd.Env = append(cmd.Env, fmt.Sprintf("GIT_SSH_COMMAND=ssh -i %q -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=%q", sshKeyFile, knownHosts))
 	}
 	if askPassFile != "" {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("GIT_ASKPASS=%s", askPassFile))
@@ -262,8 +267,14 @@ func validateSSHRepoURL(repoURL string) error {
 	if !strings.HasPrefix(repoURL, "git@") {
 		return ValidateRepoURL(repoURL)
 	}
-	if strings.Contains(repoURL, ";") || strings.Contains(repoURL, "`") || strings.Contains(repoURL, "..") {
+	hostAndPath := strings.TrimPrefix(repoURL, "git@")
+	host, repositoryPath, ok := strings.Cut(hostAndPath, ":")
+	if !ok || repositoryPath == "" || strings.ContainsAny(repoURL, ";`$&| \t\r\n") || strings.Contains(repositoryPath, "..") {
 		return ErrInvalidRepoURL
+	}
+	host = strings.ToLower(host)
+	if !allowedGitHosts[host] {
+		return fmt.Errorf("%w: host %q is not in the allow-list", ErrHostNotAllowed, host)
 	}
 	return nil
 }
@@ -286,7 +297,11 @@ func (d *DeployService) DeployFromGit(ctx context.Context, req DeployFromGitRequ
 		return nil, fmt.Errorf("get git source: %w", err)
 	}
 
-	cloneResult, err := d.CloneRepo(ctx, gs.RepositoryURL, gs.Branch, gs.ID, "")
+	credentialID := ""
+	if gs.CredentialID != nil {
+		credentialID = *gs.CredentialID
+	}
+	cloneResult, err := d.CloneRepo(ctx, gs.RepositoryURL, gs.Branch, gs.ID, credentialID)
 	if err != nil {
 		return nil, fmt.Errorf("clone repo: %w", err)
 	}
@@ -304,6 +319,13 @@ func (d *DeployService) DeployFromGit(ctx context.Context, req DeployFromGitRequ
 	dockerfilePath := req.DockerfilePath
 	if dockerfilePath == "" {
 		dockerfilePath = filepath.Join(cloneResult.Dir, "Dockerfile")
+	} else if !filepath.IsAbs(dockerfilePath) {
+		dockerfilePath = filepath.Join(cloneResult.Dir, dockerfilePath)
+	}
+	dockerfilePath = filepath.Clean(dockerfilePath)
+	relativeDockerfile, err := filepath.Rel(cloneResult.Dir, dockerfilePath)
+	if err != nil || relativeDockerfile == ".." || strings.HasPrefix(relativeDockerfile, ".."+string(filepath.Separator)) {
+		return nil, errors.New("dockerfile path escapes the cloned repository")
 	}
 
 	if err := dockerBuild(ctx, cloneResult.Dir, dockerfilePath, imageTag, req.BuildArgs); err != nil {
@@ -326,9 +348,12 @@ func (d *DeployService) DeployFromGit(ctx context.Context, req DeployFromGitRequ
 func dockerBuild(ctx context.Context, contextDir, dockerfilePath, imageTag string, buildArgs map[string]string) error {
 	args := []string{"build", "-t", imageTag, "-f", dockerfilePath}
 	for k, v := range buildArgs {
+		if k == "" || strings.ContainsAny(k, " \t\r\n=") || strings.HasPrefix(k, "-") || len(k) > 128 || len(v) > 32*1024 || strings.ContainsRune(v, '\x00') {
+			return fmt.Errorf("invalid docker build argument %q", k)
+		}
 		args = append(args, "--build-arg", fmt.Sprintf("%s=%s", k, v))
 	}
-	args = append(args, contextDir)
+	args = append(args, "--", contextDir)
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	out, err := cmd.CombinedOutput()
@@ -390,7 +415,9 @@ func validateBranch(branch string) bool {
 	if branch == "" {
 		return false
 	}
-	if strings.Contains(branch, "..") || strings.Contains(branch, "/.") || strings.Contains(branch, " ") {
+	if strings.HasPrefix(branch, "-") || strings.HasSuffix(branch, ".") || strings.HasSuffix(branch, "/") ||
+		strings.HasSuffix(branch, ".lock") || strings.Contains(branch, "..") || strings.Contains(branch, "//") ||
+		strings.Contains(branch, "/.") || strings.Contains(branch, "@{") || strings.ContainsAny(branch, " \t\r\n~^:?*[") {
 		return false
 	}
 	for _, c := range branch {
@@ -399,6 +426,10 @@ func validateBranch(branch string) bool {
 		}
 	}
 	return true
+}
+
+func ValidateBranch(branch string) bool {
+	return validateBranch(branch)
 }
 
 func ValidateRepoURL(repoURL string) error {

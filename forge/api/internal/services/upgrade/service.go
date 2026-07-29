@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -148,56 +149,52 @@ func (s *Service) CheckForUpgrades(ctx context.Context) ([]VersionInfo, error) {
 
 // GetCurrentVersion returns the current version of a component
 func (s *Service) GetCurrentVersion(component string) (string, error) {
-	// Try to read from version file first
-	if _, err := os.Stat(s.versionFile); err == nil {
-		content, err := os.ReadFile(s.versionFile)
-		if err == nil {
-			return strings.TrimSpace(string(content)), nil
-		}
-	}
-
-	// Fall back to component-specific version detection
-	switch component {
-	case "api":
-		return s.getAPIVersion()
-	case "web":
-		return s.getWebVersion()
-	case "beacon":
-		return s.getBeaconVersion()
-	case "database":
-		return s.getDatabaseVersion()
-	default:
+	component = strings.ToLower(strings.TrimSpace(component))
+	if !validComponent(component) {
 		return "", fmt.Errorf("unknown component: %s", component)
 	}
+	if value := strings.TrimSpace(os.Getenv(strings.ToUpper(component) + "_VERSION")); value != "" {
+		return value, nil
+	}
+	versionPath := filepath.Join(filepath.Dir(s.versionFile), component+".version")
+	if component == "api" {
+		versionPath = s.versionFile
+	}
+	return readVersionFile(versionPath)
 }
 
 // GetLatestVersion returns the latest available version of a component
 func (s *Service) GetLatestVersion(component string) (string, error) {
-	// This would typically check a remote repository or API
-	// For now, return a mock version
-	return "2.0.0", nil
+	component = strings.ToLower(strings.TrimSpace(component))
+	if !validComponent(component) {
+		return "", fmt.Errorf("unknown component: %s", component)
+	}
+	envName := strings.ToUpper(component) + "_LATEST_VERSION"
+	if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
+		return value, nil
+	}
+	return readVersionFile(filepath.Join(filepath.Dir(s.versionFile), component+".latest.version"))
 }
 
-// getAPIVersion returns the current API version
-func (s *Service) getAPIVersion() (string, error) {
-	// Check if the API is running and get its version
-	// This is a placeholder implementation
-	return "1.0.0", nil
+func validComponent(component string) bool {
+	switch component {
+	case "api", "web", "beacon", "database":
+		return true
+	default:
+		return false
+	}
 }
 
-// getWebVersion returns the current Web version
-func (s *Service) getWebVersion() (string, error) {
-	return "1.0.0", nil
-}
-
-// getBeaconVersion returns the current Beacon version
-func (s *Service) getBeaconVersion() (string, error) {
-	return "1.0.0", nil
-}
-
-// getDatabaseVersion returns the current Database version
-func (s *Service) getDatabaseVersion() (string, error) {
-	return "1.0.0", nil
+func readVersionFile(path string) (string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read version file %s: %w", path, err)
+	}
+	version := strings.TrimSpace(string(content))
+	if version == "" || len(version) > 128 || strings.ContainsAny(version, "\r\n\x00") {
+		return "", fmt.Errorf("version file %s contains an invalid version", path)
+	}
+	return version, nil
 }
 
 // CreateUpgradePlan creates a new upgrade plan
@@ -463,7 +460,12 @@ func (s *Service) backupDatabase(ctx context.Context, backupPath string) error {
 		return fmt.Errorf("DATABASE_URL is required for upgrade backup")
 	}
 	backupFile := filepath.Join(backupPath, "database.dump")
-	command := exec.CommandContext(ctx, "pg_dump", "--format=custom", "--no-owner", "--no-acl", "--file", backupFile, databaseURL)
+	pgEnv, databaseName, err := postgresCommandEnvironment(databaseURL)
+	if err != nil {
+		return err
+	}
+	command := exec.CommandContext(ctx, "pg_dump", "--format=custom", "--no-owner", "--no-acl", "--file", backupFile, databaseName)
+	command.Env = append(os.Environ(), pgEnv...)
 	if output, err := command.CombinedOutput(); err != nil {
 		_ = os.Remove(backupFile)
 		return fmt.Errorf("pg_dump failed: %w: %s", err, strings.TrimSpace(string(output)))
@@ -520,11 +522,42 @@ func (s *Service) restoreFromBackup(ctx context.Context, plan *UpgradePlan) erro
 	if info, err := os.Stat(backupFile); err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 		return fmt.Errorf("valid database backup is required for rollback")
 	}
-	command := exec.CommandContext(ctx, "pg_restore", "--clean", "--if-exists", "--no-owner", "--no-acl", "--dbname", databaseURL, backupFile)
+	pgEnv, databaseName, err := postgresCommandEnvironment(databaseURL)
+	if err != nil {
+		return err
+	}
+	command := exec.CommandContext(ctx, "pg_restore", "--clean", "--if-exists", "--no-owner", "--no-acl", "--dbname", databaseName, backupFile)
+	command.Env = append(os.Environ(), pgEnv...)
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("pg_restore failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func postgresCommandEnvironment(databaseURL string) ([]string, string, error) {
+	parsed, err := url.Parse(databaseURL)
+	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") || parsed.Hostname() == "" {
+		return nil, "", fmt.Errorf("DATABASE_URL is not a valid PostgreSQL URL")
+	}
+	databaseName := strings.TrimPrefix(parsed.EscapedPath(), "/")
+	decodedName, err := url.PathUnescape(databaseName)
+	if err != nil || decodedName == "" {
+		return nil, "", fmt.Errorf("DATABASE_URL must include a database name")
+	}
+	env := []string{"PGHOST=" + parsed.Hostname(), "PGDATABASE=" + decodedName}
+	if port := parsed.Port(); port != "" {
+		env = append(env, "PGPORT="+port)
+	}
+	if parsed.User != nil {
+		env = append(env, "PGUSER="+parsed.User.Username())
+		if password, ok := parsed.User.Password(); ok {
+			env = append(env, "PGPASSWORD="+password)
+		}
+	}
+	if sslMode := parsed.Query().Get("sslmode"); sslMode != "" {
+		env = append(env, "PGSSLMODE="+sslMode)
+	}
+	return env, decodedName, nil
 }
 
 // GetUpgradeStatus returns the current status of an upgrade

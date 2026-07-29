@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -169,7 +170,9 @@ func (s *Store) GetAlert(ctx context.Context, id string) (Alert, error) {
 		a.ResolvedAt = &resolvedAt.Time
 	}
 	if len(detailsBytes) > 0 {
-		json.Unmarshal(detailsBytes, &a.Details)
+		if err := json.Unmarshal(detailsBytes, &a.Details); err != nil {
+			return Alert{}, fmt.Errorf("corrupt alert details: %w", err)
+		}
 	}
 	if a.Details == nil {
 		a.Details = map[string]any{}
@@ -280,7 +283,9 @@ func (s *Store) ListAlerts(ctx context.Context, filter AlertFilter) ([]Alert, er
 			a.ResolvedAt = &resolvedAt.Time
 		}
 		if len(detailsBytes) > 0 {
-			json.Unmarshal(detailsBytes, &a.Details)
+			if err := json.Unmarshal(detailsBytes, &a.Details); err != nil {
+				return nil, fmt.Errorf("corrupt alert details: %w", err)
+			}
 		}
 		if a.Details == nil {
 			a.Details = map[string]any{}

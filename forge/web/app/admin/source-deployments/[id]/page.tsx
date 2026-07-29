@@ -5,29 +5,10 @@ import { useParams, useRouter } from "next/navigation";
 import { useToast } from "@/components/ui/toast";
 import { getSourceDeployment, deploySourceDeployment, cancelSourceDeployment, deleteSourceDeployment, getDeploymentBuildLogs, type SourceDeployment, type BuildLog } from "@/lib/api/source-deployments";
 import { Play, XCircle, Trash2, GitBranch, ArrowLeft, RefreshCw, Loader2 } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useMemo } from "react";
+import { AdminPageHeader, AdminPageLayout, Btn, Card, CardHeader, Pill, cn } from "@/components/admin/admin-ui";
 
-const statusColors: Record<string, string> = {
-  pending: "text-yellow-400",
-  queued: "text-blue-400",
-  cloning: "text-blue-400",
-  building: "text-purple-400",
-  pushing: "text-purple-400",
-  deploying: "text-indigo-400",
-  healthy: "text-green-400",
-  completed: "text-green-400",
-  failed: "text-red-400",
-  canceled: "text-gray-400",
-  unhealthy: "text-orange-400",
-};
 
-function StatusBadge({ status }: { status: string }) {
-  return (
-    <span className={`text-xs px-2 py-1 rounded-full capitalize ${statusColors[status] || ''} bg-current/10`}>
-      {status}
-    </span>
-  );
-}
 
 export default function SourceDeploymentDetailPage() {
   const params = useParams();
@@ -61,6 +42,8 @@ export default function SourceDeploymentDetailPage() {
     },
   });
 
+  const safeLogs = useMemo(() => Array.isArray(logs) ? logs : [], [logs]);
+
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
@@ -93,134 +76,120 @@ export default function SourceDeploymentDetailPage() {
   });
 
   if (isLoading) {
-    return <div className="p-6 text-center opacity-50">Loading deployment...</div>;
+    return <AdminPageLayout><div className="p-6 text-center text-slate-400">Loading deployment...</div></AdminPageLayout>;
   }
 
   if (!deployment) {
     return (
-      <div className="p-6 text-center">
-        <p className="opacity-60">Deployment not found.</p>
-        <button onClick={() => router.push("/admin/source-deployments")} className="inline-flex items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-4 py-2 text-sm font-semibold text-slate-400 shadow-none transition-colors hover:bg-white/[0.06] hover:text-white disabled:pointer-events-none disabled:opacity-50 mt-4">
-          <ArrowLeft className="w-4 h-4 mr-2" /> Back
-        </button>
-      </div>
+      <AdminPageLayout>
+        <div className="p-6 text-center">
+          <p className="opacity-60">Deployment not found.</p>
+          <Btn tone="ghost" onClick={() => router.push("/admin/source-deployments")}>
+            <ArrowLeft className="w-4 h-4 mr-2" /> Back
+          </Btn>
+        </div>
+      </AdminPageLayout>
     );
   }
 
   const isActive = !["completed", "failed", "canceled", "healthy", "unhealthy"].includes(deployment.status);
 
+  const toneMap: Record<string, "green" | "red" | "neutral" | "yellow"> = {
+    healthy: "green", completed: "green", failed: "red", canceled: "neutral",
+    pending: "yellow",
+  };
+
+  const logStageColor = (stage: string) => {
+    if (stage === "error") return "text-red-400";
+    if (stage === "warning") return "text-amber-400";
+    if (stage === "success") return "text-emerald-400";
+    return "text-slate-400";
+  };
+
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <button
-        onClick={() => router.push("/admin/source-deployments")}
-        className="inline-flex items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-4 py-2 text-sm font-semibold text-slate-400 shadow-none transition-colors hover:bg-white/[0.06] hover:text-white disabled:pointer-events-none disabled:opacity-50 mb-4"
-      >
-        <ArrowLeft className="w-4 h-4 mr-2" /> Back to Deployments
-      </button>
-
-      <div className="rounded-xl border border-white/[0.08] bg-[#111722] p-6 mb-6 shadow-xl shadow-black/10">
-        <div className="flex items-start justify-between mb-4">
-          <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2">
-              <GitBranch className="w-5 h-5" />
-              {deployment.repository.split('/').pop()?.replace('.git', '')}
-            </h1>
-            <div className="flex items-center gap-2 mt-1 text-sm opacity-70">
-              <span>{deployment.repository}</span>
-              <span className="opacity-40">|</span>
-              <span>{deployment.branch}</span>
-              <StatusBadge status={deployment.status} />
-            </div>
-          </div>
+    <AdminPageLayout className="max-w-4xl">
+      <AdminPageHeader
+        title={deployment.repository.split('/').pop()?.replace('.git', '') ?? "Deployment"}
+        description={`${deployment.repository} | ${deployment.branch}`}
+        backAction={() => router.push("/admin/source-deployments")}
+        backLabel="Source Deployments"
+        action={
           <div className="flex items-center gap-2">
-            <button onClick={() => refetch()} className="inline-flex items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-3 py-1.5 text-sm font-semibold text-slate-400 shadow-none transition-colors hover:bg-white/[0.06] hover:text-white disabled:pointer-events-none disabled:opacity-50" title="Refresh">
-              <RefreshCw className="w-4 h-4" />
-            </button>
+            <Btn size="sm" tone="ghost" onClick={() => refetch()} ariaLabel="Refresh"><RefreshCw className="w-4 h-4" /></Btn>
+            <Pill tone={toneMap[deployment.status] ?? "neutral"}>{deployment.status}</Pill>
             {isActive && (
-              <button
-                onClick={() => cancelMutation.mutate()}
-                className="inline-flex items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-3 py-1.5 text-sm font-semibold text-slate-400 shadow-none transition-colors hover:bg-white/[0.06] hover:text-white disabled:pointer-events-none disabled:opacity-50"
-                disabled={cancelMutation.isPending}
-              >
-                <XCircle className="w-4 h-4 mr-1" /> Cancel
-              </button>
+              <Btn size="sm" tone="ghost" onClick={() => cancelMutation.mutate()} disabled={cancelMutation.isPending}>
+                <XCircle className="w-4 h-4" /> Cancel
+              </Btn>
             )}
-            <button
-              onClick={() => deployMutation.mutate()}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border border-red-500/70 bg-red-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm shadow-red-950/40 transition-colors hover:bg-red-500 disabled:pointer-events-none disabled:opacity-50"
-              disabled={deployMutation.isPending}
-            >
-              <Play className="w-4 h-4 mr-1" /> Deploy
-            </button>
-            <button
-              onClick={() => deleteMutation.mutate()}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-3 py-1.5 text-sm font-semibold text-red-400 shadow-none transition-colors hover:bg-white/[0.06] hover:text-white disabled:pointer-events-none disabled:opacity-50"
-              disabled={deleteMutation.isPending}
-            >
+            <Btn size="sm" tone="primary" onClick={() => deployMutation.mutate()} disabled={deployMutation.isPending}>
+              <Play className="w-4 h-4" /> Deploy
+            </Btn>
+            <Btn size="sm" tone="danger" onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending}>
               <Trash2 className="w-4 h-4" />
-            </button>
+            </Btn>
           </div>
-        </div>
+        }
+      />
 
-        <div className="grid grid-cols-2 gap-4 text-sm">
+      <Card>
+        <CardHeader title="Details" icon={GitBranch} />
+        <div className="grid grid-cols-2 gap-4 p-4 text-sm">
           <div>
-            <span className="opacity-50">Build Type:</span>{" "}
-            <span className="capitalize">{deployment.buildType}</span>
+            <span className="text-slate-400">Build Type:</span>{" "}
+            <span className="capitalize text-slate-200">{deployment.buildType}</span>
           </div>
           <div>
-            <span className="opacity-50">Build Context:</span>{" "}
-            <span>{deployment.buildContext}</span>
+            <span className="text-slate-400">Build Context:</span>{" "}
+            <span className="text-slate-200">{deployment.buildContext}</span>
           </div>
           {deployment.dockerfilePath && (
             <div>
-              <span className="opacity-50">Dockerfile Path:</span>{" "}
-              <span>{deployment.dockerfilePath}</span>
+              <span className="text-slate-400">Dockerfile Path:</span>{" "}
+              <span className="text-slate-200">{deployment.dockerfilePath}</span>
             </div>
           )}
           <div>
-            <span className="opacity-50">Auto Deploy:</span>{" "}
-            <span>{deployment.autoDeploy ? "Enabled" : "Disabled"}</span>
+            <span className="text-slate-400">Auto Deploy:</span>{" "}
+            <span className="text-slate-200">{deployment.autoDeploy ? "Enabled" : "Disabled"}</span>
           </div>
           {deployment.commitHash && (
             <div className="col-span-2">
-              <span className="opacity-50">Commit:</span>{" "}
-              <code className="text-xs bg-black/20 px-1 py-0.5 rounded">{deployment.commitHash.substring(0, 8)}</code>
-              {deployment.commitMessage && <span className="ml-2">{deployment.commitMessage}</span>}
+              <span className="text-slate-400">Commit:</span>{" "}
+              <code className="text-xs bg-black/20 px-1 py-0.5 rounded text-slate-200">{deployment.commitHash.substring(0, 8)}</code>
+              {deployment.commitMessage && <span className="ml-2 text-slate-200">{deployment.commitMessage}</span>}
             </div>
           )}
           {deployment.imageTag && (
             <div className="col-span-2">
-              <span className="opacity-50">Image:</span>{" "}
-              <code className="text-xs bg-black/20 px-1 py-0.5 rounded">{deployment.imageTag}</code>
+              <span className="text-slate-400">Image:</span>{" "}
+              <code className="text-xs bg-black/20 px-1 py-0.5 rounded text-slate-200">{deployment.imageTag}</code>
             </div>
           )}
         </div>
-      </div>
+      </Card>
 
-      <div className="rounded-xl border border-white/[0.08] bg-[#111722] shadow-xl shadow-black/10">
-        <div className="p-4 border-b border-white/10 flex items-center justify-between">
-          <h2 className="font-semibold">Build Logs</h2>
-          {isActive && <Loader2 className="w-4 h-4 animate-spin text-blue-400" />}
-        </div>
+      <Card>
+        <CardHeader title="Build Logs" icon={Loader2} />
         <div className="p-4 max-h-96 overflow-y-auto font-mono text-xs">
-          {logs && logs.length > 0 ? (
+          {safeLogs.length > 0 ? (
             <>
-              {logs.map((log: BuildLog) => (
+              {safeLogs.map((log: BuildLog) => (
                 <div key={log.id} className="py-1 flex gap-2">
-                  <span className="text-blue-400 shrink-0">[{log.stage}]</span>
+                  <span className={cn(logStageColor(log.stage), "shrink-0")}>[{log.stage}]</span>
                   <span className="opacity-70 shrink-0">{new Date(log.createdAt).toLocaleTimeString()}</span>
-                  <span>{log.message}</span>
+                  <span className="text-slate-300">{log.message}</span>
                 </div>
               ))}
               <div ref={logsEndRef} />
             </>
           ) : (
-            <div className="text-center py-8 opacity-40">
+            <div className="text-center py-8 text-slate-400">
               {isActive ? "Waiting for build logs..." : "No build logs available."}
             </div>
           )}
         </div>
-      </div>
-    </div>
+      </Card>
+    </AdminPageLayout>
   );
 }

@@ -11,12 +11,12 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-func registerAlertRoutes(protected fiber.Router, alertService *alerting.Service, observability *observabilitysvc.Service) {
+func registerAlertRoutes(protected fiber.Router, alertService *alerting.Service, observability *observabilitysvc.Service, mutationLimiter fiber.Handler) {
 	alerts := protected.Group("/alerts")
 	alerts.Get("/", requireRole("admin"), handleListAlerts(alertService))
 	alerts.Get("/:id", requireRole("admin"), handleGetAlert(alertService))
-	alerts.Post("/:id/acknowledge", requireRole("admin"), handleAcknowledgeAlert(alertService))
-	alerts.Post("/:id/resolve", requireRole("admin"), handleResolveAlert(alertService))
+	alerts.Post("/:id/acknowledge", mutationLimiter, requireRole("admin"), handleAcknowledgeAlert(alertService))
+	alerts.Post("/:id/resolve", mutationLimiter, requireRole("admin"), handleResolveAlert(alertService))
 
 	protected.Get("/monitoring/summary", requireRole("admin"), handleMonitoringSummary(observability))
 	protected.Get("/monitoring/nodes/metrics", requireRole("admin"), handleNodeMetrics(observability))
@@ -108,14 +108,14 @@ func handleNodeMetrics(svc *observabilitysvc.Service) fiber.Handler {
 			if err != nil {
 				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 			}
-			return c.JSON(fiber.Map{"metrics": metrics})
+			return c.JSON(fiber.Map{"data": metrics})
 		}
 
 		all, err := svc.ListAllNodeMetricsLatest(ctx)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
-		return c.JSON(fiber.Map{"metrics": all})
+		return c.JSON(fiber.Map{"data": all})
 	}
 }
 

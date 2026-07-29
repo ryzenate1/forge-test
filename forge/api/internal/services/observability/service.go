@@ -2,6 +2,8 @@ package observability
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -20,6 +22,98 @@ func New(store *store.Store) *Service {
 
 func (s *Service) StartMetricsCollection(ctx context.Context, interval time.Duration) {
 	s.metrics.StartCollection(ctx, interval)
+}
+
+func (s *Service) StartNodeMetricsCollection(ctx context.Context, interval time.Duration) {
+	if s == nil || s.store == nil {
+		return
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("node metrics collector panic", "panic", r)
+			}
+		}()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.collectNodeMetrics(ctx)
+			}
+		}
+	}()
+}
+
+func (s *Service) collectNodeMetrics(ctx context.Context) {
+	nodes, err := s.store.ListNodes(ctx)
+	if err != nil {
+		slog.Error("failed to list nodes for metrics collection", "error", err)
+		return
+	}
+	now := time.Now().UTC()
+	for _, node := range nodes {
+		req := store.CreateNodeMetricRequest{
+			NodeID:           node.ID,
+			ContainerRunning: 0,
+			ContainerTotal:   0,
+			ObservedAt:       now,
+		}
+		memTotal := int64(node.MemoryMB)
+		diskTotal := int64(node.DiskMB)
+		if node.NodeMemoryMB != nil && *node.NodeMemoryMB > 0 {
+			memTotal = int64(*node.NodeMemoryMB)
+		}
+		if node.NodeDiskMB != nil && *node.NodeDiskMB > 0 {
+			diskTotal = int64(*node.NodeDiskMB)
+		}
+		req.MemoryTotalMB = memTotal
+		req.DiskTotalMB = diskTotal
+		req.CPULoad1m = 0
+		req.CPULoad5m = 0
+		req.CPULoad15m = 0
+		req.NetworkRxBytes = 0
+		req.NetworkTxBytes = 0
+
+		cap, capErr := s.store.NodeCapacitySnapshot(ctx, node.ID)
+		if capErr == nil {
+			usedMem := memTotal - int64(cap.AvailableMemory)
+			if usedMem < 0 {
+				usedMem = 0
+			}
+			usedDisk := diskTotal - int64(cap.AvailableDisk)
+			if usedDisk < 0 {
+				usedDisk = 0
+			}
+			req.MemoryUsedMB = usedMem
+			req.DiskUsedMB = usedDisk
+			if memTotal > 0 {
+				req.MemoryPercent = float64(usedMem*100) / float64(memTotal)
+			}
+			if diskTotal > 0 {
+				req.DiskPercent = float64(usedDisk*100) / float64(diskTotal)
+			}
+			totalCPU := cap.TotalCPU + cap.AllocatedCPU
+			if totalCPU > 0 {
+				usedCPU := totalCPU - cap.AvailableCPU
+				if usedCPU < 0 {
+					usedCPU = 0
+				}
+				req.CPUPercent = float64(usedCPU*100) / float64(totalCPU)
+			}
+			req.ContainerRunning = cap.ServerCount
+			req.ContainerTotal = cap.ServerCount
+		}
+		if _, err := s.store.CreateNodeMetric(ctx, req); err != nil {
+			slog.Error("failed to record node metric", "nodeId", node.ID, "error", err)
+		}
+	}
+	n := len(nodes)
+	if n > 0 {
+		slog.Info(fmt.Sprintf("collected node metrics for %d nodes", n))
+	}
 }
 
 func (s *Service) Handle(ctx context.Context, event events.Envelope) error {
@@ -186,7 +280,22 @@ func (s *Service) AllHealthHistory(ctx context.Context, limit int) ([]store.Heal
 
 // Retention
 func (s *Service) EnforceRetention(ctx context.Context) (map[string]int64, error) {
-	return s.store.EnforceRetention(ctx)
+	var (
+		result  map[string]int64
+		lastErr error
+	)
+	for attempt := 0; attempt < 3; attempt++ {
+		result, lastErr = s.store.EnforceRetention(ctx)
+		if lastErr == nil {
+			return result, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
+		}
+	}
+	return nil, lastErr
 }
 
 func (s *Service) RetentionPolicies(ctx context.Context) ([]store.RetentionPolicy, error) {

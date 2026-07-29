@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { fetchJSON, postJSON, putJSON, type ApiServer } from "@/lib/api";
 import { errorMessage } from "@/lib/utils";
 import { AlertCircle, CheckCircle, Clock, Loader2, Play, RotateCcw, XCircle } from "lucide-react";
@@ -88,13 +88,22 @@ export function DeploymentsView({ server }: DeploymentsViewProps) {
   const [configSaved, setConfigSaved] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
   const [showConfig, setShowConfig] = useState(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  useEffect(() => {
+    return () => {
+      timeoutRef.current.forEach(clearTimeout);
+      timeoutRef.current = [];
+    };
+  }, []);
 
   const serverId = server.id;
   const loadReleases = useCallback(async () => {
     try {
       const res = await fetchJSON<{ data: Release[] }>(`/servers/${serverId}/deployments`);
-      setReleases(res.data);
-      const live = res.data.find((r) => r.status === "live");
+      const data = res.data ?? [];
+      setReleases(data);
+      const live = data.find((r) => r.status === "live");
       setActiveRelease(live ?? null);
     } catch (err) {
       setError(errorMessage(err, "Failed to load releases"));
@@ -136,13 +145,14 @@ export function DeploymentsView({ server }: DeploymentsViewProps) {
   }, [loadReleases, loadHealthConfig]);
 
   const handleDeploy = async () => {
-    if (!imageTag.trim()) return;
+    if (!imageTag.trim() || deploying) return;
     setDeploying(true);
     setError(null);
     try {
       await postJSON(`/servers/${serverId}/deployments`, { imageTag: imageTag.trim() });
       setImageTag("");
-      setTimeout(loadReleases, 1000);
+      const timer = setTimeout(loadReleases, 1000);
+      timeoutRef.current.push(timer);
     } catch (err) {
       setError(errorMessage(err, "Deployment failed"));
     } finally {
@@ -153,7 +163,8 @@ export function DeploymentsView({ server }: DeploymentsViewProps) {
   const handleRollback = async (releaseId: string) => {
     try {
       await postJSON(`/servers/${serverId}/deployments/${releaseId}/rollback`);
-      setTimeout(loadReleases, 1000);
+      const timer = setTimeout(loadReleases, 1000);
+      timeoutRef.current.push(timer);
     } catch (err) {
       setError(errorMessage(err, "Rollback failed"));
     }
@@ -162,7 +173,8 @@ export function DeploymentsView({ server }: DeploymentsViewProps) {
   const handleForcePromote = async (releaseId: string) => {
     try {
       await postJSON(`/servers/${serverId}/deployments/${releaseId}/promote`);
-      setTimeout(loadReleases, 1000);
+      const timer = setTimeout(loadReleases, 1000);
+      timeoutRef.current.push(timer);
     } catch (err) {
       setError(errorMessage(err, "Promotion failed"));
     }
@@ -173,7 +185,8 @@ export function DeploymentsView({ server }: DeploymentsViewProps) {
     try {
       await putJSON(`/servers/${serverId}/health-check`, hcConfig);
       setConfigSaved(true);
-      setTimeout(() => setConfigSaved(false), 2000);
+      const timer = setTimeout(() => setConfigSaved(false), 2000);
+      timeoutRef.current.push(timer);
     } catch (err) {
       setConfigError(errorMessage(err, "Failed to save config"));
     }

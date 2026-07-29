@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Eye, EyeOff, KeyRound, ShieldCheck } from "lucide-react";
-import { login, loginCheckpoint, type LoginResponse } from "@/lib/api";
+import { login, loginCheckpoint, fetchSetupStatus, type LoginResponse } from "@/lib/api";
 import { useServerStore } from "@/stores/use-server-store";
 import { AuthShell } from "@/components/ui/auth-shell";
 import { Alert, Button, Field, Input } from "@/components/ui/primitives";
@@ -32,12 +32,10 @@ function LoginContent() {
   const [setupStatus, setSetupStatus] = useState<SetupStatus>("ready");
 
   useEffect(() => {
-    fetch("/api/v1/setup/status")
-      .then((res) => {
-        if (!res.ok) throw new Error(`status ${res.status}`);
-        return res.json() as Promise<{ required: boolean; hasAdmin: boolean }>;
-      })
+    let cancelled = false;
+    fetchSetupStatus()
       .then((data) => {
+        if (cancelled) return;
         if (data.required) {
           setSetupStatus("required");
           replaceRoute("/setup");
@@ -46,9 +44,11 @@ function LoginContent() {
         }
       })
       .catch((err) => {
+        if (cancelled) return;
         console.error("setup fetch error:", err);
         setSetupStatus("unreachable");
       });
+    return () => { cancelled = true; };
   }, [replaceRoute]);
 
   useEffect(() => { if (currentUser && setupStatus === "ready") { replaceRoute(currentUser.role === "admin" ? "/admin/overview" : "/servers"); } }, [currentUser, replaceRoute, setupStatus]);

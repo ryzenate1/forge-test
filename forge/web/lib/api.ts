@@ -106,7 +106,7 @@ export type {
 // Beacon accepts either the panel origin or its /api/v1 base. Derive the value
 // from the API client configuration instead of the browser origin: web and API
 // deployments may be hosted on different origins.
-export function getBeaconPanelURL(): string {
+export function getBeaconAPIURL(): string {
   if (/^https?:\/\//i.test(API_BASE_URL)) return API_BASE_URL.replace(/\/$/, "");
   if (typeof window !== "undefined") return new URL(API_BASE_URL, window.location.origin).toString().replace(/\/$/, "");
   return "";
@@ -241,11 +241,9 @@ export function serverWebSocketURL(
   serverId: string,
   stream: "stats" | "logs" | "console",
 ): string {
-  const base = API_BASE_URL.replace("/api/v1", "");
   const protocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
-  const wsBase = base.replace(/^https?:/, protocol);
-  // Uses ticket-based auth - ticket is fetched at connection time
-  return `${wsBase}/api/v1/servers/${encodeURIComponent(serverId)}/ws/${stream}`;
+  const wsBase = API_BASE_URL.replace(/^https?:/, protocol);
+  return `${wsBase}/servers/${encodeURIComponent(serverId)}/ws/${stream}`;
 }
 
 export async function verifyBearerToken(token: string): Promise<ApiUser> {
@@ -269,6 +267,33 @@ export async function fetchUsers(): Promise<ApiUser[]> {
 
 export async function fetchNodes(): Promise<ApiNode[]> {
   return apiFetch<ApiNode[]>("/nodes");
+}
+
+export async function fetchNodesPage(
+  page = 1,
+  perPage = 100,
+): Promise<PaginatedResponse<ApiNode>> {
+  const response = await apiFetch<ApiNode[] | PaginatedResponse<ApiNode>>(
+    `/nodes?page=${page}&per_page=${perPage}`,
+    {},
+    true,
+  );
+  return Array.isArray(response) ? { data: response } : response;
+}
+
+export async function fetchAllNodes(): Promise<ApiNode[]> {
+  const firstPage = await fetchNodesPage();
+  const pagination = firstPage.meta?.pagination;
+  if (!pagination || pagination.total <= 1) {
+    return firstPage.data ?? [];
+  }
+  const remainingPages = await Promise.all(
+    Array.from({ length: pagination.total - 1 }, (_, index) => fetchNodesPage(index + 2)),
+  );
+  return [
+    ...firstPage.data,
+    ...remainingPages.flatMap((response) => response.data ?? []),
+  ];
 }
 
 export async function fetchNode(id: string): Promise<ApiNode> {
@@ -442,6 +467,21 @@ export async function updateServerAllocation(
   return apiFetch<{ ok: boolean }>(
     `/servers/${encodeURIComponent(serverId)}/allocations/${encodeURIComponent(allocationId)}`,
     { method: "POST" },
+  );
+}
+
+export async function updateServerAllocationAlias(
+  serverId: string,
+  allocationId: string,
+  input: UpdateAllocationInput,
+): Promise<ApiAllocation> {
+  return apiFetch<ApiAllocation>(
+    `/servers/${encodeURIComponent(serverId)}/allocations/${encodeURIComponent(allocationId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
   );
 }
 
@@ -1021,6 +1061,10 @@ export async function fetchMigrations(): Promise<ApiMigration[]> {
 
 export async function fetchMigration(id: string): Promise<ApiMigration> {
   return apiFetch<ApiMigration>(`/migrations/${encodeURIComponent(id)}`);
+}
+
+export async function fetchMigrationExecutorStatus(): Promise<{ available: boolean }> {
+  return apiFetch<{ available: boolean }>("/migrations/executor");
 }
 
 export async function createMigration(input: CreateMigrationInput): Promise<ApiMigration> {

@@ -234,52 +234,6 @@ func (s *JobService) Get(ctx context.Context, jobID string) (*BackupJob, error) 
 
 // List retrieves backup jobs with optional filtering
 func (s *JobService) List(ctx context.Context, filters JobFilter) ([]*BackupJob, int, error) {
-	records, err := s.store.ListAllBackupJobs(ctx)
-	if err != nil {
-		return nil, 0, err
-	}
-	jobs := make([]*BackupJob, 0, len(records))
-	for _, record := range records {
-		job := backupJobFromStore(record)
-		if filters.ConfigurationID != nil && !sameStringPointer(job.ConfigurationID, filters.ConfigurationID) {
-			continue
-		}
-		if filters.JobType != nil && job.JobType != *filters.JobType {
-			continue
-		}
-		if filters.ServerID != nil && !sameStringPointer(job.ServerID, filters.ServerID) {
-			continue
-		}
-		if filters.AppID != nil && !sameStringPointer(job.AppID, filters.AppID) {
-			continue
-		}
-		if filters.DatabaseID != nil && !sameStringPointer(job.DatabaseID, filters.DatabaseID) {
-			continue
-		}
-		if filters.VolumeID != nil && !sameStringPointer(job.VolumeID, filters.VolumeID) {
-			continue
-		}
-		if filters.Status != nil && job.Status != *filters.Status {
-			continue
-		}
-		if filters.TriggeredBy != nil && job.TriggeredBy != *filters.TriggeredBy {
-			continue
-		}
-		if filters.Search != nil {
-			query := strings.ToLower(strings.TrimSpace(*filters.Search))
-			if query != "" && !strings.Contains(strings.ToLower(job.Name+" "+job.Description), query) {
-				continue
-			}
-		}
-		if filters.StartDate != nil && job.CreatedAt.Before(*filters.StartDate) {
-			continue
-		}
-		if filters.EndDate != nil && job.CreatedAt.After(*filters.EndDate) {
-			continue
-		}
-		jobs = append(jobs, job)
-	}
-	total := len(jobs)
 	page, perPage := filters.Page, filters.PerPage
 	if page < 1 {
 		page = 1
@@ -290,15 +244,38 @@ func (s *JobService) List(ctx context.Context, filters JobFilter) ([]*BackupJob,
 	if perPage > 200 {
 		perPage = 200
 	}
-	start := (page - 1) * perPage
-	if start > total {
-		start = total
+	var jobType, status *string
+	if filters.JobType != nil {
+		value := string(*filters.JobType)
+		jobType = &value
 	}
-	end := start + perPage
-	if end > total {
-		end = total
+	if filters.Status != nil {
+		value := string(*filters.Status)
+		status = &value
 	}
-	return jobs[start:end], total, nil
+	records, total, err := s.store.ListBackupJobs(ctx, store.BackupJobFilter{
+		ConfigurationID: filters.ConfigurationID,
+		JobType:         jobType,
+		ServerID:        filters.ServerID,
+		AppID:           filters.AppID,
+		DatabaseID:      filters.DatabaseID,
+		VolumeID:        filters.VolumeID,
+		Status:          status,
+		TriggeredBy:     filters.TriggeredBy,
+		Search:          filters.Search,
+		StartDate:       filters.StartDate,
+		EndDate:         filters.EndDate,
+		Limit:           perPage,
+		Offset:          (page - 1) * perPage,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	jobs := make([]*BackupJob, 0, len(records))
+	for _, record := range records {
+		jobs = append(jobs, backupJobFromStore(record))
+	}
+	return jobs, total, nil
 }
 
 // Update updates a backup job
@@ -969,10 +946,9 @@ func (s *JobService) waitForBeaconTaskCompletion(ctx context.Context, taskID str
 	if s.beaconClient == nil {
 		return fmt.Errorf("beacon client not available")
 	}
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
 	timeout := time.NewTimer(30 * time.Minute)
 	defer timeout.Stop()
+	backoff := time.Second
 	for {
 		status, err := s.beaconClient.GetTaskStatus(ctx, taskID)
 		if err != nil {
@@ -989,7 +965,13 @@ func (s *JobService) waitForBeaconTaskCompletion(ctx context.Context, taskID str
 			return fmt.Errorf("wait for beacon task: %w", ctx.Err())
 		case <-timeout.C:
 			return fmt.Errorf("beacon task %s timed out", taskID)
-		case <-ticker.C:
+		case <-time.After(backoff):
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
 		}
 	}
 }

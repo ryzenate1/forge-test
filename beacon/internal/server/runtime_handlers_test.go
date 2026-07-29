@@ -36,6 +36,8 @@ type stubRuntime struct {
 	createReq    runtime.CreateRequest
 }
 
+func (*stubRuntime) Close() error { return nil }
+
 func (r *stubRuntime) Create(_ context.Context, req runtime.CreateRequest) error {
 	r.createCalled = true
 	r.createReq = req

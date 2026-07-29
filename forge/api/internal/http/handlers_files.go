@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -147,6 +149,11 @@ func registerHostTerminalRoute(protected fiber.Router, cfg Config) {
 		pingTicker := time.NewTicker(30 * time.Second)
 		defer pingTicker.Stop()
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("file proxy keepalive panicked", "panic", r)
+				}
+			}()
 			for {
 				select {
 				case <-pingTicker.C:
@@ -162,6 +169,11 @@ func registerHostTerminalRoute(protected fiber.Router, cfg Config) {
 		errs := make(chan error, 2)
 		clientLimiter := rate.NewLimiter(rate.Limit(10), 20)
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("file proxy upstream reader panicked", "panic", r)
+				}
+			}()
 			for {
 				if ctx.Err() != nil {
 					errs <- ctx.Err()
@@ -180,6 +192,11 @@ func registerHostTerminalRoute(protected fiber.Router, cfg Config) {
 			}
 		}()
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("file proxy client reader panicked", "panic", r)
+				}
+			}()
 			for {
 				if ctx.Err() != nil {
 					errs <- ctx.Err()
@@ -224,6 +241,9 @@ func hostFilesList(cfg Config) fiber.Handler {
 			return err
 		}
 		filePath := c.Query("path", "/")
+		if err := validateHostFilePath(filePath); err != nil {
+			return err
+		}
 		ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
 		defer cancel()
 		data, err := cfg.Daemon.HostFilesList(ctx, target.BaseURL, target.NodeToken, filePath)
@@ -245,6 +265,9 @@ func hostFilesRead(cfg Config) fiber.Handler {
 		}
 		if err := c.BodyParser(&body); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		}
+		if err := validateHostFilePath(body.Path); err != nil {
+			return err
 		}
 		ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
 		defer cancel()
@@ -269,6 +292,9 @@ func hostFilesWrite(cfg Config) fiber.Handler {
 		if err := c.BodyParser(&body); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 		}
+		if err := validateHostFilePath(body.Path); err != nil {
+			return err
+		}
 		ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
 		defer cancel()
 		if err := cfg.Daemon.HostFilesWrite(ctx, target.BaseURL, target.NodeToken, body.Path, body.Content); err != nil {
@@ -289,6 +315,9 @@ func hostFilesMkdir(cfg Config) fiber.Handler {
 		}
 		if err := c.BodyParser(&body); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		}
+		if err := validateHostFilePath(body.Path); err != nil {
+			return err
 		}
 		ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
 		defer cancel()
@@ -311,6 +340,9 @@ func hostFilesRemove(cfg Config) fiber.Handler {
 		if err := c.BodyParser(&body); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 		}
+		if err := validateHostFilePath(body.Path); err != nil {
+			return err
+		}
 		ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
 		defer cancel()
 		if err := cfg.Daemon.HostFilesRemove(ctx, target.BaseURL, target.NodeToken, body.Path); err != nil {
@@ -327,6 +359,13 @@ func hostFilesUpload(cfg Config) fiber.Handler {
 			return err
 		}
 		destPath := c.Query("path", "/")
+		if err := validateHostFilePath(destPath); err != nil {
+			return err
+		}
+		contentType := strings.ToLower(string(c.Request().Header.ContentType()))
+		if contentType != "application/octet-stream" && !strings.HasPrefix(contentType, "multipart/form-data;") {
+			return fiber.NewError(fiber.StatusUnsupportedMediaType, "upload must be application/octet-stream or multipart/form-data")
+		}
 		targetURL := strings.TrimRight(target.BaseURL, "/") + "/v1/files/upload?path=" + url.QueryEscape(destPath)
 
 		rawBody := c.Request().Body()
@@ -371,6 +410,9 @@ func hostFilesDownload(cfg Config) fiber.Handler {
 		if filePath == "" {
 			return fiber.NewError(fiber.StatusBadRequest, "path is required")
 		}
+		if err := validateHostFilePath(filePath); err != nil {
+			return err
+		}
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Minute)
 		defer cancel()
 		reader, err := cfg.Daemon.HostFilesDownload(ctx, target.BaseURL, target.NodeToken, filePath)
@@ -403,6 +445,12 @@ func hostFilesRename(cfg Config) fiber.Handler {
 		if err := c.BodyParser(&body); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 		}
+		if err := validateHostFilePath(body.OldPath); err != nil {
+			return err
+		}
+		if err := validateHostFilePath(body.NewPath); err != nil {
+			return err
+		}
 		ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
 		defer cancel()
 		if err := cfg.Daemon.HostFilesRename(ctx, target.BaseURL, target.NodeToken, body.OldPath, body.NewPath); err != nil {
@@ -424,6 +472,12 @@ func hostFilesCopy(cfg Config) fiber.Handler {
 		}
 		if err := c.BodyParser(&body); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		}
+		if err := validateHostFilePath(body.SourcePath); err != nil {
+			return err
+		}
+		if err := validateHostFilePath(body.DestPath); err != nil {
+			return err
 		}
 		ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
 		defer cancel()
@@ -447,6 +501,9 @@ func hostFilesChmod(cfg Config) fiber.Handler {
 		if err := c.BodyParser(&body); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 		}
+		if err := validateHostFilePath(body.Path); err != nil {
+			return err
+		}
 		ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
 		defer cancel()
 		if err := cfg.Daemon.HostFilesChmod(ctx, target.BaseURL, target.NodeToken, body.Path, body.Mode); err != nil {
@@ -454,4 +511,19 @@ func hostFilesChmod(cfg Config) fiber.Handler {
 		}
 		return c.JSON(fiber.Map{"ok": true})
 	}
+}
+
+func validateHostFilePath(value string) error {
+	if value == "" || strings.ContainsRune(value, '\x00') || !strings.HasPrefix(value, "/") {
+		return fiber.NewError(fiber.StatusBadRequest, "path must be an absolute path")
+	}
+	cleaned := path.Clean(value)
+	normalized := strings.TrimSuffix(value, "/")
+	if normalized == "" {
+		normalized = "/"
+	}
+	if cleaned != normalized || strings.Contains(value, `\`) {
+		return fiber.NewError(fiber.StatusBadRequest, "path must be canonical and may not contain traversal segments")
+	}
+	return nil
 }

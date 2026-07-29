@@ -7,6 +7,8 @@ import (
 
 // TestLoadBalancer_Scenario7 verifies loadbalancer requirements for Scenario 7
 func TestLoadBalancer_Scenario7(t *testing.T) {
+	t.Setenv("LOAD_BALANCER_PORT_MIN", "1")
+	t.Setenv("LOAD_BALANCER_PORT_MAX", "65535")
 	t.Run("SetTargetStatus filters unhealthy targets", func(t *testing.T) {
 		svc := New(nil)
 
@@ -181,6 +183,8 @@ func TestLoadBalancer_Scenario7(t *testing.T) {
 
 // TestLoadBalancer_NodeHealthManagement verifies node-level health management
 func TestLoadBalancer_NodeHealthManagement(t *testing.T) {
+	t.Setenv("LOAD_BALANCER_PORT_MIN", "1")
+	t.Setenv("LOAD_BALANCER_PORT_MAX", "65535")
 	t.Run("MarkNodeTargetsUnhealthy marks all node targets as unhealthy", func(t *testing.T) {
 		// This functionality requires a store, so we'll test the logic directly
 		svc := New(nil)

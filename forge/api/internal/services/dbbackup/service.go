@@ -13,15 +13,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 
 	"gamepanel/forge/internal/store"
 )
 
-const backupDir = "/tmp/managed-db-backups"
+var backupDir = filepath.Join(os.TempDir(), "forge-managed-db-backups")
 
 type Service struct {
 	store     *store.Store
@@ -86,38 +85,42 @@ func (s *Service) runBackup(ctx context.Context, d store.ManagedDatabase, backup
 
 	password := extractPassword(d.Credentials)
 	outputFile := filepath.Join(backupDir, backup.ID+".dump")
-	tool, args := backupCommandForEngine(d.Engine, d.Host, d.Port, d.Username, password, d.DatabaseName, outputFile)
+	remoteOutput := "/tmp/forge-db-backup-" + backup.ID + ".dump"
+	tool, args := backupCommandForEngine(d.Engine, d.Host, d.Port, d.Username, password, d.DatabaseName, remoteOutput)
 	if tool == "" {
 		return fmt.Errorf("unsupported engine for backup: %s", d.Engine)
 	}
+	defer func() {
+		_ = exec.Command("docker", "exec", d.ContainerID, "rm", "-f", remoteOutput).Run()
+	}()
 
-	// Security: avoid ever passing the database password via a PGPASSWORD
-	// (or similar) environment variable. Environment variables of a running
-	// process are readable by anyone with access to /proc/<pid>/environ on
-	// Linux (or by anyone who can inspect the process table via other
-	// means), so they are a poor place to carry secrets. Instead, stage a
-	// short-lived, mode-0600 .pgpass file inside the target container and
-	// point pg_dump at it via PGPASSFILE; the file is removed immediately
-	// after the command completes.
-	//
-	// redis-cli has no equivalent "password file" option in the version
-	// range this project supports, so its password is passed via the -a
-	// flag in backupCommandForEngine/engines.go rather than an env var. That
-	// is a narrower exposure than a process-wide env var (visible only via
-	// the container's own process listing/cmdline, not via a host-wide
-	// environ dump), but it is still a known residual risk; consider moving
-	// to a Redis ACL user with a config-file-based credential if this needs
-	// to be hardened further.
 	var dockerArgs []string
-	var cleanupPgPass func()
-	if d.Engine == "postgresql" || d.Engine == "postgres" {
-		remotePath, cleanup, err := s.stagePgPassFile(ctx, d.ContainerID, d.Host, d.Port, d.DatabaseName, d.Username, password)
+	var cleanupCredential func()
+	switch strings.ToLower(d.Engine) {
+	case "postgresql", "postgres":
+		remotePath, cleanup, err := s.stageCredentialFile(ctx, d.ContainerID, "pgpass", pgPassContents(d.Host, d.Port, d.DatabaseName, d.Username, password))
 		if err != nil {
 			return fmt.Errorf("stage pgpass file: %w", err)
 		}
-		cleanupPgPass = cleanup
+		cleanupCredential = cleanup
 		dockerArgs = append([]string{"exec", "-i", "-e", "PGPASSFILE=" + remotePath}, append([]string{d.ContainerID, tool}, args...)...)
-	} else {
+	case "mysql", "mariadb":
+		remotePath, cleanup, err := s.stageCredentialFile(ctx, d.ContainerID, "mysql", mysqlConfigContents(d.Host, d.Port, d.Username, password))
+		if err != nil {
+			return fmt.Errorf("stage mysql credential file: %w", err)
+		}
+		cleanupCredential = cleanup
+		dockerArgs = append([]string{"exec", "-i", d.ContainerID, tool, "--defaults-extra-file=" + remotePath}, args...)
+	case "mongodb":
+		remotePath, cleanup, err := s.stageCredentialFile(ctx, d.ContainerID, "mongo", mongoConfigContents(d.Host, d.Port, d.Username, password))
+		if err != nil {
+			return fmt.Errorf("stage mongo credential file: %w", err)
+		}
+		cleanupCredential = cleanup
+		dockerArgs = append([]string{"exec", "-i", d.ContainerID, tool, "--config=" + remotePath}, args...)
+	case "redis":
+		dockerArgs = append([]string{"exec", "-i", "-e", "REDISCLI_AUTH=" + password, d.ContainerID, tool}, args...)
+	default:
 		dockerArgs = []string{"exec", "-i", d.ContainerID, tool}
 		dockerArgs = append(dockerArgs, args...)
 	}
@@ -127,11 +130,14 @@ func (s *Service) runBackup(ctx context.Context, d store.ManagedDatabase, backup
 	cmd.Stderr = &stderr
 
 	runErr := cmd.Run()
-	if cleanupPgPass != nil {
-		cleanupPgPass()
+	if cleanupCredential != nil {
+		cleanupCredential()
 	}
 	if runErr != nil {
 		return fmt.Errorf("backup command failed: %w, stderr: %s", runErr, stderr.String())
+	}
+	if err := exec.CommandContext(ctx, "docker", "cp", "--", d.ContainerID+":"+remoteOutput, outputFile).Run(); err != nil {
+		return fmt.Errorf("copy backup from container: %w", err)
 	}
 
 	data, err := s.readFile(ctx, outputFile)
@@ -142,6 +148,7 @@ func (s *Service) runBackup(ctx context.Context, d store.ManagedDatabase, backup
 	checksum := sha256Checksum(data)
 
 	if s.backupSvc != nil {
+		defer func() { _ = os.Remove(outputFile) }()
 		storagePath := fmt.Sprintf("managed-db-backups/%s/%s.dump", d.ID, backup.ID)
 		if err := s.backupSvc.Upload(ctx, storagePath, data); err != nil {
 			return fmt.Errorf("upload backup: %w", err)
@@ -219,35 +226,66 @@ func (s *Service) runRestore(ctx context.Context, db store.ManagedDatabase, back
 	defer func() { _ = s.removeFile(ctx, inputFile) }()
 
 	password := extractPassword(db.Credentials)
-	tool, args := restoreCommandForEngine(db.Engine, db.Host, db.Port, db.Username, password, db.DatabaseName, inputFile)
+	remoteInput := "/tmp/forge-db-restore-" + restore.ID + ".dump"
+	tool, args := restoreCommandForEngine(db.Engine, db.Host, db.Port, db.Username, password, db.DatabaseName, remoteInput)
 	if tool == "" {
 		return fmt.Errorf("unsupported engine for restore: %s", db.Engine)
 	}
+	if strings.ToLower(db.Engine) != "redis" {
+		if err := exec.CommandContext(ctx, "docker", "cp", "--", inputFile, db.ContainerID+":"+remoteInput).Run(); err != nil {
+			return fmt.Errorf("copy restore into container: %w", err)
+		}
+		defer func() {
+			_ = exec.Command("docker", "exec", db.ContainerID, "rm", "-f", remoteInput).Run()
+		}()
+	}
 
-	// See the matching comment in runBackup: avoid PGPASSWORD-style env vars
-	// for the password and instead stage a short-lived, mode-0600 .pgpass
-	// file inside the container for PostgreSQL restores.
 	var dockerArgs []string
-	var cleanupPgPass func()
-	if db.Engine == "postgresql" || db.Engine == "postgres" {
-		remotePath, cleanup, err := s.stagePgPassFile(ctx, db.ContainerID, db.Host, db.Port, db.DatabaseName, db.Username, password)
+	var cleanupCredential func()
+	switch strings.ToLower(db.Engine) {
+	case "postgresql", "postgres":
+		remotePath, cleanup, err := s.stageCredentialFile(ctx, db.ContainerID, "pgpass", pgPassContents(db.Host, db.Port, db.DatabaseName, db.Username, password))
 		if err != nil {
 			return fmt.Errorf("stage pgpass file: %w", err)
 		}
-		cleanupPgPass = cleanup
+		cleanupCredential = cleanup
 		dockerArgs = append([]string{"exec", "-i", "-e", "PGPASSFILE=" + remotePath}, append([]string{db.ContainerID, tool}, args...)...)
-	} else {
+	case "mysql", "mariadb":
+		remotePath, cleanup, err := s.stageCredentialFile(ctx, db.ContainerID, "mysql", mysqlConfigContents(db.Host, db.Port, db.Username, password))
+		if err != nil {
+			return fmt.Errorf("stage mysql credential file: %w", err)
+		}
+		cleanupCredential = cleanup
+		dockerArgs = append([]string{"exec", "-i", db.ContainerID, tool, "--defaults-extra-file=" + remotePath}, args...)
+	case "mongodb":
+		remotePath, cleanup, err := s.stageCredentialFile(ctx, db.ContainerID, "mongo", mongoConfigContents(db.Host, db.Port, db.Username, password))
+		if err != nil {
+			return fmt.Errorf("stage mongo credential file: %w", err)
+		}
+		cleanupCredential = cleanup
+		dockerArgs = append([]string{"exec", "-i", db.ContainerID, tool, "--config=" + remotePath}, args...)
+	case "redis":
+		dockerArgs = append([]string{"exec", "-i", "-e", "REDISCLI_AUTH=" + password, db.ContainerID, tool}, args...)
+	default:
 		dockerArgs = []string{"exec", "-i", db.ContainerID, tool}
 		dockerArgs = append(dockerArgs, args...)
 	}
 
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
+	if strings.ToLower(db.Engine) == "redis" {
+		input, err := os.Open(inputFile)
+		if err != nil {
+			return fmt.Errorf("open redis restore input: %w", err)
+		}
+		defer input.Close()
+		cmd.Stdin = input
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	runErr := cmd.Run()
-	if cleanupPgPass != nil {
-		cleanupPgPass()
+	if cleanupCredential != nil {
+		cleanupCredential()
 	}
 	if runErr != nil {
 		return fmt.Errorf("restore command failed: %w, stderr: %s", runErr, stderr.String())
@@ -261,23 +299,8 @@ func (s *Service) runRestore(ctx context.Context, db store.ManagedDatabase, back
 }
 
 func (s *Service) RotatePassword(ctx context.Context, dbID string) (*store.ManagedDatabase, error) {
-	db, err := s.store.GetManagedDatabase(ctx, dbID)
-	if err != nil {
-		return nil, fmt.Errorf("get managed database: %w", err)
-	}
-	raw := uuid.NewString() + time.Now().String()
-	h := sha256.Sum256([]byte(raw))
-	newPassword := hex.EncodeToString(h[:])[:32]
-
-	newEncrypted, err := s.encryptPassword(newPassword)
-	if err != nil {
-		return nil, fmt.Errorf("encrypt password: %w", err)
-	}
-
-	_ = newEncrypted
-
-	_ = db
-
+	_ = ctx
+	_ = dbID
 	return nil, errors.New("password rotation via Docker exec not yet implemented")
 }
 
@@ -300,40 +323,21 @@ func (s *Service) DeleteBackup(ctx context.Context, backupID string) error {
 	return s.store.DeleteManagedDatabaseBackup(ctx, backupID)
 }
 
-func (s *Service) encryptPassword(password string) (string, error) {
-	return password, nil
-}
-
-// stagePgPassFile writes a short-lived, mode-0600 pgpass file describing how
-// to authenticate to a PostgreSQL database, copies it into the target
-// container, and returns the in-container path plus a cleanup function that
-// removes both the local and in-container copies. Callers should always
-// invoke the returned cleanup function (e.g. via a plain call once the
-// backup/restore command has finished) so the credential does not linger on
-// disk any longer than necessary.
-//
-// This avoids passing the password via a PGPASSWORD environment variable,
-// which would otherwise be readable by anyone able to inspect the process's
-// environment (e.g. /proc/<pid>/environ on Linux).
-func (s *Service) stagePgPassFile(ctx context.Context, containerID, host string, port int, database, username, password string) (string, func(), error) {
-	localFile, err := os.CreateTemp(backupDir, "pgpass-*")
+func (s *Service) stageCredentialFile(ctx context.Context, containerID, kind, contents string) (string, func(), error) {
+	if strings.ContainsAny(containerID, "\x00\r\n") {
+		return "", nil, errors.New("invalid container id")
+	}
+	localFile, err := os.CreateTemp(backupDir, kind+"-*")
 	if err != nil {
-		return "", nil, fmt.Errorf("create local pgpass file: %w", err)
+		return "", nil, fmt.Errorf("create local credential file: %w", err)
 	}
 	localPath := localFile.Name()
 	cleanupLocal := func() { _ = os.Remove(localPath) }
 
-	line := fmt.Sprintf("%s:%d:%s:%s:%s\n",
-		escapePgPassField(host),
-		port,
-		escapePgPassField(database),
-		escapePgPassField(username),
-		escapePgPassField(password),
-	)
-	if _, err := localFile.WriteString(line); err != nil {
+	if _, err := localFile.WriteString(contents); err != nil {
 		_ = localFile.Close()
 		cleanupLocal()
-		return "", nil, fmt.Errorf("write local pgpass file: %w", err)
+		return "", nil, fmt.Errorf("write local credential file: %w", err)
 	}
 	if err := localFile.Close(); err != nil {
 		cleanupLocal()
@@ -344,15 +348,15 @@ func (s *Service) stagePgPassFile(ctx context.Context, containerID, host string,
 		return "", nil, fmt.Errorf("chmod local pgpass file: %w", err)
 	}
 
-	remotePath := "/tmp/.pgpass-" + filepath.Base(localPath)
-	if err := exec.CommandContext(ctx, "docker", "cp", localPath, containerID+":"+remotePath).Run(); err != nil {
+	remotePath := "/tmp/." + kind + "-" + filepath.Base(localPath)
+	if err := exec.CommandContext(ctx, "docker", "cp", localPath, "--", containerID+":"+remotePath).Run(); err != nil {
 		cleanupLocal()
-		return "", nil, fmt.Errorf("copy pgpass into container: %w", err)
+		return "", nil, fmt.Errorf("copy credential into container: %w", err)
 	}
 	if err := exec.CommandContext(ctx, "docker", "exec", containerID, "chmod", "0600", remotePath).Run(); err != nil {
 		cleanupLocal()
 		_ = exec.Command("docker", "exec", containerID, "rm", "-f", remotePath).Run()
-		return "", nil, fmt.Errorf("chmod pgpass in container: %w", err)
+		return "", nil, fmt.Errorf("chmod credential in container: %w", err)
 	}
 
 	cleanup := func() {
@@ -362,13 +366,29 @@ func (s *Service) stagePgPassFile(ctx context.Context, containerID, host string,
 	return remotePath, cleanup, nil
 }
 
-// escapePgPassField escapes ':' and '\\' per the pgpass file format so that
-// values containing those characters (e.g. a generated password) don't
-// corrupt the field layout.
+func pgPassContents(host string, port int, database, username, password string) string {
+	return fmt.Sprintf("%s:%d:%s:%s:%s\n", escapePgPassField(host), port, escapePgPassField(database), escapePgPassField(username), escapePgPassField(password))
+}
+
 func escapePgPassField(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, ":", `\:`)
 	return s
+}
+
+func mysqlConfigContents(host string, port int, username, password string) string {
+	quote := func(value string) string {
+		value = strings.ReplaceAll(value, `\`, `\\`)
+		value = strings.ReplaceAll(value, `"`, `\"`)
+		value = strings.ReplaceAll(value, "\r", "")
+		value = strings.ReplaceAll(value, "\n", "")
+		return `"` + value + `"`
+	}
+	return fmt.Sprintf("[client]\nhost=%s\nport=%d\nuser=%s\npassword=%s\n", quote(host), port, quote(username), quote(password))
+}
+
+func mongoConfigContents(host string, port int, username, password string) string {
+	return fmt.Sprintf("host: %s\nport: %d\nusername: %s\npassword: %s\n", strconv.Quote(host), port, strconv.Quote(username), strconv.Quote(password))
 }
 
 func extractPassword(creds json.RawMessage) string {
@@ -388,22 +408,31 @@ func sha256Checksum(data []byte) string {
 }
 
 func (s *Service) readFile(ctx context.Context, path string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "cat", path)
-	return cmd.Output()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(path)
 }
 
 func (s *Service) writeFile(ctx context.Context, path string, data []byte) error {
-	cmd := exec.CommandContext(ctx, "mkdir", "-p", filepath.Dir(path))
-	if err := cmd.Run(); err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	cmd = exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf("cat > %s", path))
-	cmd.Stdin = bytes.NewReader(data)
-	return cmd.Run()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0600)
 }
 
 func (s *Service) removeFile(ctx context.Context, path string) error {
-	return exec.CommandContext(ctx, "rm", "-f", path).Run()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func (s *Service) EngineDumpCommands(engine string) json.RawMessage {
@@ -430,8 +459,10 @@ func (s *Service) EngineDumpCommands(engine string) json.RawMessage {
 }
 
 func init() {
-	if err := exec.Command("mkdir", "-p", backupDir).Run(); err != nil {
+	if err := os.MkdirAll(backupDir, 0700); err != nil {
 		log.Printf("failed to create backup dir %s: %v", backupDir, err)
+	} else if err := os.Chmod(backupDir, 0700); err != nil {
+		log.Printf("failed to secure backup dir %s: %v", backupDir, err)
 	}
 }
 

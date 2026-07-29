@@ -1,6 +1,8 @@
 package http
 
 import (
+	"log/slog"
+
 	"gamepanel/forge/internal/services/zerodowntime"
 	"github.com/gofiber/fiber/v2"
 )
@@ -27,6 +29,11 @@ func registerZeroDowntimeRoutes(protected fiber.Router, cfg Config, svc *zerodow
 		}
 
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("zero-downtime deploy panicked", "panic", r)
+				}
+			}()
 			_, _ = svc.DeployRelease(cfg.BackgroundContext, release.ID)
 			ok, _ := svc.RunHealthChecks(cfg.BackgroundContext, release.ID)
 			if ok {

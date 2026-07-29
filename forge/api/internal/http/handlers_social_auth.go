@@ -53,15 +53,20 @@ type socialAuthState struct {
 	Expires  int64  `json:"expires"`
 }
 
-func registerSocialAuthRoutes(v1 fiber.Router, cfg Config, mutationLimiter fiber.Handler) {
+func registerSocialAuthRoutes(v1 fiber.Router, cfg Config, mutationLimiter fiber.Handler, authLimiters ...fiber.Handler) {
 	v1.Get("/auth/social/:provider", func(c *fiber.Ctx) error {
 		return handleSocialAuthRedirect(c, cfg)
 	})
-	v1.Get("/auth/social/:provider/callback", func(c *fiber.Ctx) error {
+	callback := func(c *fiber.Ctx) error {
 		return handleSocialAuthCallback(c, cfg)
-	})
+	}
+	if len(authLimiters) > 0 && authLimiters[0] != nil {
+		v1.Get("/auth/social/:provider/callback", authLimiters[0], callback)
+	} else {
+		v1.Get("/auth/social/:provider/callback", callback)
+	}
 
-	protected := v1.Group("", authMiddleware(cfg.AuthSecret, cfg.Store))
+	protected := v1.Group("", authMiddleware(cfg.AuthSecret, cfg.Store), csrfMiddleware(LoadSessionCookieConfig()))
 	protected.Get("/account/social/identities", func(c *fiber.Ctx) error {
 		return listSocialIdentities(c, cfg)
 	})
@@ -264,7 +269,7 @@ func handleSocialAuthCallback(c *fiber.Ctx, cfg Config) error {
 			return fiber.NewError(fiber.StatusForbidden, "account is disabled")
 		}
 
-		token, err := issueToken(cfg.AuthSecret, user)
+		token, err := issueConfiguredToken(cfg, user)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not issue token")
 		}
@@ -272,10 +277,13 @@ func handleSocialAuthCallback(c *fiber.Ctx, cfg Config) error {
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not generate csrf token")
 		}
-		expires := time.Now().Add(tokenTTL)
+		expires := tokenExpiry(cfg)
 		setSessionCookies(c, token, csrfToken, expires)
 
-		code, _ = issueExchangeCode(token, csrfToken)
+		code, err = issueExchangeCode(c.Context(), cfg, token, csrfToken)
+		if err != nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "could not create exchange code")
+		}
 		redirectURL := strings.TrimRight(cfg.PanelURL, "/")
 		if code != "" {
 			redirectURL += "/?code=" + code
@@ -318,7 +326,7 @@ func handleSocialAuthCallback(c *fiber.Ctx, cfg Config) error {
 			return fiber.NewError(fiber.StatusInternalServerError, "failed to link social identity")
 		}
 
-		token, err := issueToken(cfg.AuthSecret, newUser)
+		token, err := issueConfiguredToken(cfg, newUser)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not issue token")
 		}
@@ -326,10 +334,13 @@ func handleSocialAuthCallback(c *fiber.Ctx, cfg Config) error {
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not generate csrf token")
 		}
-		expires := time.Now().Add(tokenTTL)
+		expires := tokenExpiry(cfg)
 		setSessionCookies(c, token, csrfToken, expires)
 
-		code, _ = issueExchangeCode(token, csrfToken)
+		code, err = issueExchangeCode(c.Context(), cfg, token, csrfToken)
+		if err != nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "could not create exchange code")
+		}
 		redirectURL := strings.TrimRight(cfg.PanelURL, "/")
 		if code != "" {
 			redirectURL += "/?code=" + code
@@ -350,7 +361,7 @@ func handleSocialAuthCallback(c *fiber.Ctx, cfg Config) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to link social identity")
 	}
 
-	token, err := issueToken(cfg.AuthSecret, user)
+	token, err := issueConfiguredToken(cfg, user)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "could not issue token")
 	}
@@ -358,14 +369,24 @@ func handleSocialAuthCallback(c *fiber.Ctx, cfg Config) error {
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "could not generate csrf token")
 	}
-	expires := time.Now().Add(tokenTTL)
+	expires := tokenExpiry(cfg)
 	setSessionCookies(c, token, csrfToken, expires)
 
-	code, _ = issueExchangeCode(token, csrfToken)
-	redirectURL := strings.TrimRight(cfg.PanelURL, "/")
-	if code != "" {
-		redirectURL += "/?code=" + code
+	code, err = issueExchangeCode(c.Context(), cfg, token, csrfToken)
+	if err != nil {
+		return fiber.NewError(fiber.StatusServiceUnavailable, "could not create exchange code")
 	}
+	if code != "" {
+		c.Cookie(&fiber.Cookie{
+			Name:     "exchange_code",
+			Value:    code,
+			Expires:  time.Now().Add(30 * time.Second),
+			HTTPOnly: true,
+			Secure:   true,
+			SameSite: "lax",
+		})
+	}
+	redirectURL := strings.TrimRight(cfg.PanelURL, "/")
 	return c.Redirect(redirectURL, fiber.StatusFound)
 }
 
@@ -488,7 +509,11 @@ func fetchSteamPlayerSummary(ctx context.Context, cfg Config, steamID string) (*
 
 	reqURL := fmt.Sprintf("https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key=%s&steamids=%s", apiKey, steamID)
 	httpClient := &http.Client{Timeout: 10 * time.Second}
-	resp, err := httpClient.Get(reqURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

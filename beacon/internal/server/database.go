@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -234,12 +233,6 @@ func (s *Server) handleDatabaseProvision(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	hostPort, err := findFreePort()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "find free port: " + err.Error()})
-		return
-	}
-
 	rootPassword, err := generateRandomSecret(32)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "generate root credentials: " + err.Error()})
@@ -276,7 +269,7 @@ func (s *Server) handleDatabaseProvision(w http.ResponseWriter, r *http.Request)
 			NetworkMode: container.NetworkMode(networkName),
 			PortBindings: nat.PortMap{
 				nat.Port(fmt.Sprintf("%d/tcp", containerPort)): []nat.PortBinding{
-					{HostPort: strconv.Itoa(hostPort)},
+					{HostIP: "127.0.0.1"},
 				},
 			},
 			Resources: container.Resources{
@@ -307,11 +300,31 @@ func (s *Server) handleDatabaseProvision(w http.ResponseWriter, r *http.Request)
 	}
 
 	if err := cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
+		_ = cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true, RemoveVolumes: false})
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "start container: " + err.Error()})
+		return
+	}
+	inspect, err := cli.ContainerInspect(ctx, created.ID)
+	if err != nil {
+		_ = cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true, RemoveVolumes: false})
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "inspect database port mapping"})
+		return
+	}
+	bindings := inspect.NetworkSettings.Ports[nat.Port(fmt.Sprintf("%d/tcp", containerPort))]
+	if len(bindings) != 1 {
+		_ = cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true, RemoveVolumes: false})
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "database port mapping is unavailable"})
+		return
+	}
+	hostPort, err := strconv.Atoi(bindings[0].HostPort)
+	if err != nil || hostPort < 1 || hostPort > 65535 {
+		_ = cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true, RemoveVolumes: false})
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "database port mapping is invalid"})
 		return
 	}
 
 	if err := waitForDBReady(ctx, cli, created.ID, engine); err != nil {
+		_ = cli.ContainerRemove(ctx, created.ID, container.RemoveOptions{Force: true, RemoveVolumes: false})
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "database not ready: " + err.Error()})
 		return
 	}
@@ -491,6 +504,9 @@ func (s *Server) handleDatabaseBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	hasher := sha256.New()
 	size, err := copyFileFromTar(io.MultiWriter(f, hasher), rc)
+	if err == nil {
+		err = f.Sync()
+	}
 	closeErr := f.Close()
 	if err != nil {
 		_ = os.Remove(backupPath)
@@ -506,7 +522,6 @@ func (s *Server) handleDatabaseBackup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":       true,
 		"backupId": req.BackupID,
-		"file":     backupPath,
 		"name":     fileName,
 		"engine":   engine,
 		"size":     size,
@@ -758,11 +773,11 @@ func databaseCommand(engine, password string) []string {
 func restoreCommandForEngine(engine, backupPath string) string {
 	switch strings.ToLower(strings.TrimSpace(engine)) {
 	case "postgresql":
-		return "gzip -dc " + backupPath + " | psql -U $POSTGRES_USER"
+		return `gzip -dc -- ` + backupPath + ` | psql -U "${POSTGRES_USER:?missing POSTGRES_USER}"`
 	case "mysql", "mariadb":
-		return "gzip -dc " + backupPath + " | mysql -u root -p$MYSQL_ROOT_PASSWORD"
+		return `gzip -dc -- ` + backupPath + ` | mysql -u root --password="${MYSQL_ROOT_PASSWORD:?missing MYSQL_ROOT_PASSWORD}"`
 	case "mongodb":
-		return "gzip -dc " + backupPath + " | mongorestore --archive --authenticationDatabase admin"
+		return `gzip -dc -- ` + backupPath + ` | mongorestore --archive --username "${MONGO_INITDB_ROOT_USERNAME:?missing MONGO_INITDB_ROOT_USERNAME}" --password "${MONGO_INITDB_ROOT_PASSWORD:?missing MONGO_INITDB_ROOT_PASSWORD}" --authenticationDatabase admin`
 	case "redis":
 		return "gzip -dc " + backupPath + " | redis-cli --pipe"
 	default:
@@ -773,27 +788,16 @@ func restoreCommandForEngine(engine, backupPath string) string {
 func backupCommandForEngine(engine string) []string {
 	switch strings.ToLower(engine) {
 	case "postgresql":
-		return []string{"pg_dumpall", "-U", "$POSTGRES_USER"}
+		return []string{"pg_dumpall", "-U", `"${POSTGRES_USER:?missing POSTGRES_USER}"`}
 	case "mysql", "mariadb":
-		return []string{"mysqldump", "--all-databases", "-u", "root", "-p$MYSQL_ROOT_PASSWORD"}
+		return []string{"mysqldump", "--all-databases", "-u", "root", `--password="${MYSQL_ROOT_PASSWORD:?missing MYSQL_ROOT_PASSWORD}"`}
 	case "mongodb":
-		return []string{"mongodump", "--archive", "--username", "\"$MONGO_INITDB_ROOT_USERNAME\"", "--password", "\"$MONGO_INITDB_ROOT_PASSWORD\"", "--authenticationDatabase", "admin"}
+		return []string{"mongodump", "--archive", "--username", `"${MONGO_INITDB_ROOT_USERNAME:?missing MONGO_INITDB_ROOT_USERNAME}"`, "--password", `"${MONGO_INITDB_ROOT_PASSWORD:?missing MONGO_INITDB_ROOT_PASSWORD}"`, "--authenticationDatabase", "admin"}
 	case "redis":
 		return []string{"redis-cli", "--rdb", "/tmp/backup.rdb", "SAVE"}
 	default:
 		return nil
 	}
-}
-
-func findFreePort() (int, error) {
-	dialer := &net.Dialer{Timeout: 50 * time.Millisecond}
-	conn, err := dialer.Dial("tcp", ":0")
-	if err != nil {
-		return 0, err
-	}
-	defer conn.Close()
-	addr := conn.LocalAddr().(*net.TCPAddr)
-	return addr.Port, nil
 }
 
 func waitForDBReady(ctx context.Context, cli *client.Client, containerID, engine string) error {

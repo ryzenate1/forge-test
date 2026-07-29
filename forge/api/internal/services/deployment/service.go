@@ -115,6 +115,11 @@ type Service struct {
 	publisher            events.Publisher
 	resumeMu             sync.Mutex
 	executingDeployments sync.Map
+	wg                   sync.WaitGroup
+}
+
+func (s *Service) Stop() {
+	s.wg.Wait()
 }
 
 func New(store *store.Store, publishers ...events.Publisher) *Service {

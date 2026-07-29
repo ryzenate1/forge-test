@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import Image from "next/image";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -25,7 +25,8 @@ const categories = [
 
 export default function AppStorePage() {
   const [category, setCategory] = useState("");
-  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [debouncedCategory, setDebouncedCategory] = useState("");
   const [view, setView] = useState<"browse" | "installed" | "detail">("browse");
   const [selectedApp, setSelectedApp] = useState<AppStoreApp | null>(null);
   const [showInstallForm, setShowInstallForm] = useState(false);
@@ -33,14 +34,37 @@ export default function AppStorePage() {
   const queryClient = useQueryClient();
   const { toast } = useAppToast();
 
+  // Debounce search input to prevent excessive API calls
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchInput);
+    }, 500); // 500ms debounce delay
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  // Debounce category changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedCategory(category);
+    }, 300); // 300ms debounce for category changes
+    return () => clearTimeout(timer);
+  }, [category]);
+
   const appsQuery = useQuery({
-    queryKey: ["app-store", "apps", category, search],
-    queryFn: () => appStoreApi.listApps(category || undefined, search || undefined),
+    queryKey: ["app-store", "apps", debouncedCategory, debouncedSearch],
+    queryFn: () => appStoreApi.listApps(debouncedCategory || undefined, debouncedSearch || undefined),
+    staleTime: 5 * 60 * 1000, // 5 minutes - don't refetch if data is recent
+    retry: 2, // Retry failed requests up to 2 times
+    enabled: view === "browse" || view === "detail", // Only fetch when needed
   });
 
   const installsQuery = useQuery({
     queryKey: ["app-store", "installs"],
     queryFn: () => appStoreApi.listInstalls(),
+    staleTime: 2 * 60 * 1000, // 2 minutes - installed apps don't change often
+    retry: 2, // Retry failed requests up to 2 times
+    enabled: view === "installed" || view === "detail", // Only fetch when needed
   });
 
   const installMut = useMutation({
@@ -78,15 +102,74 @@ export default function AppStorePage() {
     setView("detail");
   };
 
-  if (appsQuery.isError) {
+  const apps = useMemo(() => {
+    const data = appsQuery.data;
+    return Array.isArray(data) ? data : [];
+  }, [appsQuery.data]);
+
+  const installs = useMemo(() => {
+    const data = installsQuery.data;
+    return Array.isArray(data) ? data : [];
+  }, [installsQuery.data]);
+
+  const installedKeys = useMemo(() => new Set(installs.map((i) => i.appKey)), [installs]);
+  const installsByKey = useMemo(() => new Map(installs.map((i) => [i.appKey, i])), [installs]);
+
+  // Handle rate limit errors specifically
+  const isRateLimited = (view === "browse" || view === "detail") && appsQuery.isError &&
+    (appsQuery.error?.message?.includes('429') || appsQuery.error?.message?.includes('rate limit'));
+
+  const isInstallsRateLimited = (view === "installed" || view === "detail") && installsQuery.isError &&
+    (installsQuery.error?.message?.includes('429') || installsQuery.error?.message?.includes('rate limit'));
+
+  // Refresh function to manually retry
+  const refreshData = useCallback(() => {
+    if (view === "browse" || view === "detail") {
+      queryClient.invalidateQueries({ queryKey: ["app-store", "apps"] });
+    }
+    if (view === "installed" || view === "detail") {
+      queryClient.invalidateQueries({ queryKey: ["app-store", "installs"] });
+    }
+  }, [queryClient, view]);
+
+  if ((view === "browse" || view === "detail") && appsQuery.isError && !isRateLimited) {
     return <ErrorAlert error={appsQuery.error} title="Failed to load app store" />;
   }
 
-  const apps = appsQuery.data ?? [];
-  const installs = installsQuery.data ?? [];
+  if ((view === "installed" || view === "detail") && installsQuery.isError && !isInstallsRateLimited) {
+    return <ErrorAlert error={installsQuery.error} title="Failed to load installed apps" />;
+  }
 
-  const installedKeys = new Set(installs.map((i) => i.appKey));
-  const installsByKey = new Map(installs.map((i) => [i.appKey, i]));
+  // Show rate limit message with refresh option
+  if (isRateLimited || isInstallsRateLimited) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-center">
+        <div className="mb-6 text-6xl">⏳</div>
+        <h2 className="text-2xl font-bold text-white mb-2">Rate Limit Exceeded</h2>
+        <p className="text-slate-400 mb-6">Too many requests. Please wait a moment and try again.</p>
+        <button
+          onClick={refreshData}
+          className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-6 py-3 text-sm font-semibold text-white hover:bg-indigo-500 transition-colors"
+        >
+          <RefreshCw className="h-4 w-4" />
+          Retry Now
+        </button>
+      </div>
+    );
+  }
+
+  // Show loading state while data is being fetched
+  const isLoading = (view === "browse" || view === "detail") && appsQuery.isLoading ||
+                   (view === "installed" || view === "detail") && installsQuery.isLoading;
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16">
+        <div className="mb-4 h-12 w-12 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" />
+        <p className="text-slate-400">Loading app store...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -99,17 +182,25 @@ export default function AppStorePage() {
         <div className="flex gap-2">
           <button
             onClick={() => { setView("browse"); setSelectedApp(null); }}
-            className={cn("rounded-lg px-4 py-2 text-sm font-medium transition-colors", view === "browse" ? "bg-indigo-600 text-white" : "bg-white/5 text-slate-300 hover:bg-white/10")}
+            className={cn("rounded-lg border px-4 py-2 text-sm font-medium transition-colors", view === "browse" ? "border-red-500/70 bg-red-600 text-white" : "border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]")}
           >
             <Grid3X3 className="mr-1.5 inline-block h-4 w-4" />
             Browse
           </button>
           <button
             onClick={() => { setView("installed"); setSelectedApp(null); }}
-            className={cn("rounded-lg px-4 py-2 text-sm font-medium transition-colors", view === "installed" ? "bg-indigo-600 text-white" : "bg-white/5 text-slate-300 hover:bg-white/10")}
+            className={cn("rounded-lg border px-4 py-2 text-sm font-medium transition-colors", view === "installed" ? "border-red-500/70 bg-red-600 text-white" : "border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]")}
           >
             <Package className="mr-1.5 inline-block h-4 w-4" />
             Installed ({installs.length})
+          </button>
+          <button
+            onClick={refreshData}
+            disabled={appsQuery.isFetching || installsQuery.isFetching}
+            className="rounded-lg border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-slate-300 hover:bg-white/[0.08] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            title="Refresh data"
+          >
+            <RefreshCw className={`h-4 w-4 ${appsQuery.isFetching || installsQuery.isFetching ? 'animate-spin' : ''}`} />
           </button>
         </div>
       </div>
@@ -138,8 +229,8 @@ export default function AppStorePage() {
               <input
                 type="text"
                 placeholder="Search apps..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
                 className="w-full rounded-lg border border-white/10 bg-white/5 py-2 pl-10 pr-4 text-sm text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
               />
             </div>
@@ -157,7 +248,7 @@ export default function AppStorePage() {
           {/* App Grid */}
           {appsQuery.isLoading ? (
             <SkeletonList rows={4} columns={3} />
-          ) : apps.length === 0 ? (
+          ) : !Array.isArray(apps) || apps.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-slate-500">
               <Package className="mb-3 h-12 w-12" />
               <p className="text-lg font-medium">No apps found</p>
@@ -203,7 +294,7 @@ export default function AppStorePage() {
         <>
           {installsQuery.isLoading ? (
             <SkeletonList rows={4} columns={3} />
-          ) : installs.length === 0 ? (
+          ) : !Array.isArray(installs) || installs.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-slate-500">
               <Package className="mb-3 h-12 w-12" />
               <p className="text-lg font-medium">No apps installed</p>

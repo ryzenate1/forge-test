@@ -824,40 +824,33 @@ func (s *Server) handleContainerExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Allowlist of safe commands — only these may be used
+	// This endpoint is for diagnostics, not an arbitrary remote shell.
+	// Keep the allowlist deliberately read-only: interpreters, package
+	// managers, network clients, compilers, editors, Docker clients, and
+	// filesystem-mutating tools all turn an authenticated diagnostic action
+	// into code execution.
 	allowedCommands := map[string]bool{
-		"ls": true, "cat": true, "echo": true, "pwd": true, "ps": true,
+		"ls": true, "pwd": true, "ps": true,
 		"top": true, "df": true, "du": true, "free": true, "uname": true,
-		"whoami": true, "id": true, "env": true, "head": true, "tail": true,
-		"grep": true, "find": true, "stat": true, "file": true, "tree": true,
+		"whoami": true, "id": true, "head": true, "tail": true,
+		"stat": true, "file": true, "tree": true,
 		"readlink": true, "basename": true, "dirname": true, "sort": true,
-		"wc": true, "cut": true, "tr": true, "tee": true, "date": true,
-		"cal": true, "bc": true, "expr": true, "test": true, "true": true,
-		"false": true, "sleep": true, "uptime": true, "dmesg": true,
-		"lscpu": true, "lsblk": true, "lspci": true, "lsusb": true,
+		"wc": true, "cut": true, "date": true,
+		"uptime": true,
+		"lscpu":  true, "lsblk": true, "lspci": true, "lsusb": true,
 		"lsof": true, "ss": true, "netstat": true, "ip": true, "ifconfig": true,
 		"ping": true, "traceroute": true, "nslookup": true, "dig": true,
-		"curl": true, "wget": true, "git": true, "npm": true, "node": true,
-		"python": true, "python3": true, "pip": true, "pip3": true,
-		"make": true, "gcc": true, "g++": true, "java": true, "jar": true,
-		"mvn": true, "gradle": true, "docker": true, "docker-compose": true,
-		"nano": true, "vim": true, "vi": true, "less": true, "more": true,
-		"diff": true, "patch": true, "tar": true, "gzip": true, "gunzip": true,
-		"zip": true, "unzip": true, "bzip2": true, "xz": true, "zstd": true,
 	}
-	if !allowedCommands[body.Cmd[0]] {
+	command := strings.TrimSpace(body.Cmd[0])
+	if command != path.Base(command) || !allowedCommands[command] {
 		writeError(w, http.StatusForbidden, "command not allowed")
 		return
 	}
 
-	// Block dangerous patterns in command arguments
-	for _, cmd := range body.Cmd[1:] {
-		dangerousPatterns := []string{"rm -rf", "dd ", "mkfs", ":(){ :;}", "sh -c", "bash -c"}
-		for _, pattern := range dangerousPatterns {
-			if strings.Contains(cmd, pattern) {
-				writeError(w, http.StatusForbidden, "dangerous command pattern detected")
-				return
-			}
+	for _, arg := range body.Cmd[1:] {
+		if strings.ContainsRune(arg, '\x00') || strings.ContainsAny(arg, "\r\n") {
+			writeError(w, http.StatusForbidden, "invalid command argument")
+			return
 		}
 	}
 
@@ -1180,16 +1173,17 @@ func (s *Server) getAdminUserInfo(r *http.Request) (*AdminUserInfo, error) {
 	// Fallback to beacon's own token authentication
 	if s.token != "" {
 		timestamp := r.Header.Get("X-Panel-Timestamp")
+		nonce := r.Header.Get("X-Panel-Nonce")
 		signature := r.Header.Get("X-Panel-Signature")
 
 		if timestamp != "" && signature != "" {
 			parsed, err := time.Parse(time.RFC3339, timestamp)
-			if err != nil || time.Since(parsed) > 5*time.Minute || time.Until(parsed) > 5*time.Minute {
+			if err != nil || time.Since(parsed) > 5*time.Minute || time.Until(parsed) > 5*time.Minute || !validRequestNonce(nonce) {
 				return nil, fmt.Errorf("invalid signature timestamp")
 			}
 			body, _ := io.ReadAll(r.Body)
 			r.Body = io.NopCloser(bytes.NewReader(body))
-			expected := sign(s.token, r.Method, r.URL.RequestURI(), timestamp, body)
+			expected := sign(s.token, r.Method, r.URL.RequestURI(), timestamp, body, nonce)
 			if hmac.Equal([]byte(signature), []byte(expected)) {
 				// This is beacon's own admin token - full access
 				return &AdminUserInfo{

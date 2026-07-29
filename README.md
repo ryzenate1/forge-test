@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚔️ GamePanel
+# ⚔️ Forge Plane
 
 ### Forge Control Plane · Beacon Node Agent
 
@@ -24,9 +24,9 @@ PostgreSQL, Redis, and Docker.
 
 ---
 
-## What is GamePanel?
+## What is Forge Plane?
 
-GamePanel manages game servers across one or more Linux machines. The **Forge**
+Forge Plane manages game servers across one or more Linux machines. The **Forge**
 control plane provides the web dashboard, API, scheduling, placement, recovery,
 and administration features. A **Beacon** agent runs on each game node and
 controls its Docker workloads, files, console, backups, networking, and SFTP.
@@ -163,8 +163,8 @@ player load, backups, world growth, and container image cache—not only idle us
 ### 1. Download the source and dependencies
 
 ```bash
-git clone https://github.com/your-org/gamepanel.git
-cd gamepanel
+git clone https://github.com/your-org/forge-plane.git
+cd forge-plane
 npm ci
 go work sync
 ```
@@ -216,15 +216,15 @@ load-balancer, evacuation and recovery instructions live in the
 The short version is:
 
 ```bash
-git clone https://github.com/your-org/gamepanel.git
-cd gamepanel/infra
+git clone https://github.com/your-org/forge-plane.git
+cd forge-plane/infra
 
 # Generates API, database, encryption, node and Grafana secrets.
 PANEL_DOMAIN=panel.example.com ./gen-env.sh .env
 
 sudo install -d -o "$USER" -g "$USER" \
-  /srv/game-panel/servers \
-  /var/backups/gamepanel/postgres
+  /srv/forge-plane/servers \
+  /var/backups/forge-plane/postgres
 
 ./bootstrap-control-plane.sh
 ```
@@ -282,7 +282,7 @@ Create another node in the panel, copy its UUID and credential into a
 node-specific `infra/.env` on the additional Ubuntu host, then run:
 
 ```bash
-cd gamepanel/infra
+cd forge-plane/infra
 ./bootstrap-beacon.sh
 curl --fail http://127.0.0.1:9090/health
 ```
@@ -366,7 +366,7 @@ that every SQL migration is recorded.
 ## Repository layout
 
 ```text
-gamepanel/
+forge-plane/
 ├── forge/
 │   ├── api/                 # Go control-plane API and SQL migrations
 │   └── web/                 # Next.js dashboard
@@ -390,8 +390,8 @@ gamepanel/
 | Start here | Description |
 |---|---|---|
 | [Documentation index](./docs/README.md) | Map of the documentation tree |
-| [Installation guide](./docs/installation.md) | Step-by-step installation |
-| [Upgrading](./docs/upgrading.md) | Upgrade procedures and rollback |
+| [Installation guide](./docs/operations/installation.md) | Step-by-step installation |
+| [Upgrading](./docs/operations/upgrading.md) | Upgrade procedures and rollback |
 | [Production deployment](./docs/operations/README.md) | Deployment guide, configuration reference, backup/restore, monitoring, troubleshooting |
 | [Security operations](./docs/operations/security.md) | Security controls and operator guidance |
 | [Architecture overview](./docs/architecture/README.md) | System components, data flow, API overview, deployment architecture |
@@ -452,7 +452,7 @@ docker compose -f compose.yml -f compose.production.yml --env-file .env logs --t
 
 ## Project status
 
-GamePanel is under active development. The Docker Compose production path,
+Forge Plane is under active development. The Docker Compose production path,
 TCP/UDP allocations, integrated L4 proxy, multi-node evacuation, shared-backup
 recovery, and AWS Beacon bootstrap are implemented. Operators should still use
 staged upgrades, off-host backups, monitoring, and recovery drills before
@@ -460,7 +460,7 @@ hosting critical workloads.
 
 ## Contributing
 
-1. Read [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+1. Read [`docs/development/contributing.md`](./docs/development/contributing.md).
 2. Create a focused branch.
 3. Add or update tests with the change.
 4. Run the checks in [Testing and quality checks](#testing-and-quality-checks).

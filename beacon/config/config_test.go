@@ -17,14 +17,14 @@ func TestDefault(t *testing.T) {
 	if cfg.Debug != false {
 		t.Error("Debug should default to false")
 	}
-	if cfg.System.API.Host != "0.0.0.0" {
-		t.Errorf("API.Host = %q, want %q", cfg.System.API.Host, "0.0.0.0")
+	if cfg.System.API.Host != "127.0.0.1" {
+		t.Errorf("API.Host = %q, want %q", cfg.System.API.Host, "127.0.0.1")
 	}
 	if cfg.System.API.Port != 9090 {
 		t.Errorf("API.Port = %d, want %d", cfg.System.API.Port, 9090)
 	}
-	if cfg.System.Sftp.Address != "0.0.0.0" {
-		t.Errorf("SFTP.Address = %q, want %q", cfg.System.Sftp.Address, "0.0.0.0")
+	if cfg.System.Sftp.Address != "127.0.0.1" {
+		t.Errorf("SFTP.Address = %q, want %q", cfg.System.Sftp.Address, "127.0.0.1")
 	}
 	if cfg.System.Sftp.Port != 2022 {
 		t.Errorf("SFTP.Port = %d, want %d", cfg.System.Sftp.Port, 2022)
@@ -165,8 +165,8 @@ func TestValidate_InvalidAllowedOrigin(t *testing.T) {
 func TestValidate_WildcardAllowedOrigin(t *testing.T) {
 	cfg := Default()
 	cfg.AllowedOrigins = []string{"*"}
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("Validate() should accept wildcard allowed origin: %v", err)
+	if err := cfg.Validate(); err == nil {
+		t.Error("Validate() should reject wildcard allowed origin")
 	}
 }
 
@@ -193,7 +193,7 @@ func TestLoad_YAMLFile(t *testing.T) {
 	yamlContent := `debug: true
 uuid: 550e8400-e29b-41d4-a716-446655440000
 token_id: test-token-id
-token: test-token
+token: 0123456789abcdef0123456789abcdef
 panel_url: https://panel.example.com
 remote: https://remote.example.com
 system:
@@ -270,8 +270,8 @@ func TestLoadFromSources_NoFileNoEnv(t *testing.T) {
 	if cfg.System.API.Port != 9090 {
 		t.Errorf("API.Port = %d, want default %d", cfg.System.API.Port, 9090)
 	}
-	if cfg.System.API.Host != "0.0.0.0" {
-		t.Errorf("API.Host = %q, want default %q", cfg.System.API.Host, "0.0.0.0")
+	if cfg.System.API.Host != "127.0.0.1" {
+		t.Errorf("API.Host = %q, want default %q", cfg.System.API.Host, "127.0.0.1")
 	}
 }
 
@@ -299,8 +299,8 @@ func TestLoadFromSources_WithYAMLFile(t *testing.T) {
 	if cfg.System.DataDirectory != "/custom/data" {
 		t.Errorf("DataDirectory = %q, want %q", cfg.System.DataDirectory, "/custom/data")
 	}
-	if cfg.System.API.Host != "0.0.0.0" {
-		t.Errorf("API.Host = %q, want default %q", cfg.System.API.Host, "0.0.0.0")
+	if cfg.System.API.Host != "127.0.0.1" {
+		t.Errorf("API.Host = %q, want default %q", cfg.System.API.Host, "127.0.0.1")
 	}
 }
 
@@ -391,7 +391,6 @@ func viperWithDefaultsForTest() *viper.Viper {
 func TestAccessors_AllowedMountsList(t *testing.T) {
 	cfg := Default()
 	cfg.AllowedMounts = []string{"/mnt/a", "/mnt/b"}
-	setGlobal(cfg)
 
 	mounts := cfg.AllowedMountsList()
 	if len(mounts) != 2 {
@@ -406,7 +405,6 @@ func TestAccessors_AllowedMountsList(t *testing.T) {
 
 func TestAccessors_BackupConfig(t *testing.T) {
 	cfg := Default()
-	setGlobal(cfg)
 
 	bc := cfg.BackupConfig()
 	if bc.WriteLimit != 0 {

@@ -178,9 +178,15 @@ export function ErrorRateLimit({
 
   useEffect(() => {
     if (countdown <= 0) return;
-    const timer = setInterval(() => setCountdown((c) => Math.max(0, c - 1)), 1000);
+    const timer = setInterval(() => {
+      setCountdown((c) => {
+        if (c <= 1) return 0;
+        return c - 1;
+      });
+    }, 1000);
     return () => clearInterval(timer);
-  }, [countdown]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <ErrorCard

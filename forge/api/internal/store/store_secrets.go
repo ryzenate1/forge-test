@@ -135,7 +135,304 @@ func (s *Store) MigrateOperationalSecrets(ctx context.Context) error {
 	if err := migrateBackupStorageProviderSecrets(ctx, tx, s); err != nil {
 		return err
 	}
+	if err := migrateDBContainerSecrets(ctx, tx, s); err != nil {
+		return err
+	}
+	if err := migrateAcmeAccountKeys(ctx, tx, s); err != nil {
+		return err
+	}
+	if err := migrateBackupPolicyKeys(ctx, tx, s); err != nil {
+		return err
+	}
+	if err := migrateNotificationChannelConfigs(ctx, tx, s); err != nil {
+		return err
+	}
+	if err := migrateComposeSecrets(ctx, tx, s); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
+}
+
+func migrateComposeSecrets(ctx context.Context, tx pgx.Tx, s *Store) error {
+	rows, err := tx.Query(ctx, `
+		SELECT id::text, env_vars::text, COALESCE(env_vars_encrypted, ''),
+		       COALESCE(git_webhook_secret, ''), COALESCE(git_webhook_secret_encrypted, '')
+		FROM compose_stacks
+		FOR UPDATE
+	`)
+	if err != nil {
+		return fmt.Errorf("scan compose secrets: %w", err)
+	}
+	type pending struct{ id, envPlain, envEncrypted, webhookPlain, webhookEncrypted string }
+	var values []pending
+	for rows.Next() {
+		var value pending
+		if err := rows.Scan(&value.id, &value.envPlain, &value.envEncrypted, &value.webhookPlain, &value.webhookEncrypted); err != nil {
+			rows.Close()
+			return err
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, value := range values {
+		envAAD := secretAAD("compose_stacks", value.id, "env_vars")
+		envJSON, err := s.decryptSecret(value.envEncrypted, value.envPlain, envAAD)
+		if err != nil {
+			return err
+		}
+		if envJSON == "" {
+			envJSON = "{}"
+		}
+		if !json.Valid([]byte(envJSON)) {
+			return errors.New("compose stack contains invalid environment JSON")
+		}
+		if value.envEncrypted == "" || s.secrets.NeedsRotation(value.envEncrypted) {
+			value.envEncrypted, err = s.encryptSecret(envJSON, envAAD)
+			if err != nil {
+				return err
+			}
+		}
+
+		webhookAAD := secretAAD("compose_stacks", value.id, "git_webhook_secret")
+		webhook, err := s.decryptSecret(value.webhookEncrypted, value.webhookPlain, webhookAAD)
+		if err != nil {
+			return err
+		}
+		if webhook != "" && (value.webhookEncrypted == "" || s.secrets.NeedsRotation(value.webhookEncrypted)) {
+			value.webhookEncrypted, err = s.encryptSecret(webhook, webhookAAD)
+			if err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE compose_stacks
+			SET env_vars='{}'::jsonb, env_vars_encrypted=$2,
+			    git_webhook_secret=NULL, git_webhook_secret_encrypted=$3
+			WHERE id=$1
+		`, value.id, value.envEncrypted, value.webhookEncrypted); err != nil {
+			return fmt.Errorf("persist encrypted compose secrets: %w", err)
+		}
+	}
+	return nil
+}
+
+func migrateNotificationChannelConfigs(ctx context.Context, tx pgx.Tx, s *Store) error {
+	rows, err := tx.Query(ctx, `
+		SELECT id::text, config::text, COALESCE(config_encrypted, '')
+		FROM notification_channels
+		FOR UPDATE
+	`)
+	if err != nil {
+		return fmt.Errorf("scan notification configs: %w", err)
+	}
+	type pending struct{ id, plaintext, encrypted string }
+	var values []pending
+	for rows.Next() {
+		var value pending
+		if err := rows.Scan(&value.id, &value.plaintext, &value.encrypted); err != nil {
+			rows.Close()
+			return err
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, value := range values {
+		aad := secretAAD("notification_channels", value.id, "config")
+		configJSON, err := s.decryptSecret(value.encrypted, value.plaintext, aad)
+		if err != nil {
+			return err
+		}
+		if configJSON == "" {
+			configJSON = "{}"
+		}
+		if !json.Valid([]byte(configJSON)) {
+			return errors.New("notification channel contains invalid config JSON")
+		}
+		if value.encrypted == "" || s.secrets.NeedsRotation(value.encrypted) {
+			value.encrypted, err = s.encryptSecret(configJSON, aad)
+			if err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE notification_channels
+			SET config = '{}'::jsonb, config_encrypted = $2
+			WHERE id = $1
+		`, value.id, value.encrypted); err != nil {
+			return fmt.Errorf("persist encrypted notification config: %w", err)
+		}
+	}
+	return nil
+}
+
+func migrateBackupPolicyKeys(ctx context.Context, tx pgx.Tx, s *Store) error {
+	rows, err := tx.Query(ctx, `
+		SELECT id::text, COALESCE(encryption_key, ''), COALESCE(encryption_key_encrypted, '')
+		FROM backup_policies
+		FOR UPDATE
+	`)
+	if err != nil {
+		return fmt.Errorf("scan backup policy keys: %w", err)
+	}
+	type pending struct{ id, plaintext, encrypted string }
+	var values []pending
+	for rows.Next() {
+		var value pending
+		if err := rows.Scan(&value.id, &value.plaintext, &value.encrypted); err != nil {
+			rows.Close()
+			return err
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, value := range values {
+		aad := secretAAD("backup_policies", value.id, "encryption_key")
+		key, err := s.decryptSecret(value.encrypted, value.plaintext, aad)
+		if err != nil {
+			return err
+		}
+		if key == "" {
+			continue
+		}
+		if value.encrypted == "" || s.secrets.NeedsRotation(value.encrypted) {
+			value.encrypted, err = s.encryptSecret(key, aad)
+			if err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE backup_policies
+			SET encryption_key = '', encryption_key_encrypted = $2
+			WHERE id = $1
+		`, value.id, value.encrypted); err != nil {
+			return fmt.Errorf("persist encrypted backup policy key: %w", err)
+		}
+	}
+	return nil
+}
+
+func migrateAcmeAccountKeys(ctx context.Context, tx pgx.Tx, s *Store) error {
+	rows, err := tx.Query(ctx, `
+		SELECT id::text, COALESCE(private_key, ''), COALESCE(private_key_encrypted, '')
+		FROM acme_accounts
+		FOR UPDATE
+	`)
+	if err != nil {
+		return fmt.Errorf("scan ACME account keys: %w", err)
+	}
+	type pending struct{ id, plaintext, encrypted string }
+	var values []pending
+	for rows.Next() {
+		var value pending
+		if err := rows.Scan(&value.id, &value.plaintext, &value.encrypted); err != nil {
+			rows.Close()
+			return err
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, value := range values {
+		aad := secretAAD("acme_accounts", value.id, "private_key")
+		key, err := s.decryptSecret(value.encrypted, value.plaintext, aad)
+		if err != nil {
+			return err
+		}
+		if key == "" {
+			continue
+		}
+		if value.encrypted == "" || s.secrets.NeedsRotation(value.encrypted) {
+			value.encrypted, err = s.encryptSecret(key, aad)
+			if err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE acme_accounts
+			SET private_key = '', private_key_encrypted = $2
+			WHERE id = $1
+		`, value.id, value.encrypted); err != nil {
+			return fmt.Errorf("persist encrypted ACME account key: %w", err)
+		}
+	}
+	return nil
+}
+
+func migrateDBContainerSecrets(ctx context.Context, tx pgx.Tx, s *Store) error {
+	rows, err := tx.Query(ctx, `
+		SELECT id::text, connection_string, credentials::text,
+		       COALESCE(connection_string_encrypted, ''), COALESCE(credentials_encrypted, '')
+		FROM db_containers
+		FOR UPDATE
+	`)
+	if err != nil {
+		return fmt.Errorf("scan database container secrets: %w", err)
+	}
+	type pending struct {
+		id, connection, credentials, encryptedConnection, encryptedCredentials string
+	}
+	var values []pending
+	for rows.Next() {
+		var value pending
+		if err := rows.Scan(&value.id, &value.connection, &value.credentials, &value.encryptedConnection, &value.encryptedCredentials); err != nil {
+			rows.Close()
+			return err
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, value := range values {
+		connectionAAD := secretAAD("db_containers", value.id, "connection_string")
+		credentialsAAD := secretAAD("db_containers", value.id, "credentials")
+		connection, err := s.decryptSecret(value.encryptedConnection, value.connection, connectionAAD)
+		if err != nil {
+			return err
+		}
+		credentials, err := s.decryptSecret(value.encryptedCredentials, value.credentials, credentialsAAD)
+		if err != nil {
+			return err
+		}
+		if connection != "" && (value.encryptedConnection == "" || s.secrets.NeedsRotation(value.encryptedConnection)) {
+			value.encryptedConnection, err = s.encryptSecret(connection, connectionAAD)
+			if err != nil {
+				return err
+			}
+		}
+		if credentials != "" && credentials != "{}" && (value.encryptedCredentials == "" || s.secrets.NeedsRotation(value.encryptedCredentials)) {
+			value.encryptedCredentials, err = s.encryptSecret(credentials, credentialsAAD)
+			if err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE db_containers
+			SET connection_string = '', credentials = '{}'::jsonb,
+			    connection_string_encrypted = $2, credentials_encrypted = $3
+			WHERE id = $1
+		`, value.id, value.encryptedConnection, value.encryptedCredentials); err != nil {
+			return fmt.Errorf("persist encrypted database container credentials: %w", err)
+		}
+	}
+	return nil
 }
 
 func migrateBackupStorageProviderSecrets(ctx context.Context, tx pgx.Tx, s *Store) error {

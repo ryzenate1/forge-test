@@ -226,7 +226,7 @@ const sessionFiberLocalsKey = "auth_session"
 
 func SessionMiddleware(store SessionStore) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		token := c.Cookies("__Host-forge_session_v2")
+		token := c.Cookies(SessionCookieName)
 		if token == "" {
 			authHeader := c.Get("Authorization")
 			if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
@@ -240,15 +240,20 @@ func SessionMiddleware(store SessionStore) fiber.Handler {
 
 		sess, err := store.GetByToken(c.Context(), token)
 		if err != nil {
-			return c.Next()
+			ClearSessionCookie(c)
+			return fiber.NewError(fiber.StatusUnauthorized, "invalid or expired session")
 		}
 
 		if time.Now().After(sess.ExpiresAt) {
-			return c.Next()
+			_ = store.Delete(c.Context(), sess.ID)
+			ClearSessionCookie(c)
+			return fiber.NewError(fiber.StatusUnauthorized, "session expired")
 		}
 
 		sess.LastActiveAt = time.Now()
-		_ = store.Update(c.Context(), sess)
+		if err := store.Update(c.Context(), sess); err != nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "could not update session")
+		}
 
 		c.Locals(sessionFiberLocalsKey, sess)
 		return c.Next()
@@ -271,7 +276,7 @@ func SetSessionCookie(c *fiber.Ctx, token string, expiresAt time.Time) {
 		Expires:  expiresAt,
 		HTTPOnly: true,
 		Secure:   true,
-		SameSite: "Lax",
+		SameSite: "Strict",
 		Path:     "/",
 	})
 }
@@ -283,11 +288,11 @@ func ClearSessionCookie(c *fiber.Ctx) {
 		Expires:  time.Unix(0, 0),
 		HTTPOnly: true,
 		Secure:   true,
-		SameSite: "Lax",
+		SameSite: "Strict",
 		Path:     "/",
 	})
 }
 
 func ValidateSessionIP(sess *Session, currentIP string) bool {
-	return sess.IPAddress == "" || sess.IPAddress == currentIP
+	return sess != nil && sess.IPAddress != "" && currentIP != "" && sess.IPAddress == currentIP
 }

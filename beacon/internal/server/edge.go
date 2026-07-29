@@ -3,10 +3,14 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/tls"
 	"encoding/json"
 	"log"
-	"math/rand"
+	"math/big"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -45,8 +49,9 @@ type EdgeAgent struct {
 	stateChangedAt time.Time
 	mu             sync.RWMutex
 
-	stopCh  chan struct{}
-	stopped chan struct{}
+	stopCh   chan struct{}
+	stopped  chan struct{}
+	stopOnce sync.Once
 
 	backoffCfg     BackoffConfig
 	offlineTimeout time.Duration
@@ -57,6 +62,7 @@ type EdgeAgent struct {
 	connectAttempts int64
 	reconnectCount  int64
 	offlineDetected bool
+	reconnecting    bool
 
 	onConnect    func()
 	onDisconnect func()
@@ -64,15 +70,9 @@ type EdgeAgent struct {
 	httpClient *http.Client
 }
 
-// SetEdgeAgent sets the package-level edge agent instance used by HTTP
-// handlers. Called from main.go when panel onboarding is enabled.
-func SetEdgeAgent(agent *EdgeAgent) {
-	edgeAgentMu.Lock()
-	defer edgeAgentMu.Unlock()
-	edgeAgent = agent
-}
-
 func NewEdgeAgent(panelURL, nodeToken, nodeID, beaconVersion string) *EdgeAgent {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	return &EdgeAgent{
 		panelURL:       panelURL,
 		nodeToken:      nodeToken,
@@ -85,7 +85,7 @@ func NewEdgeAgent(panelURL, nodeToken, nodeID, beaconVersion string) *EdgeAgent 
 		backoffCfg:     DefaultBackoffConfig,
 		offlineTimeout: 30 * time.Second,
 		hbInterval:     15 * time.Second,
-		httpClient:     &http.Client{Timeout: 10 * time.Second},
+		httpClient:     &http.Client{Transport: transport, Timeout: 10 * time.Second},
 	}
 }
 
@@ -139,11 +139,23 @@ func (a *EdgeAgent) Start(ctx context.Context) {
 }
 
 func (a *EdgeAgent) Stop() {
-	close(a.stopCh)
+	a.stopOnce.Do(func() { close(a.stopCh) })
 	<-a.stopped
 }
 
 func (a *EdgeAgent) reconnectLoop(ctx context.Context) {
+	a.mu.Lock()
+	if a.reconnecting {
+		a.mu.Unlock()
+		return
+	}
+	a.reconnecting = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.reconnecting = false
+		a.mu.Unlock()
+	}()
 	backoff := a.backoffCfg.Initial
 	for {
 		select {
@@ -167,7 +179,7 @@ func (a *EdgeAgent) reconnectLoop(ctx context.Context) {
 		case <-a.stopCh:
 			return
 		}
-		if a.tryReconnect() {
+		if a.tryReconnect(ctx) {
 			a.mu.Lock()
 			a.setStateLocked(EdgeStateConnected)
 			a.offlineDetected = false
@@ -185,7 +197,7 @@ func (a *EdgeAgent) reconnectLoop(ctx context.Context) {
 			backoff = a.backoffCfg.Max
 		}
 		if a.backoffCfg.Jitter {
-			jitter := time.Duration(rand.Int63n(int64(backoff) / 4))
+			jitter := secureJitter(backoff / 4)
 			backoff = backoff - backoff/8 + jitter
 		}
 	}
@@ -193,7 +205,6 @@ func (a *EdgeAgent) reconnectLoop(ctx context.Context) {
 
 type connectRequest struct {
 	NodeID       string   `json:"nodeId"`
-	Token        string   `json:"token"`
 	Version      string   `json:"version"`
 	Capabilities []string `json:"capabilities,omitempty"`
 }
@@ -204,10 +215,9 @@ type connectResponse struct {
 	Message   string `json:"message,omitempty"`
 }
 
-func (a *EdgeAgent) tryReconnect() bool {
+func (a *EdgeAgent) tryReconnect(ctx context.Context) bool {
 	req := connectRequest{
 		NodeID:  a.nodeID,
-		Token:   a.nodeToken,
 		Version: a.beaconVersion,
 	}
 	body, err := json.Marshal(req)
@@ -216,7 +226,12 @@ func (a *EdgeAgent) tryReconnect() bool {
 		return false
 	}
 	baseURL := strings.TrimRight(a.panelURL, "/")
-	httpReq, err := http.NewRequest(http.MethodPost, baseURL+"/api/edge/connect", bytes.NewReader(body))
+	endpoint, err := url.Parse(baseURL + "/api/edge/connect")
+	if err != nil || !secureEdgeURL(endpoint) {
+		log.Printf("[edge] reconnect URL is invalid or insecure")
+		return false
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
 	if err != nil {
 		log.Printf("[edge] reconnect request error: %v", err)
 		return false
@@ -244,6 +259,28 @@ func (a *EdgeAgent) tryReconnect() bool {
 	}
 	log.Printf("[edge] reconnected to panel as node %s", cr.NodeID)
 	return true
+}
+
+func secureJitter(limit time.Duration) time.Duration {
+	if limit <= 0 {
+		return 0
+	}
+	value, err := rand.Int(rand.Reader, big.NewInt(int64(limit)))
+	if err != nil {
+		return 0
+	}
+	return time.Duration(value.Int64())
+}
+
+func secureEdgeURL(endpoint *url.URL) bool {
+	if endpoint == nil || endpoint.Hostname() == "" || endpoint.User != nil {
+		return false
+	}
+	if endpoint.Scheme == "https" {
+		return true
+	}
+	ip := net.ParseIP(endpoint.Hostname())
+	return endpoint.Scheme == "http" && (strings.EqualFold(endpoint.Hostname(), "localhost") || ip != nil && ip.IsLoopback())
 }
 
 // SetHTTPClient replaces the default HTTP client (for testing).

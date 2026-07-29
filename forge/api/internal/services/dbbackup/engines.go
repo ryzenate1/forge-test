@@ -6,11 +6,11 @@ import (
 )
 
 type EngineBackupCommand struct {
-	Tool       string
-	Args       []string
-	RestoreCmd string
+	Tool        string
+	Args        []string
+	RestoreCmd  string
 	RestoreArgs []string
-	Extension  string
+	Extension   string
 }
 
 func backupCommandForEngine(engine, host string, port int, username, password, database, outputFile string) (string, []string) {
@@ -69,10 +69,6 @@ func pgRestoreCommand(host string, port int, username, password, database, input
 
 func mysqldumpCommand(host string, port int, username, password, database, outputFile string) (string, []string) {
 	return "mysqldump", []string{
-		"-h", host,
-		"-P", fmt.Sprintf("%d", port),
-		"-u", username,
-		fmt.Sprintf("-p%s", password),
 		database,
 		"-r", outputFile,
 		"--single-transaction",
@@ -82,10 +78,6 @@ func mysqldumpCommand(host string, port int, username, password, database, outpu
 
 func mysqlRestoreCommand(host string, port int, username, password, database, inputFile string) (string, []string) {
 	return "mysql", []string{
-		"-h", host,
-		"-P", fmt.Sprintf("%d", port),
-		"-u", username,
-		fmt.Sprintf("-p%s", password),
 		database,
 		"-e", fmt.Sprintf("source %s", inputFile),
 	}
@@ -93,24 +85,16 @@ func mysqlRestoreCommand(host string, port int, username, password, database, in
 
 func mongodumpCommand(host string, port int, username, password, database, outputDir string) (string, []string) {
 	return "mongodump", []string{
-		"--host", host,
-		"--port", fmt.Sprintf("%d", port),
-		"-u", username,
-		"-p", password,
 		"--db", database,
-		"--out", outputDir,
+		"--archive=" + outputDir,
 	}
 }
 
 func mongorestoreCommand(host string, port int, username, password, database, inputDir string) (string, []string) {
 	return "mongorestore", []string{
-		"--host", host,
-		"--port", fmt.Sprintf("%d", port),
-		"-u", username,
-		"-p", password,
 		"--db", database,
 		"--drop",
-		inputDir,
+		"--archive=" + inputDir,
 	}
 }
 
@@ -118,7 +102,6 @@ func redisDumpCommand(host string, port int, password, outputFile string) (strin
 	return "redis-cli", []string{
 		"-h", host,
 		"-p", fmt.Sprintf("%d", port),
-		"-a", password,
 		"--rdb", outputFile,
 	}
 }
@@ -127,9 +110,7 @@ func redisRestoreCommand(host string, port int, password, inputFile string) (str
 	return "redis-cli", []string{
 		"-h", host,
 		"-p", fmt.Sprintf("%d", port),
-		"-a", password,
 		"--pipe",
-		"<", inputFile,
 	}
 }
 

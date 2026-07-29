@@ -160,23 +160,64 @@ func (cc *CleanupCron) removeTempFiles() error {
 }
 
 func (cc *CleanupCron) cleanDir(dir string, cutoff time.Time) error {
+	canonicalDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
 	for _, entry := range entries {
-		info, err := entry.Info()
+		path := filepath.Join(canonicalDir, entry.Name())
+		info, err := os.Lstat(path)
 		if err != nil {
 			continue
 		}
-		if info.ModTime().Before(cutoff) {
-			path := filepath.Join(dir, entry.Name())
-			if entry.IsDir() {
-				os.RemoveAll(path)
-			} else {
-				os.Remove(path)
+		if info.Mode()&os.ModeSymlink != 0 || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		quarantine, err := uniqueCleanupPath(canonicalDir)
+		if err != nil {
+			return err
+		}
+		if err := os.Rename(path, quarantine); err != nil {
+			if os.IsNotExist(err) {
+				continue
 			}
+			return err
+		}
+		movedInfo, err := os.Lstat(quarantine)
+		if err != nil {
+			return err
+		}
+		if !os.SameFile(info, movedInfo) {
+			_ = os.Rename(quarantine, path)
+			continue
+		}
+		if err := os.RemoveAll(quarantine); err != nil {
+			_ = os.Rename(quarantine, path)
+			return err
 		}
 	}
 	return nil
+}
+
+func uniqueCleanupPath(dir string) (string, error) {
+	temp, err := os.CreateTemp(dir, ".cleanup-quarantine-*")
+	if err != nil {
+		return "", err
+	}
+	path := temp.Name()
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := os.Remove(path); err != nil {
+		return "", err
+	}
+	return path, nil
 }

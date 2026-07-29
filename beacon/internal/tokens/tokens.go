@@ -40,9 +40,9 @@ type jwtHeader struct {
 }
 
 var (
-	ErrInvalidToken    = errors.New("invalid token")
-	ErrTokenExpired    = errors.New("token has expired")
-	ErrInvalidScope    = errors.New("invalid token scope")
+	ErrInvalidToken     = errors.New("invalid token")
+	ErrTokenExpired     = errors.New("token has expired")
+	ErrInvalidScope     = errors.New("invalid token scope")
 	ErrInvalidSignature = errors.New("invalid token signature")
 )
 
@@ -79,10 +79,14 @@ func (g *Generator) Zero() {
 }
 
 func NewGenerator(secret []byte) *Generator {
-	return &Generator{secret: secret}
+	owned := append([]byte(nil), secret...)
+	return &Generator{secret: owned}
 }
 
 func (g *Generator) Generate(claims Claims) (string, error) {
+	if g == nil || len(g.secret) == 0 {
+		return "", errors.New("token signing secret must not be empty")
+	}
 	if claims.IssuedAt.IsZero() {
 		claims.IssuedAt = time.Now()
 	}
@@ -109,6 +113,9 @@ func (g *Generator) Generate(claims Claims) (string, error) {
 }
 
 func (g *Generator) Validate(tokenString string) (*Claims, error) {
+	if g == nil || len(g.secret) == 0 {
+		return nil, ErrInvalidToken
+	}
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
 		return nil, ErrInvalidToken
@@ -135,7 +142,7 @@ func (g *Generator) Validate(tokenString string) (*Claims, error) {
 		return nil, ErrInvalidToken
 	}
 
-	if !claims.ExpiresAt.IsZero() && time.Now().After(claims.ExpiresAt) {
+	if claims.ExpiresAt.IsZero() || time.Now().After(claims.ExpiresAt) {
 		return nil, ErrTokenExpired
 	}
 

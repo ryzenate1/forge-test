@@ -3,10 +3,10 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
 import {
-  ArrowLeft, ExternalLink, GitPullRequest, Globe, Play, Trash2,
+  ExternalLink, GitPullRequest, Globe, Play, Trash2,
 } from "lucide-react";
 import { fetchJSON, postJSON } from "@/lib/api";
-import { Btn, Card, CardHeader, Pill, SectionHeader } from "@/components/admin/admin-ui";
+import { AdminPageHeader, AdminPageLayout, Btn, Card, CardHeader, Pill } from "@/components/admin/admin-ui";
 import { formatDate } from "@/lib/utils";
 
 type PreviewDeployment = {
@@ -64,42 +64,37 @@ export default function AdminPreviewDeploymentDetailPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start gap-4">
-        <Btn tone="ghost" onClick={() => router.push("/admin/preview-deployments")}>
-          <ArrowLeft size={14} /> Back
-        </Btn>
-        <div className="flex-1">
-          <SectionHeader
-            title={`Preview: PR #${p.prNumber}`}
-            sub={p.prTitle || `${p.repoOwner}/${p.repoName}`}
-            action={
-              <div className="flex gap-2">
-                {p.prUrl && (
-                  <a
-                    href={p.prUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-white/[0.06] px-3 py-2 text-sm font-medium text-slate-200 hover:bg-white/[0.1]"
-                  >
-                    <ExternalLink size={14} /> Open PR
-                  </a>
-                )}
-                {p.status === "deploying" && (
-                  <Btn tone="primary" onClick={() => deployMutation.mutate()} disabled={deployMutation.isPending}>
-                    <Play size={14} /> Deploy
-                  </Btn>
-                )}
-                {p.status !== "cleaned_up" && (
-                  <Btn tone="danger" onClick={() => cleanupMutation.mutate()} disabled={cleanupMutation.isPending}>
-                    <Trash2 size={14} /> Cleanup
-                  </Btn>
-                )}
-              </div>
-            }
-          />
-        </div>
-      </div>
+    <AdminPageLayout>
+      <AdminPageHeader
+        title={`Preview: PR #${p.prNumber}`}
+        description={p.prTitle || `${p.repoOwner}/${p.repoName}`}
+        backAction={() => router.push("/admin/preview-deployments")}
+        backLabel="Preview Deployments"
+        action={
+          <div className="flex gap-2">
+            {p.prUrl && (
+              <a
+                href={p.prUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-white/[0.06] px-3 py-2 text-sm font-medium text-slate-200 hover:bg-white/[0.1]"
+              >
+                <ExternalLink size={14} /> Open PR
+              </a>
+            )}
+            {p.status === "deploying" && (
+              <Btn tone="primary" onClick={() => deployMutation.mutate()} disabled={deployMutation.isPending}>
+                <Play size={14} /> Deploy
+              </Btn>
+            )}
+            {p.status !== "cleaned_up" && (
+              <Btn tone="danger" onClick={() => cleanupMutation.mutate()} disabled={cleanupMutation.isPending}>
+                <Trash2 size={14} /> Cleanup
+              </Btn>
+            )}
+          </div>
+        }
+      />
 
       <div className="grid gap-4 md:grid-cols-3">
         <Card className="p-4">
@@ -126,7 +121,7 @@ export default function AdminPreviewDeploymentDetailPage() {
             <ExternalLink size={12} /> Preview URL
           </div>
           {p.previewUrl ? (
-            <a href={p.previewUrl} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-400 hover:text-blue-300">
+            <a href={p.previewUrl} target="_blank" rel="noopener noreferrer" className="text-sm text-red-400 hover:text-red-300">
               {p.previewUrl}
             </a>
           ) : (
@@ -172,6 +167,6 @@ export default function AdminPreviewDeploymentDetailPage() {
           </div>
         </div>
       </Card>
-    </div>
+    </AdminPageLayout>
   );
 }

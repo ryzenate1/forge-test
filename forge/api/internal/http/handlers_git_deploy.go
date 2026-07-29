@@ -219,7 +219,7 @@ func (h *GitDeploymentHandlers) CancelGitDeploymentHandler() fiber.Handler {
 }
 
 // RegisterGitDeploymentRoutes registers the Git deployment routes
-func RegisterGitDeploymentRoutes(router fiber.Router, cfg Config) {
+func RegisterGitDeploymentRoutes(router fiber.Router, cfg Config, mutationLimiter fiber.Handler) {
 	if cfg.GitDeployService == nil || cfg.Store == nil {
 		return
 	}
@@ -227,16 +227,8 @@ func RegisterGitDeploymentRoutes(router fiber.Router, cfg Config) {
 	handlers := NewGitDeploymentHandlers(cfg.GitDeployService, cfg.Store, cfg.Logger)
 
 	// Git deployment routes
-	router.Post("/git/sources/:gitSourceId/deploy", requireAuth(), handlers.CreateGitDeploymentHandler())
-	router.Get("/git/sources/:gitSourceId/deployments", requireAuth(), handlers.ListGitDeploymentsHandler())
-	router.Get("/git/sources/:gitSourceId/deployments/latest", requireAuth(), handlers.GetGitDeploymentHandler())
-	router.Post("/git/deployments/:deploymentId/cancel", requireAuth(), handlers.CancelGitDeploymentHandler())
-}
-
-// requireAuth is a placeholder for the actual authentication middleware
-func requireAuth() fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		// This would be replaced with the actual authentication middleware
-		return c.Next()
-	}
+	router.Post("/git/sources/:gitSourceId/deploy", mutationLimiter, handlers.CreateGitDeploymentHandler())
+	router.Get("/git/sources/:gitSourceId/deployments", handlers.ListGitDeploymentsHandler())
+	router.Get("/git/sources/:gitSourceId/deployments/latest", handlers.GetGitDeploymentHandler())
+	router.Post("/git/deployments/:deploymentId/cancel", mutationLimiter, handlers.CancelGitDeploymentHandler())
 }

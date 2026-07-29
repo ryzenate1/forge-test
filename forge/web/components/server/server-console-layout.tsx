@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useParams, usePathname } from "next/navigation";
 import { AlertCircle, RefreshCw } from "lucide-react";
 import { fetchCurrentUser, fetchServer, type ApiServer, type ApiUser } from "@/lib/api";
@@ -39,12 +39,15 @@ function ServerConsoleShell({ activeTab: activeTabProp, children }: ServerConsol
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const abortRef = useRef(false);
   const load = useCallback(async () => {
     if (!serverId) return;
+    abortRef.current = false;
     setLoading(true);
     setError(null);
     try {
       const [nextServer, nextUser] = await Promise.all([fetchServer(serverId), fetchCurrentUser()]);
+      if (abortRef.current) return;
       if (!nextUser) throw new Error("Your session has expired. Sign in again to manage this server.");
       setServer(nextServer);
       setUser(nextUser);
@@ -59,14 +62,15 @@ function ServerConsoleShell({ activeTab: activeTabProp, children }: ServerConsol
         setPermissions(nextServer.permissions ?? null);
       }
     } catch (loadError) {
+      if (abortRef.current) return;
       setError(message(loadError));
       setServer(null);
     } finally {
-      setLoading(false);
+      if (!abortRef.current) setLoading(false);
     }
   }, [serverId]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); return () => { abortRef.current = true; }; }, [load]);
 
   if (loading) {
     return <div className="grid min-h-screen place-items-center bg-[#0a0e16] text-slate-300" role="status"><div className="text-center"><div className="mx-auto h-9 w-9 animate-spin rounded-full border-2 border-slate-700 border-t-red-500" /><p className="mt-3 text-sm">Loading server…</p></div></div>;

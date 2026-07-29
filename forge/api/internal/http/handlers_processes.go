@@ -7,7 +7,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-func registerProcessRoutes(protected fiber.Router, cfg Config, processSvc *process.Service) {
+func registerProcessRoutes(protected fiber.Router, cfg Config, processSvc *process.Service, mutationLimiter fiber.Handler) {
 	protected.Get("/servers/:id/processes", requireServerPermission(cfg, store.PermControlStart), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
@@ -21,7 +21,7 @@ func registerProcessRoutes(protected fiber.Router, cfg Config, processSvc *proce
 		return c.JSON(processes)
 	})
 
-	protected.Post("/servers/:id/processes", requireServerPermission(cfg, store.PermControlStart), func(c *fiber.Ctx) error {
+	protected.Post("/servers/:id/processes", mutationLimiter, requireServerPermission(cfg, store.PermControlStart), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
@@ -40,7 +40,7 @@ func registerProcessRoutes(protected fiber.Router, cfg Config, processSvc *proce
 		return c.Status(fiber.StatusCreated).JSON(results)
 	})
 
-	protected.Put("/servers/:id/processes/:type/scale", requireServerPermission(cfg, store.PermControlStart), func(c *fiber.Ctx) error {
+	protected.Put("/servers/:id/processes/:type/scale", mutationLimiter, requireServerPermission(cfg, store.PermControlStart), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
@@ -63,7 +63,7 @@ func registerProcessRoutes(protected fiber.Router, cfg Config, processSvc *proce
 		return c.JSON(pt)
 	})
 
-	protected.Post("/servers/:id/processes/run", requireServerPermission(cfg, store.PermControlConsole), func(c *fiber.Ctx) error {
+	protected.Post("/servers/:id/processes/run", mutationLimiter, requireServerPermission(cfg, store.PermControlConsole), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
@@ -114,7 +114,7 @@ func registerProcessRoutes(protected fiber.Router, cfg Config, processSvc *proce
 		return c.JSON(events)
 	})
 
-	protected.Post("/servers/:id/processes/parse-procfile", requireServerPermission(cfg, store.PermControlStart), func(c *fiber.Ctx) error {
+	protected.Post("/servers/:id/processes/parse-procfile", mutationLimiter, requireServerPermission(cfg, store.PermControlStart), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}

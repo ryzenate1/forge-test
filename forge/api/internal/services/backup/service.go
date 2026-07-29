@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -759,56 +760,14 @@ func (s *Service) EnforceRetentionPolicy(ctx context.Context, serverID string, p
 	}
 
 	now := time.Now()
+	sort.SliceStable(completed, func(i, j int) bool {
+		return completed[i].CreatedAt.After(completed[j].CreatedAt)
+	})
 	keep := make(map[string]bool, len(completed))
-	for _, b := range completed {
-		keep[b.Name] = true
-	}
-
-	// Rule 1: MaxBackups - keep only the newest N
-	if policy.MaxBackups > 0 && len(completed) > policy.MaxBackups {
-		keepNewest := make(map[string]bool)
-		for i := len(completed) - 1; i >= 0 && i >= len(completed)-policy.MaxBackups; i-- {
-			keepNewest[completed[i].Name] = true
-		}
-		for name := range keep {
-			if !keepNewest[name] {
-				delete(keep, name)
-			}
-		}
-	}
-
-	// Rule 2: RetentionDays - keep backups within the retention window
-	if policy.RetentionDays > 0 {
-		for _, b := range completed {
-			if now.Sub(b.CreatedAt).Hours() > float64(policy.RetentionDays)*24 {
-				delete(keep, b.Name)
-			}
-		}
-	}
-
-	// Rule 3: KeepDaily / KeepWeekly / KeepMonthly (from the beacon retention model)
-	for _, period := range []struct {
-		loHours, hiHours int
-		max              int
-	}{
-		{0, 24, policy.MaxBackups},         // KeepDaily maps via MaxBackups
-		{24, 168, policy.MaxBackups / 7},   // approximate KeepWeekly
-		{168, 720, policy.MaxBackups / 30}, // approximate KeepMonthly
-	} {
-		if period.max <= 0 {
-			continue
-		}
-		count := 0
-		for _, b := range completed {
-			ageHours := int(now.Sub(b.CreatedAt).Hours())
-			if ageHours >= period.loHours && ageHours < period.hiHours {
-				keep[b.Name] = true
-				count++
-				if count >= period.max {
-					break
-				}
-			}
-		}
+	for index, backup := range completed {
+		withinCount := policy.MaxBackups <= 0 || index < policy.MaxBackups
+		withinAge := policy.RetentionDays <= 0 || now.Sub(backup.CreatedAt) <= time.Duration(policy.RetentionDays)*24*time.Hour
+		keep[backup.Name] = backup.IsLocked || (withinCount && withinAge)
 	}
 
 	// Delete anything not marked for keeping

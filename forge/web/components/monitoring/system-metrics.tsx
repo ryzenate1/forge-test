@@ -75,21 +75,30 @@ export function SystemMetrics() {
     );
   }
 
-  const latest = metrics && metrics.length > 0 ? metrics[metrics.length - 1] : null;
+  if (!metrics || metrics.length === 0) {
+    return (
+      <div className="space-y-6">
+        <SectionHeader title="System Metrics" sub="Real-time system resource usage across all nodes" />
+        <div className="rounded-xl border border-white/[0.07] bg-white/[0.018] p-6 text-sm text-slate-500">
+          No metric data available yet. Metrics will appear once the collection cycle completes.
+        </div>
+      </div>
+    );
+  }
 
-  const cpuAvg = metrics && metrics.length > 0
-    ? metrics.reduce((acc, m) => acc + m.cpuPercent, 0) / metrics.length
-    : 0;
-  const memAvg = metrics && metrics.length > 0
-    ? metrics.reduce((acc, m) => acc + m.memoryPercent, 0) / metrics.length
-    : 0;
+  const latest = metrics[metrics.length - 1];
 
-  const totalRx = metrics && metrics.length > 0 ? metrics.reduce((acc, m) => acc + m.networkRxBytes, 0) : 0;
-  const totalTx = metrics && metrics.length > 0 ? metrics.reduce((acc, m) => acc + m.networkTxBytes, 0) : 0;
+  const cpuAvg = metrics.reduce((acc, m) => acc + m.cpuPercent, 0) / metrics.length;
+  const memAvg = metrics.reduce((acc, m) => acc + m.memoryPercent, 0) / metrics.length;
+
+  const totalRx = metrics.reduce((acc, m) => acc + m.networkRxBytes, 0);
+  const totalTx = metrics.reduce((acc, m) => acc + m.networkTxBytes, 0);
+
+  const lastPointTime = latest.observedAt ? new Date(latest.observedAt).toLocaleString() : null;
 
   return (
     <div className="space-y-6">
-      <SectionHeader title="System Metrics" sub="Real-time system resource usage across all nodes" />
+      <SectionHeader title="System Metrics" sub={lastPointTime ? `Last data point: ${lastPointTime}` : "Real-time system resource usage across all nodes"} />
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card>
@@ -97,7 +106,7 @@ export function SystemMetrics() {
           <div className="p-4">
             <p className="text-3xl font-bold text-slate-100">{cpuAvg.toFixed(1)}%</p>
             <div className="mt-2">{miniBar(cpuAvg, "bg-blue-500")}</div>
-            <p className="mt-2 text-xs text-slate-500">Average across {metrics?.length || 0} data points</p>
+            <p className="mt-2 text-xs text-slate-500">Average across {metrics.length} data points</p>
           </div>
         </Card>
 
@@ -106,28 +115,20 @@ export function SystemMetrics() {
           <div className="p-4">
             <p className="text-3xl font-bold text-slate-100">{memAvg.toFixed(1)}%</p>
             <div className="mt-2">{miniBar(memAvg, "bg-emerald-500")}</div>
-            {latest && (
-              <p className="mt-2 text-xs text-slate-500">
-                {formatBytes(latest.memoryUsedMb * 1024 * 1024)} / {formatBytes(latest.memoryTotalMb * 1024 * 1024)}
-              </p>
-            )}
+            <p className="mt-2 text-xs text-slate-500">
+              {formatBytes(latest.memoryUsedMb * 1024 * 1024)} / {formatBytes(latest.memoryTotalMb * 1024 * 1024)}
+            </p>
           </div>
         </Card>
 
         <Card>
           <CardHeader title="Disk" icon={HardDrive} />
           <div className="p-4">
-            {latest ? (
-              <>
-                <p className="text-3xl font-bold text-slate-100">{latest.diskPercent.toFixed(1)}%</p>
-                <div className="mt-2">{miniBar(latest.diskPercent, "bg-amber-500")}</div>
-                <p className="mt-2 text-xs text-slate-500">
-                  {formatBytes(latest.diskUsedMb * 1024 * 1024)} / {formatBytes(latest.diskTotalMb * 1024 * 1024)}
-                </p>
-              </>
-            ) : (
-              <p className="text-sm text-slate-500">No data</p>
-            )}
+            <p className="text-3xl font-bold text-slate-100">{latest.diskPercent.toFixed(1)}%</p>
+            <div className="mt-2">{miniBar(latest.diskPercent, "bg-amber-500")}</div>
+            <p className="mt-2 text-xs text-slate-500">
+              {formatBytes(latest.diskUsedMb * 1024 * 1024)} / {formatBytes(latest.diskTotalMb * 1024 * 1024)}
+            </p>
           </div>
         </Card>
 

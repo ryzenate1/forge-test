@@ -140,6 +140,11 @@ spec:
                 secretKeyRef:
                   name: gamepanel-secrets
                   key: DAEMON_NODE_TOKEN
+            - name: METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gamepanel-secrets
+                  key: METRICS_TOKEN
             - name: LOAD_BALANCER_PORT_MIN
               valueFrom:
                 configMapKeyRef:

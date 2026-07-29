@@ -1,16 +1,8 @@
-export function cn(...inputs: (string | false | null | undefined | Record<string, boolean | undefined | null>)[]): string {
-  const classes: string[] = [];
-  for (const input of inputs) {
-    if (!input) continue;
-    if (typeof input === "string") {
-      classes.push(input);
-    } else {
-      for (const [key, value] of Object.entries(input)) {
-        if (value) classes.push(key);
-      }
-    }
-  }
-  return classes.join(" ");
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
 }
 
 export function formatBytes(value: number, decimals = 1) {

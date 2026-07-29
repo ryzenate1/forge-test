@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plug, Plus, Trash2, Zap } from "lucide-react";
 import { deleteJSON, fetchJSON, postJSON, type ApiPlugin } from "@/lib/api";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "./admin-ui";
+import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, AdminFormSection } from "./admin-ui";
 
 export function AdminPlugins() {
   const qc = useQueryClient();
@@ -31,7 +31,7 @@ export function AdminPlugins() {
       postJSON(`/admin/plugins/${encodeURIComponent(id)}/${enabled ? "disable" : "enable"}`, {}),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["plugins"] }),
   });
-  const plugins = query.data ?? [];
+  const plugins = useMemo(() => Array.isArray(query.data) ? query.data : [], [query.data]);
   
   return <div>
     <SectionHeader
@@ -65,8 +65,8 @@ export function AdminPlugins() {
                <th className="px-4 py-3 text-right">Actions</th>
              </tr>
            </thead>
-           <tbody className="divide-y divide-white/[0.04]">
-             {plugins.map((plugin) => (
+            <tbody className="divide-y divide-white/[0.04]">
+              {Array.isArray(plugins) && plugins.map((plugin) => (
                <tr key={plugin.id}>
                  <td className="px-4 py-3">
                    <p className="font-semibold">{plugin.name}</p>
@@ -94,8 +94,10 @@ export function AdminPlugins() {
     {/* Import URL Modal */}
     {open ? (
       <Modal title="Import Plugin Manifest" onClose={() => setOpen(false)}>
+        <AdminFormSection title="Manifest URL">
         <Input label="HTTPS manifest URL" value={url} onChange={setUrl} placeholder="https://example.com/plugin.json"/>
-        <p className="mt-3 text-xs text-slate-400">The backend fetches this URL and stores JSON manifest metadata. Review network and trust implications before importing.</p>
+        <p className="text-xs text-slate-400">The backend fetches this URL and stores JSON manifest metadata. Review network and trust implications before importing.</p>
+        </AdminFormSection>
         {importMut.error ? <p className="mt-3 text-sm text-red-300">{importMut.error.message}</p> : null}
         <ModalFooter 
           onCancel={() => setOpen(false)} 

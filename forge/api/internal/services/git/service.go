@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -33,10 +34,17 @@ type Service struct {
 }
 
 func NewService(s *store.Store, logger *slog.Logger) *Service {
+	client := &http.Client{Timeout: 30 * time.Second}
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("too many redirects")
+		}
+		return validateProviderURL(req.URL.String())
+	}
 	return &Service{
 		store:  s,
 		logger: logger,
-		client: &http.Client{Timeout: 30 * time.Second},
+		client: client,
 	}
 }
 
@@ -126,6 +134,9 @@ func (s *Service) ListProviderRepos(ctx context.Context, providerTokenID string)
 	if err != nil {
 		return nil, err
 	}
+	if err := validateProviderBaseURL(pt.Provider, pt.BaseURL); err != nil {
+		return nil, err
+	}
 
 	switch pt.Provider {
 	case store.GitProviderGitHub:
@@ -144,6 +155,9 @@ func (s *Service) ListProviderRepos(ctx context.Context, providerTokenID string)
 func (s *Service) ListProviderBranches(ctx context.Context, providerTokenID, repoFullName string) ([]store.GitProviderBranch, error) {
 	pt, err := s.store.GetGitProviderTokenUnmasked(ctx, providerTokenID)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateProviderBaseURL(pt.Provider, pt.BaseURL); err != nil {
 		return nil, err
 	}
 
@@ -167,6 +181,9 @@ func (s *Service) SetupProviderWebhook(ctx context.Context, providerTokenID, rep
 	if err != nil {
 		return "", err
 	}
+	if err := validateProviderBaseURL(pt.Provider, pt.BaseURL); err != nil {
+		return "", err
+	}
 
 	encoded := url.PathEscape(repoFullName)
 	switch pt.Provider {
@@ -185,7 +202,7 @@ func (s *Service) SetupProviderWebhook(ctx context.Context, providerTokenID, rep
 
 const (
 	maxBuildContextSize int64 = 1024 * 1024 * 1024
-	projectTypeUnknown       = "unknown"
+	projectTypeUnknown        = "unknown"
 )
 
 var (
@@ -216,10 +233,10 @@ func VerifyGitHubSignature(payload []byte, signatureHeader, secret string) error
 }
 
 func VerifyGitLabSignature(payload []byte, tokenHeader, secret string) error {
-	if tokenHeader == "" {
+	if tokenHeader == "" || secret == "" {
 		return ErrWebhookSignatureMissing
 	}
-	if tokenHeader != secret {
+	if !hmac.Equal([]byte(tokenHeader), []byte(secret)) {
 		return ErrWebhookSignatureInvalid
 	}
 	return nil
@@ -227,7 +244,7 @@ func VerifyGitLabSignature(payload []byte, tokenHeader, secret string) error {
 
 func VerifyBitbucketSignature(payload []byte, eventHeader, secret string) error {
 	if secret == "" {
-		return nil
+		return ErrWebhookSignatureMissing
 	}
 	if eventHeader == "" {
 		return ErrWebhookSignatureMissing
@@ -240,6 +257,34 @@ func VerifyBitbucketSignature(payload []byte, eventHeader, secret string) error 
 	mac := computeHMAC(secret, payload)
 	if !hmac.Equal([]byte(sigHex), []byte(mac)) {
 		return ErrWebhookSignatureInvalid
+	}
+	return nil
+}
+
+func validateProviderBaseURL(provider store.GitProviderType, baseURL string) error {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		if provider == store.GitProviderGitea {
+			return errors.New("gitea base URL is required")
+		}
+		return nil
+	}
+	return validateProviderURL(baseURL)
+}
+
+func validateProviderURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
+		return errors.New("provider URL must be an absolute HTTPS URL without userinfo")
+	}
+	addresses, err := net.LookupIP(parsed.Hostname())
+	if err != nil || len(addresses) == 0 {
+		return errors.New("provider host does not resolve")
+	}
+	for _, address := range addresses {
+		if address.IsLoopback() || address.IsPrivate() || address.IsUnspecified() || address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() {
+			return errors.New("provider URL resolves to a non-public address")
+		}
 	}
 	return nil
 }
@@ -547,9 +592,9 @@ func (s *Service) callBitbucketRepos(ctx context.Context, token, baseURL string)
 
 	var result struct {
 		Values []struct {
-			Name        string `json:"name"`
-			FullName    string `json:"full_name"`
-			Links       struct {
+			Name     string `json:"name"`
+			FullName string `json:"full_name"`
+			Links    struct {
 				Clone []struct {
 					Name string `json:"name"`
 					Href string `json:"href"`

@@ -10,7 +10,7 @@ const POLL_INTERVAL_MS = 30000;
 export function SystemInfoDisplay() {
   const [info, setInfo] = useState<SystemInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [pollError, setPollError] = useState(false);
+  const setPollError = (v: boolean) => { void v; };
   const [refreshKey, setRefreshKey] = useState(0);
   const serverTokenRef = useRef(0);
   const refresh = () => setRefreshKey((k) => k + 1);

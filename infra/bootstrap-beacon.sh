@@ -16,5 +16,6 @@ set +a
 case "$PANEL_API_URL" in http://*|https://*) ;; *) echo "PANEL_API_URL must be an absolute HTTP(S) URL" >&2; exit 1;; esac
 mkdir -p "${GAME_SERVERS_HOST_DIR:-/srv/game-panel/servers}"
 docker compose -f compose.beacon.yml --env-file .env config --quiet
-docker compose -f compose.beacon.yml --env-file .env up -d --build
+docker compose -f compose.beacon.yml --env-file .env pull
+docker compose -f compose.beacon.yml --env-file .env up -d --pull always
 docker compose -f compose.beacon.yml --env-file .env ps

@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Globe, Plus, Eye, EyeOff } from "lucide-react";
-import { Btn, Card, CardHeader, SectionHeader, EmptyState, Pill } from "@/components/admin/admin-ui";
+import { AdminPageHeader, AdminPageLayout, Btn, Card, CardHeader, EmptyState, Pill } from "@/components/admin/admin-ui";
 import { fetchOrganizations, fetchProjects, fetchEnvironments, createEnvironment, deleteEnvVar } from "@/lib/api/tenancy";
 import { fetchEnvVars, createEnvVar, type EnvVarResponse } from "@/lib/api/env-vars";
 
@@ -85,23 +85,23 @@ export default function AdminEnvironmentsPage() {
     deleteVarMutation.mutate(varId);
   };
 
-  const orgs = orgsQuery.data ?? [];
-  const projects = projectsQuery.data ?? [];
-  const environments = environmentsQuery.data ?? [];
-  const envVars = envVarsQuery.data ?? [];
+  const orgs = useMemo(() => orgsQuery.data ?? [], [orgsQuery.data]);
+  const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
+  const environments = useMemo(() => environmentsQuery.data ?? [], [environmentsQuery.data]);
+  const envVars = useMemo(() => envVarsQuery.data ?? [], [envVarsQuery.data]);
 
   return (
-    <div>
-      <SectionHeader title="Environments" sub="Manage deployment environments and environment variables" />
+    <AdminPageLayout>
+      <AdminPageHeader title="Environments" description="Manage deployment environments and environment variables" />
 
-      <div className="mb-4 flex gap-3">
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row">
         <select value={selectedOrg} onChange={(e) => { setSelectedOrg(e.target.value); setSelectedProject(""); setSelectedEnv(""); }} className="rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-white">
           <option value="">Select organization...</option>
-          {orgs.map((org) => <option key={org.id} value={org.id}>{org.name}</option>)}
+          {Array.isArray(orgs) && orgs.map((org) => <option key={org.id} value={org.id}>{org.name}</option>)}
         </select>
         <select value={selectedProject} onChange={(e) => { setSelectedProject(e.target.value); setSelectedEnv(""); }} className="rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-white">
           <option value="">Select project...</option>
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {Array.isArray(projects) && projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
       </div>
 
@@ -109,7 +109,7 @@ export default function AdminEnvironmentsPage() {
         <form onSubmit={handleCreateEnv} className="mb-4 flex flex-wrap gap-2 items-end">
           <div>
             <label className="block text-xs text-slate-500 mb-1">Name</label>
-            <input value={envName} onChange={(e) => setEnvName(e.target.value)} placeholder="e.g. production" className="rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-white placeholder:text-gray-500 focus:border-purple-500/50 focus:outline-none" required />
+            <input value={envName} onChange={(e) => setEnvName(e.target.value)} placeholder="e.g. production" className="rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-white placeholder:text-gray-500 focus:border-red-400/70 focus:outline-none" required />
           </div>
           <div>
             <label className="block text-xs text-slate-500 mb-1">Color</label>
@@ -132,12 +132,12 @@ export default function AdminEnvironmentsPage() {
           <CardHeader title="Environments" icon={Globe} />
           {!selectedProject ? <EmptyState message="Select a project" /> :
            environmentsQuery.isLoading ? <div className="p-6 text-sm text-slate-400">Loading...</div> :
-           environments.length === 0 ? <EmptyState message="No environments" /> :
+           !Array.isArray(environments) || environments.length === 0 ? <EmptyState message="No environments" /> :
            <div className="divide-y divide-white/[0.06]">
-            {environments.map((env) => (
+            {Array.isArray(environments) && environments.map((env) => (
               <div
                 key={env.id}
-                className={`flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-white/[0.02] ${selectedEnv === env.id ? "bg-purple-500/10" : ""}`}
+                className={`flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-white/[0.02] ${selectedEnv === env.id ? "bg-red-500/10" : ""}`}
                 onClick={() => setSelectedEnv(env.id)}
               >
                 <div className="flex items-center gap-2">
@@ -153,17 +153,17 @@ export default function AdminEnvironmentsPage() {
         {selectedEnv && (
           <Card>
             <CardHeader title="Environment Variables" icon={Globe} action={
-              <span className="text-xs text-slate-500">{envVars.length} variables</span>
+              <span className="text-xs text-slate-500">{(Array.isArray(envVars) ? envVars : []).length} variables</span>
             } />
             <form onSubmit={handleAddVar} className="flex gap-2 p-3 border-b border-white/[0.06]">
-              <input value={varKey} onChange={(e) => setVarKey(e.target.value)} placeholder="KEY" className="flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm font-mono text-white placeholder:text-gray-500 focus:border-purple-500/50 focus:outline-none" required />
-              <input value={varValue} onChange={(e) => setVarValue(e.target.value)} placeholder="value" className="flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-white placeholder:text-gray-500 focus:border-purple-500/50 focus:outline-none" />
+              <input value={varKey} onChange={(e) => setVarKey(e.target.value)} placeholder="KEY" className="flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm font-mono text-white placeholder:text-gray-500 focus:border-red-400/70 focus:outline-none" required />
+              <input value={varValue} onChange={(e) => setVarValue(e.target.value)} placeholder="value" className="flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-white placeholder:text-gray-500 focus:border-red-400/70 focus:outline-none" />
               <Btn type="submit" loading={addVarMutation.isPending}><Plus size={14} /></Btn>
             </form>
             {envVarsQuery.isLoading ? <div className="p-6 text-sm text-slate-400">Loading...</div> :
-             envVars.length === 0 ? <EmptyState message="No environment variables" /> :
+             !Array.isArray(envVars) || envVars.length === 0 ? <EmptyState message="No environment variables" /> :
              <div className="divide-y divide-white/[0.06]">
-              {envVars.map((v: EnvVarResponse) => (
+              {Array.isArray(envVars) && envVars.map((v: EnvVarResponse) => (
                 <div key={v.id} className="flex items-center justify-between px-4 py-2.5">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-mono text-slate-200">{v.key}</span>
@@ -182,6 +182,6 @@ export default function AdminEnvironmentsPage() {
           </Card>
         )}
       </div>
-    </div>
+    </AdminPageLayout>
   );
 }

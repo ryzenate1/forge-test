@@ -1,13 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, Database, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
 import { type ApiDatabaseHost, type CreateDatabaseHostInput, createDatabaseHost, deleteDatabaseHost, fetchDatabaseHosts, fetchNodes, fetchOrphanRemediations, resolveDatabaseOrphanRemediation, resolveServerOrphanRemediation, testDatabaseHostConnection, updateDatabaseHost } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "./admin-ui";
-
-const selectStyle = "h-10 w-full rounded-lg border border-white/10 bg-surface-card-header px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15";
+import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, AdminSelect, AdminFormSection } from "./admin-ui";
 
 type FieldErrors = {
   name?: string;
@@ -34,13 +32,13 @@ export function AdminDatabases() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const hostsQuery = useQuery({ queryKey: ["database-hosts"], queryFn: fetchDatabaseHosts });
-  const hosts = hostsQuery.data ?? [];
+  const hosts = useMemo(() => Array.isArray(hostsQuery.data) ? hostsQuery.data : [], [hostsQuery.data]);
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
-  const nodes = nodesQuery.data ?? [];
+  const nodes = useMemo(() => Array.isArray(nodesQuery.data) ? nodesQuery.data : [], [nodesQuery.data]);
   const [remediationStatus, setRemediationStatus] = useState<"pending" | "resolved">("pending");
   const remediationsQuery = useQuery({ queryKey: ["orphan-remediations", remediationStatus], queryFn: () => fetchOrphanRemediations(remediationStatus), retry: false });
-  const serverRemediations = remediationsQuery.data?.serverRemediations ?? [];
-  const databaseRemediations = remediationsQuery.data?.databaseRemediations ?? [];
+  const serverRemediations = useMemo(() => Array.isArray(remediationsQuery.data?.serverRemediations) ? remediationsQuery.data.serverRemediations : [], [remediationsQuery.data]);
+  const databaseRemediations = useMemo(() => Array.isArray(remediationsQuery.data?.databaseRemediations) ? remediationsQuery.data.databaseRemediations : [], [remediationsQuery.data]);
   const resolveDatabaseRemediationMut = useMutation({
     mutationFn: resolveDatabaseOrphanRemediation,
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["orphan-remediations"] }); toast({ tone: "success", title: "Database orphan remediation resolved" }); },
@@ -218,10 +216,7 @@ export function AdminDatabases() {
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] bg-white/[0.02] px-5 py-4 text-sm text-slate-400">
           <p>Force-deleted server and database resources that could not be removed remotely are tracked here for administrator follow-up.</p>
           <div className="flex items-center gap-2">
-            <select className={selectStyle + " h-9 text-xs"} aria-label="Orphan remediation status" value={remediationStatus} onChange={(event) => setRemediationStatus(event.target.value as "pending" | "resolved")}>
-              <option value="pending">Pending</option>
-              <option value="resolved">Resolved</option>
-            </select>
+            <AdminSelect label="" value={remediationStatus} onChange={(v) => setRemediationStatus(v as "pending" | "resolved")} options={[{ value: "pending", label: "Pending" }, { value: "resolved", label: "Resolved" }]} />
             <Btn size="sm" tone="ghost" onClick={() => void remediationsQuery.refetch()} disabled={remediationsQuery.isFetching}>
               <RefreshCw size={13} /> {remediationsQuery.isFetching ? "Refreshing..." : "Refresh"}
             </Btn>
@@ -306,19 +301,13 @@ export function AdminDatabases() {
 
       {modal ? (
         <Modal title={modal === "create" ? "Add Database Host" : "Edit Database Host"} onClose={() => setModal(null)} className="max-w-3xl">
-          <div className="space-y-5">
+          <AdminFormSection title="Connection">
             <div className="grid gap-5 sm:grid-cols-2">
               <div>
                 <Input label="Display name" value={hName} onChange={setHName} placeholder="Local PostgreSQL" />
                 {fieldErrors.name ? <p className="mt-1 text-xs text-red-400">{fieldErrors.name}</p> : null}
               </div>
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-300">Engine</label>
-                <select className={selectStyle} value={hEngine} onChange={(e) => setHEngine(e.target.value)}>
-                  <option value="postgresql">PostgreSQL</option>
-                  <option value="mysql">MySQL</option>
-                </select>
-              </div>
+              <AdminSelect label="Engine" value={hEngine} onChange={setHEngine} options={[{ value: "postgresql", label: "PostgreSQL" }, { value: "mysql", label: "MySQL" }]} />
               <div>
                 <Input label="Host" value={hHost} onChange={setHHost} placeholder="db.internal.example" mono />
                 {fieldErrors.host ? <p className="mt-1 text-xs text-red-400">{fieldErrors.host}</p> : <p className="mt-1 text-xs text-slate-500">Resolved by the panel API. In a container, 127.0.0.1 is the API container, not automatically the panel database.</p>}
@@ -335,35 +324,23 @@ export function AdminDatabases() {
                 <Input label={modal === "create" ? "Password" : "Password (blank keeps current)"} value={hPass} onChange={setHPass} type="password" placeholder="" />
                 {fieldErrors.password ? <p className="mt-1 text-xs text-red-400">{fieldErrors.password}</p> : null}
               </div>
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-300">Linked node (optional)</label>
-                <select className={selectStyle} value={hNode} onChange={(e) => setHNode(e.target.value)}>
-                  <option value="">None</option>
-                  {nodes.map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
-                </select>
-              </div>
+              <AdminSelect label="Linked node (optional)" value={hNode} onChange={setHNode} placeholder="None" options={Array.isArray(nodes) ? nodes.map((n) => ({ value: n.id, label: n.name })) : []} />
               <div>
                 <Input label="Max databases (blank = unlimited)" value={hMax} onChange={setHMax} type="number" placeholder="unlimited" />
                 {fieldErrors.maxDatabases ? <p className="mt-1 text-xs text-red-400">{fieldErrors.maxDatabases}</p> : null}
               </div>
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-300">TLS Mode</label>
-                <select className={selectStyle} value={hTLSMode} onChange={(e) => setHTLSMode(e.target.value)}>
-                  <option value="disable">Disable</option>
-                  <option value="required">Require</option>
-                  <option value="verify-ca">Verify CA</option>
-                  <option value="verify-full">Verify Full</option>
-                </select>
+              <AdminSelect label="TLS Mode" value={hTLSMode} onChange={setHTLSMode} options={[{ value: "disable", label: "Disable" }, { value: "required", label: "Require" }, { value: "verify-ca", label: "Verify CA" }, { value: "verify-full", label: "Verify Full" }]} />
                 {fieldErrors.tlsMode ? <p className="mt-1 text-xs text-red-400">{fieldErrors.tlsMode}</p> : <p className="mt-1 text-xs text-slate-500">Verify Full validates the server certificate and name. A custom CA is optional.</p>}
-              </div>
               <Input label="TLS Server Name (SNI, optional)" value={hTLSServerName} onChange={setHTLSServerName} mono />
             </div>
+          </AdminFormSection>
+          <AdminFormSection title="TLS">
             <div>
               <label className="mb-1.5 block text-sm font-medium text-slate-300">TLS CA certificate (write-only)</label>
               <textarea className="h-28 w-full rounded-lg border border-white/10 bg-surface-card-header px-3.5 py-2 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15 font-mono text-xs" value={hTLSCA} onChange={(e) => setHTLSCA(e.target.value)} placeholder={modal === "create" ? "Optional PEM certificate" : "Leave blank to keep current certificate"}/>
               <p className="mt-1 text-xs text-slate-500">Certificates and passwords are redacted by the API and never displayed after submission.</p>
             </div>
-          </div>
+          </AdminFormSection>
           {createMut.isError ? (
             <div className="mt-5 flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-xs text-red-200">
               <AlertCircle size={14} className="mt-0.5 shrink-0" />

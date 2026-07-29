@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -52,8 +53,15 @@ func NewLocalStorageBackend(basePath string) (*LocalStorageBackend, error) {
 		return nil, fmt.Errorf("local storage: invalid path: %w", err)
 	}
 
-	if err := os.MkdirAll(abs, 0755); err != nil {
+	if err := os.MkdirAll(abs, 0700); err != nil {
 		return nil, fmt.Errorf("local storage: failed to create directory: %w", err)
+	}
+	if err := os.Chmod(abs, 0700); err != nil {
+		return nil, fmt.Errorf("local storage: secure directory: %w", err)
+	}
+	abs, err = filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, fmt.Errorf("local storage: resolve directory: %w", err)
 	}
 
 	return &LocalStorageBackend{basePath: abs}, nil
@@ -66,13 +74,16 @@ func (p *LocalStorageBackend) Name() string {
 
 // Upload uploads data to local storage
 func (p *LocalStorageBackend) Upload(ctx context.Context, path string, data []byte) error {
-	fullPath := filepath.Join(p.basePath, path)
+	fullPath, err := p.securePath(path)
+	if err != nil {
+		return err
+	}
 
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0700); err != nil {
 		return fmt.Errorf("local storage: failed to create directory: %w", err)
 	}
 
-	if err := os.WriteFile(fullPath, data, 0644); err != nil {
+	if err := os.WriteFile(fullPath, data, 0600); err != nil {
 		return fmt.Errorf("local storage: failed to write file: %w", err)
 	}
 
@@ -81,7 +92,10 @@ func (p *LocalStorageBackend) Upload(ctx context.Context, path string, data []by
 
 // Download downloads data from local storage
 func (p *LocalStorageBackend) Download(ctx context.Context, path string) ([]byte, error) {
-	fullPath := filepath.Join(p.basePath, path)
+	fullPath, err := p.securePath(path)
+	if err != nil {
+		return nil, err
+	}
 
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
@@ -96,7 +110,10 @@ func (p *LocalStorageBackend) Download(ctx context.Context, path string) ([]byte
 
 // Delete deletes data from local storage
 func (p *LocalStorageBackend) Delete(ctx context.Context, path string) error {
-	fullPath := filepath.Join(p.basePath, path)
+	fullPath, err := p.securePath(path)
+	if err != nil {
+		return err
+	}
 
 	if err := os.Remove(fullPath); err != nil {
 		if os.IsNotExist(err) {
@@ -111,7 +128,10 @@ func (p *LocalStorageBackend) Delete(ctx context.Context, path string) error {
 // List lists files in local storage with the given prefix
 func (p *LocalStorageBackend) List(ctx context.Context, prefix string) ([]string, error) {
 	var names []string
-	fullPrefix := filepath.Join(p.basePath, prefix)
+	fullPrefix, err := p.securePath(prefix)
+	if err != nil {
+		return nil, err
+	}
 
 	entries, err := os.ReadDir(fullPrefix)
 	if err != nil {
@@ -132,9 +152,12 @@ func (p *LocalStorageBackend) List(ctx context.Context, prefix string) ([]string
 
 // Exists checks if a file exists in local storage
 func (p *LocalStorageBackend) Exists(ctx context.Context, path string) (bool, error) {
-	fullPath := filepath.Join(p.basePath, path)
+	fullPath, err := p.securePath(path)
+	if err != nil {
+		return false, err
+	}
 
-	_, err := os.Stat(fullPath)
+	_, err = os.Stat(fullPath)
 	if err == nil {
 		return true, nil
 	}
@@ -148,13 +171,16 @@ func (p *LocalStorageBackend) Exists(ctx context.Context, path string) (bool, er
 
 // UploadStream uploads data from a stream to local storage
 func (p *LocalStorageBackend) UploadStream(ctx context.Context, path string, reader io.Reader, size int64) error {
-	fullPath := filepath.Join(p.basePath, path)
+	fullPath, err := p.securePath(path)
+	if err != nil {
+		return err
+	}
 
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0700); err != nil {
 		return fmt.Errorf("local storage: failed to create directory: %w", err)
 	}
 
-	file, err := os.Create(fullPath)
+	file, err := os.OpenFile(fullPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("local storage: failed to create file: %w", err)
 	}
@@ -175,7 +201,10 @@ func (p *LocalStorageBackend) UploadStream(ctx context.Context, path string, rea
 
 // DownloadStream downloads data from local storage to a stream
 func (p *LocalStorageBackend) DownloadStream(ctx context.Context, path string) (io.Reader, error) {
-	fullPath := filepath.Join(p.basePath, path)
+	fullPath, err := p.securePath(path)
+	if err != nil {
+		return nil, err
+	}
 
 	file, err := os.Open(fullPath)
 	if err != nil {
@@ -190,7 +219,10 @@ func (p *LocalStorageBackend) DownloadStream(ctx context.Context, path string) (
 
 // GetFileInfo gets information about a file in local storage
 func (p *LocalStorageBackend) GetFileInfo(ctx context.Context, path string) (FileInfo, error) {
-	fullPath := filepath.Join(p.basePath, path)
+	fullPath, err := p.securePath(path)
+	if err != nil {
+		return FileInfo{}, err
+	}
 
 	info, err := os.Stat(fullPath)
 	if err != nil {
@@ -207,6 +239,37 @@ func (p *LocalStorageBackend) GetFileInfo(ctx context.Context, path string) (Fil
 		Modified: info.ModTime(),
 		IsDir:    info.IsDir(),
 	}, nil
+}
+
+func (p *LocalStorageBackend) securePath(path string) (string, error) {
+	if strings.ContainsAny(path, "\x00\\") || filepath.IsAbs(path) {
+		return "", errors.New("local storage: invalid path")
+	}
+	clean := filepath.Clean(path)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", errors.New("local storage: path escapes base directory")
+	}
+	fullPath := filepath.Join(p.basePath, clean)
+	relative, err := filepath.Rel(p.basePath, fullPath)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", errors.New("local storage: path escapes base directory")
+	}
+	parent := filepath.Dir(fullPath)
+	for {
+		resolved, err := filepath.EvalSymlinks(parent)
+		if err == nil {
+			relative, relErr := filepath.Rel(p.basePath, resolved)
+			if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				return "", errors.New("local storage: symlink escapes base directory")
+			}
+			break
+		}
+		if !os.IsNotExist(err) || parent == p.basePath {
+			break
+		}
+		parent = filepath.Dir(parent)
+	}
+	return fullPath, nil
 }
 
 // StorageManager manages multiple storage backends

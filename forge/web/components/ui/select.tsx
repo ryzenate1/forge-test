@@ -104,4 +104,9 @@ function SelectItem({ value, children, className }: { value: string; children?: 
   );
 }
 
+Select.displayName = "Select";
+SelectTrigger.displayName = "SelectTrigger";
+SelectValue.displayName = "SelectValue";
+SelectContent.displayName = "SelectContent";
+SelectItem.displayName = "SelectItem";
 export { Select, SelectTrigger, SelectValue, SelectContent, SelectItem };

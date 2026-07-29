@@ -5,14 +5,14 @@ import "sync"
 type Phase string
 
 const (
-	PhasePending    Phase = "pending"
-	PhaseArchiving  Phase = "archiving"
-	PhaseUploading  Phase = "uploading"
+	PhasePending     Phase = "pending"
+	PhaseArchiving   Phase = "archiving"
+	PhaseUploading   Phase = "uploading"
 	PhaseDownloading Phase = "downloading"
-	PhaseRestoring  Phase = "restoring"
-	PhaseVerifying  Phase = "verifying"
-	PhaseCompleted  Phase = "completed"
-	PhaseFailed     Phase = "failed"
+	PhaseRestoring   Phase = "restoring"
+	PhaseVerifying   Phase = "verifying"
+	PhaseCompleted   Phase = "completed"
+	PhaseFailed      Phase = "failed"
 )
 
 type Report struct {
@@ -40,11 +40,24 @@ func (p *Progress) SetTotal(total int64) {
 }
 
 func (p *Progress) SetPhase(phase Phase) {
+	if !phase.Valid() {
+		phase = PhaseFailed
+	}
 	p.mu.Lock()
 	p.phase = phase
 	report := p.report()
 	p.mu.Unlock()
 	p.notify(report)
+}
+
+func (p Phase) Valid() bool {
+	switch p {
+	case PhasePending, PhaseArchiving, PhaseUploading, PhaseDownloading,
+		PhaseRestoring, PhaseVerifying, PhaseCompleted, PhaseFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *Progress) Add(n int64) {

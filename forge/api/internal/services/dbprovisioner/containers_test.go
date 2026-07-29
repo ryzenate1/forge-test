@@ -80,7 +80,7 @@ func TestEnvVarsForDB(t *testing.T) {
 			dbName:   "testdb",
 			username: "testuser",
 			password: "secret",
-			contains: []string{"MYSQL_DATABASE=testdb", "MYSQL_USER=testuser", "MYSQL_PASSWORD=secret", "MYSQL_ROOT_PASSWORD=secret"},
+			contains: []string{"MYSQL_DATABASE=testdb", "MYSQL_USER=testuser", "MYSQL_PASSWORD=secret"},
 		},
 	}
 	for _, tt := range tests {
@@ -96,6 +96,13 @@ func TestEnvVarsForDB(t *testing.T) {
 				}
 				if !found {
 					t.Errorf("envVarsForDB(%q) missing %q in %v", tt.engine, want, env)
+				}
+			}
+			if tt.engine == "mysql" {
+				for _, value := range env {
+					if value == "MYSQL_ROOT_PASSWORD=secret" {
+						t.Fatal("MySQL root password must differ from the application password")
+					}
 				}
 			}
 		})

@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/components/ui/toast";
 import { listSourceDeployments, createSourceDeployment, deploySourceDeployment, cancelSourceDeployment, deleteSourceDeployment, listGitProviders, type SourceDeployment, type GitProvider } from "@/lib/api/source-deployments";
 import { Plus, Play, XCircle, Trash2, GitBranch, CheckCircle, Loader2, Clock, AlertTriangle } from "lucide-react";
 import Link from "next/link";
+import { AdminFormSection, AdminPageHeader, AdminPageLayout, Btn, Card, CardHeader } from "@/components/admin/admin-ui";
 
 const statusIcons: Record<string, typeof Clock> = {
   pending: Clock,
@@ -23,11 +24,11 @@ const statusIcons: Record<string, typeof Clock> = {
 
 const statusColors: Record<string, string> = {
   pending: "text-yellow-400",
-  queued: "text-blue-400",
-  cloning: "text-blue-400",
-  building: "text-purple-400",
-  pushing: "text-purple-400",
-  deploying: "text-indigo-400",
+  queued: "text-slate-300",
+  cloning: "text-slate-300",
+  building: "text-slate-300",
+  pushing: "text-slate-300",
+  deploying: "text-slate-300",
   healthy: "text-green-400",
   completed: "text-green-400",
   failed: "text-red-400",
@@ -61,8 +62,12 @@ export default function SourceDeploymentsPage() {
     queryFn: listGitProviders,
   });
 
+  const safeDeployments = useMemo(() => Array.isArray(deployments) ? deployments : [], [deployments]);
+  const safeProviders = useMemo(() => Array.isArray(providers) ? providers : [], [providers]);
+
   const createMutation = useMutation({
     mutationFn: () => createSourceDeployment({
+      serverId: form.serverId || undefined,
       repository: form.repository,
       branch: form.branch,
       buildType: form.buildType,
@@ -122,109 +127,109 @@ export default function SourceDeploymentsPage() {
   };
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold">Source Deployments</h1>
-          <p className="text-sm opacity-70">Deploy applications from git repositories</p>
-        </div>
-        <button
-          onClick={() => setShowCreate(!showCreate)}
-          className="inline-flex items-center gap-2 rounded-lg border border-red-500/70 bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-red-950/40 transition-colors hover:bg-red-500 disabled:pointer-events-none disabled:opacity-50"
-        >
-          <Plus className="w-4 h-4" /> New Deployment
-        </button>
-      </div>
+    <AdminPageLayout>
+      <AdminPageHeader
+        title="Source Deployments"
+        description="Deploy applications from git repositories"
+        action={<Btn onClick={() => setShowCreate(!showCreate)}><Plus className="w-4 h-4" /> New Deployment</Btn>}
+      />
 
       {showCreate && (
-        <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-[#111722] p-4 mb-6 shadow-xl shadow-black/10">
-          <h2 className="text-lg font-semibold mb-4">Create Source Deployment</h2>
-          <div className="grid gap-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium mb-1">Repository URL</label>
-                <input
-                  className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
-                  placeholder="https://github.com/user/repo.git"
-                  value={form.repository}
-                  onChange={(e) => setForm({ ...form, repository: e.target.value })}
-                />
+        <Card>
+          <CardHeader title="Create Source Deployment" icon={Plus} />
+          <div className="p-4">
+            <AdminFormSection title="Repository">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Repository URL</label>
+                  <input
+                    className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                    placeholder="https://github.com/user/repo.git"
+                    value={form.repository}
+                    onChange={(e) => setForm({ ...form, repository: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Branch</label>
+                  <input
+                    className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                    placeholder="main"
+                    value={form.branch}
+                    onChange={(e) => setForm({ ...form, branch: e.target.value })}
+                  />
+                </div>
               </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">Branch</label>
-                <input
-                  className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
-                  placeholder="main"
-                  value={form.branch}
-                  onChange={(e) => setForm({ ...form, branch: e.target.value })}
-                />
+            </AdminFormSection>
+            <AdminFormSection title="Build">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Build Type</label>
+                  <select
+                    className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                    value={form.buildType}
+                    onChange={(e) => setForm({ ...form, buildType: e.target.value })}
+                  >
+                    <option value="dockerfile">Dockerfile</option>
+                    <option value="nixpacks">Nixpacks</option>
+                    <option value="heroku">Heroku Buildpacks</option>
+                    <option value="paketo">Paketo</option>
+                    <option value="static">Static</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Git Provider (optional)</label>
+                  <select
+                    className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                    value={form.gitProviderId}
+                    onChange={(e) => setForm({ ...form, gitProviderId: e.target.value })}
+                  >
+                    <option value="">None</option>
+                    {safeProviders.map((p: GitProvider) => (
+                      <option key={p.id} value={p.id}>{p.username || p.name} ({p.type})</option>
+                    ))}
+                  </select>
+                </div>
               </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
+            </AdminFormSection>
+            <AdminFormSection title="Target">
               <div>
-                <label className="block text-sm font-medium mb-1">Build Type</label>
-                <select
-                  className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
-                  value={form.buildType}
-                  onChange={(e) => setForm({ ...form, buildType: e.target.value })}
-                >
-                  <option value="dockerfile">Dockerfile</option>
-                  <option value="nixpacks">Nixpacks</option>
-                  <option value="heroku">Heroku Buildpacks</option>
-                  <option value="paketo">Paketo</option>
-                  <option value="static">Static</option>
-                </select>
+                <label className="mb-1 block text-sm font-medium">Target server ID</label>
+                <input className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 outline-none focus:border-red-400/70" placeholder="Server UUID required for deployment" value={form.serverId} onChange={(e) => setForm({ ...form, serverId: e.target.value })} required />
               </div>
+            </AdminFormSection>
+            <AdminFormSection title="Options">
               <div>
-                <label className="block text-sm font-medium mb-1">Git Provider (optional)</label>
-                <select
-                  className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
-                  value={form.gitProviderId}
-                  onChange={(e) => setForm({ ...form, gitProviderId: e.target.value })}
-                >
-                  <option value="">None</option>
-                  {providers?.map((p: GitProvider) => (
-                    <option key={p.id} value={p.id}>{p.username || p.name} ({p.type})</option>
-                  ))}
-                </select>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.autoDeploy}
+                    onChange={(e) => setForm({ ...form, autoDeploy: e.target.checked })}
+                    className="rounded border-white/10 bg-[#161b28]"
+                  />
+                  <span className="text-sm">Auto-deploy on push</span>
+                </label>
               </div>
-            </div>
-            <div>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={form.autoDeploy}
-                  onChange={(e) => setForm({ ...form, autoDeploy: e.target.checked })}
-                  className="rounded border-white/10 bg-[#161b28]"
-                />
-                <span className="text-sm">Auto-deploy on push</span>
-              </label>
-            </div>
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setShowCreate(false)}
-                className="inline-flex items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-4 py-2 text-sm font-semibold text-slate-400 shadow-none transition-colors hover:bg-white/[0.06] hover:text-white disabled:pointer-events-none disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
+            </AdminFormSection>
+            <div className="flex gap-2 justify-end pt-4">
+              <Btn tone="ghost" onClick={() => setShowCreate(false)}>Cancel</Btn>
+              <Btn
+                tone="primary"
                 onClick={() => createMutation.mutate()}
-                className="btn btn-primary"
-                disabled={!form.repository.trim() || createMutation.isPending}
+                disabled={!form.repository.trim() || !form.serverId.trim() || createMutation.isPending}
               >
                 {createMutation.isPending ? "Creating..." : "Create"}
-              </button>
+              </Btn>
             </div>
           </div>
-        </div>
+        </Card>
       )}
 
       {isLoading ? (
         <div className="text-center py-8 opacity-50">Loading deployments...</div>
-      ) : deployments && deployments.length > 0 ? (
+      ) : safeDeployments.length > 0 ? (
         <div className="grid gap-3">
-          {deployments.map((d: SourceDeployment) => (
-            <div key={d.id} className="rounded-xl border border-white/[0.08] bg-[#111722] p-4 shadow-xl shadow-black/10">
+          {safeDeployments.map((d: SourceDeployment) => (
+            <Card key={d.id} className="p-4">
               <div className="flex items-center justify-between">
                 <Link href={`/admin/source-deployments/${d.id}`} className="flex items-center gap-3 flex-1 hover:opacity-80">
                   <StatusIcon status={d.status} />
@@ -245,40 +250,30 @@ export default function SourceDeploymentsPage() {
                 </Link>
                 <div className="flex items-center gap-1 ml-4">
                   {!(["completed", "failed", "canceled"].includes(d.status)) && (
-                    <button
-                      onClick={() => cancelMutation.mutate(d.id)}
-                      className="inline-flex items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-3 py-1.5 text-sm font-semibold text-slate-400 shadow-none transition-colors hover:bg-white/[0.06] hover:text-white disabled:pointer-events-none disabled:opacity-50"
-                      title="Cancel"
-                    >
+                    <Btn size="sm" tone="ghost" onClick={() => cancelMutation.mutate(d.id)} ariaLabel="Cancel">
                       <XCircle className="w-4 h-4" />
-                    </button>
+                    </Btn>
                   )}
-                  <button
-                    onClick={() => deployMutation.mutate(d.id)}
-                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-3 py-1.5 text-sm font-semibold text-slate-400 shadow-none transition-colors hover:bg-white/[0.06] hover:text-white disabled:pointer-events-none disabled:opacity-50"
-                    title="Deploy"
-                  >
+                  <Btn size="sm" tone="ghost" onClick={() => deployMutation.mutate(d.id)} ariaLabel="Deploy">
                     <Play className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => deleteMutation.mutate(d.id)}
-                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-3 py-1.5 text-sm font-semibold text-red-400 shadow-none transition-colors hover:bg-white/[0.06] hover:text-white disabled:pointer-events-none disabled:opacity-50"
-                    title="Delete"
-                  >
+                  </Btn>
+                  <Btn size="sm" tone="danger" onClick={() => deleteMutation.mutate(d.id)} ariaLabel="Delete">
                     <Trash2 className="w-4 h-4" />
-                  </button>
+                  </Btn>
                 </div>
               </div>
-            </div>
+            </Card>
           ))}
         </div>
       ) : (
-        <div className="text-center py-12 rounded-xl border border-white/[0.08] bg-[#111722] shadow-xl shadow-black/10">
-          <GitBranch className="w-12 h-12 mx-auto mb-3 opacity-30" />
-          <p className="opacity-60">No source deployments yet.</p>
-          <p className="text-sm opacity-40">Create a deployment to build and deploy from a git repository.</p>
-        </div>
+        <Card className="p-8">
+          <div className="text-center">
+            <GitBranch className="w-12 h-12 mx-auto mb-3 opacity-30" />
+            <p className="opacity-60">No source deployments yet.</p>
+            <p className="text-sm opacity-40">Create a deployment to build and deploy from a git repository.</p>
+          </div>
+        </Card>
       )}
-    </div>
+    </AdminPageLayout>
   );
 }

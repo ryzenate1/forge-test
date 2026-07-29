@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, use, Suspense } from "react";
+import { useState, useRef, useCallback, use, Suspense, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast, Toaster } from "@/components/ui/sonner";
@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import {
   fetchApp, fetchAppDeployments, fetchAppLogs, fetchAppDomains, fetchAppBackups,
+  fetchAppConsoleWSURL,
   addAppDomain, deleteAppDomain, createAppBackup, restoreAppBackup, deleteAppBackup,
   startApp, stopApp, restartApp, triggerDeploy, updateApp,
   typeLabel,
@@ -112,7 +113,7 @@ function AdminAppDetailContent({ params }: { params: Promise<{ id: string }> }) 
       {tab === "deployments" && <DeploymentsTab appId={id} />}
       {tab === "configuration" && <ConfigurationTab app={app} id={id} />}
       {tab === "logs" && <LogsTab appId={id} />}
-      {tab === "console" && <ConsoleTab appId={id} />}
+      {tab === "console" && <ConsoleTab app={app} />}
       {tab === "domains" && <DomainsTab appId={id} />}
       {tab === "backups" && <BackupsTab appId={id} />}
       <Toaster />
@@ -260,18 +261,19 @@ function OverviewTab({ app, id }: { app: ApiAppDetail; id: string }) {
 
 function DeploymentsTab({ appId }: { appId: string }) {
   const router = useRouter();
-  const { data: deployments = [], isLoading } = useQuery({
+  const { data: deploymentsRaw, isLoading } = useQuery({
     queryKey: ["app-deployments", appId],
     queryFn: () => fetchAppDeployments(appId),
     refetchInterval: 10_000,
   });
+  const deployments = useMemo(() => deploymentsRaw ?? [], [deploymentsRaw]);
   const [selected, setSelected] = useState<AppDeployment | null>(null);
 
   return (
     <div className="space-y-4">
       <Card>
         <CardHeader
-          title={`${deployments?.length ?? 0} deployment${deployments?.length === 1 ? "" : "s"}`}
+          title={`${(Array.isArray(deployments) ? deployments : []).length} deployment${(Array.isArray(deployments) ? deployments : []).length === 1 ? "" : "s"}`}
           icon={History}
           action={
             <Btn tone="ghost" size="sm" onClick={() => router.push(`/admin/apps/${appId}/deployments`)}>
@@ -282,7 +284,7 @@ function DeploymentsTab({ appId }: { appId: string }) {
         />
         {isLoading ? (
           <div className="p-8 text-center text-sm text-slate-500">Loading deployments...</div>
-        ) : !deployments || deployments.length === 0 ? (
+        ) : !Array.isArray(deployments) || deployments.length === 0 ? (
           <EmptyState icon={History} message="No deployments yet." />
         ) : (
           <div className="overflow-x-auto">
@@ -298,7 +300,7 @@ function DeploymentsTab({ appId }: { appId: string }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
-                {deployments.map((dep) => (
+                {Array.isArray(deployments) && deployments.map((dep) => (
                   <tr
                     key={dep.id}
                     className="hover:bg-white/[0.02] cursor-pointer"
@@ -470,7 +472,7 @@ function LogsTab({ appId }: { appId: string }) {
   );
 }
 
-function ConsoleTab({ appId }: { appId: string }) {
+function ConsoleTab({ app }: { app: ApiAppDetail }) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
@@ -478,33 +480,36 @@ function ConsoleTab({ appId }: { appId: string }) {
   const [output, setOutput] = useState<string[]>([]);
 
   const connect = useCallback(() => {
+    if (!app.serverId) {
+      setOutput((prev) => [...prev, "No server assigned to this application."]);
+      return;
+    }
+
     if (wsRef.current) {
-      wsRef.current.close();
+      const old = wsRef.current;
+      old.onopen = null;
+      old.onclose = null;
+      old.onerror = null;
+      old.onmessage = null;
+      old.close();
     }
 
     try {
-      const url = `${process.env.NEXT_PUBLIC_API_URL ?? (typeof window !== "undefined" ? `${window.location.protocol}//${window.location.host}/api/v1` : "http://localhost:8080/api/v1")}`;
-      const wsBase = url.replace("http:", "ws:").replace("https:", "wss:");
-      const socket = new WebSocket(`${wsBase}/admin/apps/${appId}/ws/console`);
+      const socket = new WebSocket(fetchAppConsoleWSURL(app.serverId));
 
-      socket.onopen = () => setConnected(true);
-      socket.onclose = () => setConnected(false);
+      socket.onopen = () => { if (wsRef.current === socket) setConnected(true); };
+      socket.onclose = () => { if (wsRef.current === socket) setConnected(false); };
       socket.onmessage = (event) => {
+        if (wsRef.current !== socket) return;
         setOutput((prev) => [...prev.slice(-500), event.data]);
       };
-      socket.onerror = () => setConnected(false);
+      socket.onerror = () => { if (wsRef.current === socket) setConnected(false); };
 
       wsRef.current = socket;
     } catch {
       setConnected(false);
     }
-  }, [appId]);
-
-  useEffect(() => {
-    return () => {
-      if (wsRef.current) wsRef.current.close();
-    };
-  }, []);
+  }, [app.serverId]);
 
   const send = (e: React.FormEvent) => {
     e.preventDefault();
@@ -565,10 +570,11 @@ function ConsoleTab({ appId }: { appId: string }) {
 
 function DomainsTab({ appId }: { appId: string }) {
   const qc = useQueryClient();
-  const { data: domains = [], isLoading } = useQuery({
+  const { data: domainsRaw, isLoading } = useQuery({
     queryKey: ["app-domains", appId],
     queryFn: () => fetchAppDomains(appId),
   });
+  const domains = useMemo(() => domainsRaw ?? [], [domainsRaw]);
   const [newDomain, setNewDomain] = useState("");
   const [enableTls, setEnableTls] = useState(false);
 
@@ -591,7 +597,7 @@ function DomainsTab({ appId }: { appId: string }) {
   return (
     <div className="space-y-4">
       <Card>
-        <CardHeader title={`${domains?.length ?? 0} domain${domains?.length === 1 ? "" : "s"}`} icon={Globe} />
+        <CardHeader title={`${(Array.isArray(domains) ? domains : []).length} domain${(Array.isArray(domains) ? domains : []).length === 1 ? "" : "s"}`} icon={Globe} />
         <div className="flex flex-wrap items-end gap-3 p-4">
           <div className="flex-1 min-w-[200px]">
             <Input label="New Domain" value={newDomain} onChange={setNewDomain} placeholder="example.com" />
@@ -614,7 +620,7 @@ function DomainsTab({ appId }: { appId: string }) {
         )}
         {isLoading ? (
           <div className="p-8 text-center text-sm text-slate-500">Loading domains...</div>
-        ) : !domains || domains.length === 0 ? (
+        ) : !Array.isArray(domains) || domains.length === 0 ? (
           <EmptyState icon={Globe} message="No domains configured." />
         ) : (
           <div className="overflow-x-auto">
@@ -628,7 +634,7 @@ function DomainsTab({ appId }: { appId: string }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
-                {domains.map((d) => (
+                {Array.isArray(domains) && domains.map((d) => (
                   <tr key={d.id}>
                     <td className="px-4 py-3 font-mono text-xs text-slate-200">{d.domain}</td>
                     <td className="px-4 py-3">
@@ -659,11 +665,12 @@ function DomainsTab({ appId }: { appId: string }) {
 
 function BackupsTab({ appId }: { appId: string }) {
   const qc = useQueryClient();
-  const { data: backups = [], isLoading } = useQuery({
+  const { data: backupsRaw, isLoading } = useQuery({
     queryKey: ["app-backups", appId],
     queryFn: () => fetchAppBackups(appId),
     refetchInterval: 10_000,
   });
+  const backups = useMemo(() => backupsRaw ?? [], [backupsRaw]);
 
   const createMut = useMutation({
     mutationFn: () => createAppBackup(appId),
@@ -692,10 +699,10 @@ function BackupsTab({ appId }: { appId: string }) {
       </div>
 
       <Card>
-        <CardHeader title={`${backups?.length ?? 0} backup${backups?.length === 1 ? "" : "s"}`} icon={Database} />
+        <CardHeader title={`${(Array.isArray(backups) ? backups : []).length} backup${(Array.isArray(backups) ? backups : []).length === 1 ? "" : "s"}`} icon={Database} />
         {isLoading ? (
           <div className="p-8 text-center text-sm text-slate-500">Loading backups...</div>
-        ) : !backups || backups.length === 0 ? (
+        ) : !Array.isArray(backups) || backups.length === 0 ? (
           <EmptyState icon={Database} message="No backups yet." />
         ) : (
           <div className="overflow-x-auto">
@@ -710,7 +717,7 @@ function BackupsTab({ appId }: { appId: string }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
-                {backups.map((b) => (
+                {Array.isArray(backups) && backups.map((b) => (
                   <tr key={b.id}>
                     <td className="px-4 py-3 font-mono text-xs text-slate-200">{b.name}</td>
                     <td className="px-4 py-3">

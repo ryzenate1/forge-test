@@ -25,18 +25,15 @@ export function listFiles(path: string = '/', nodeId?: string): Promise<FileEntr
 }
 
 export async function readFile(path: string, nodeId?: string): Promise<string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'text/plain',
+  };
+  const csrf = getCSRFToken();
+  if (csrf) headers['X-CSRF-Token'] = csrf;
   const response = await fetch(
     `${API_BASE_URL}${nodePath('/host/files/read', nodeId)}`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'text/plain',
-        ...getAuthHeaders(),
-      },
-      credentials: 'include',
-      body: JSON.stringify({ path }),
-    },
+    { method: 'POST', headers, credentials: 'include', body: JSON.stringify({ path }) },
   );
   if (!response.ok) {
     throw new Error(`Failed to read file: ${response.status}`);

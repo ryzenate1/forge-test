@@ -6,7 +6,7 @@ import {
   ExternalLink, GitPullRequest, Play, Trash2,
 } from "lucide-react";
 import { fetchJSON, postJSON } from "@/lib/api";
-import { Btn, Card, CardHeader, EmptyState, Pill, SectionHeader } from "@/components/admin/admin-ui";
+import { AdminPageHeader, AdminPageLayout, AdminToolbar, Btn, Card, CardHeader, EmptyState, Pill } from "@/components/admin/admin-ui";
 import { formatDate } from "@/lib/utils";
 
 type PreviewDeployment = {
@@ -33,7 +33,7 @@ type PreviewDeployment = {
 };
 
 const statusConfig: Record<string, { tone: "green" | "yellow" | "red" | "blue" | "neutral" }> = {
-  deploying: { tone: "blue" },
+  deploying: { tone: "neutral" },
   running: { tone: "green" },
   stopped: { tone: "yellow" },
   failed: { tone: "red" },
@@ -63,6 +63,7 @@ export default function AdminPreviewDeploymentsPage() {
   const previews = useMemo(() => previewsQuery.data ?? [], [previewsQuery.data]);
 
   const filtered = useMemo(() => {
+    if (!Array.isArray(previews)) return [];
     if (!statusFilter) return previews;
     return previews.filter((p) => p.status === statusFilter);
   }, [previews, statusFilter]);
@@ -70,15 +71,15 @@ export default function AdminPreviewDeploymentsPage() {
   const statuses = ["deploying", "running", "stopped", "failed", "cleaned_up"];
 
   return (
-    <div className="space-y-6">
-      <SectionHeader
+    <AdminPageLayout>
+      <AdminPageHeader
         title="Preview Deployments"
-        sub="PR-based preview environments for your applications."
+        description="PR-based preview environments for your applications."
       />
 
       <Card>
         <CardHeader title={`${filtered.length.toLocaleString()} preview${filtered.length === 1 ? "" : "s"}`} icon={GitPullRequest} />
-        <div className="flex flex-wrap items-center gap-3 p-4">
+        <AdminToolbar>
           <select
             className="h-9 rounded-lg border border-white/10 bg-[#161b28] px-3 text-xs text-slate-300 outline-none"
             value={statusFilter}
@@ -89,7 +90,7 @@ export default function AdminPreviewDeploymentsPage() {
               <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
             ))}
           </select>
-        </div>
+        </AdminToolbar>
 
         {previewsQuery.isLoading ? (
           <div className="p-8 text-center text-sm text-slate-500">Loading preview deployments...</div>
@@ -119,7 +120,7 @@ export default function AdminPreviewDeploymentsPage() {
                       <td className="px-4 py-3 text-xs text-slate-300 max-w-[200px] truncate">{p.prTitle || "—"}</td>
                       <td className="px-4 py-3 text-xs text-slate-400">{p.branch || "—"}</td>
                       <td className="px-4 py-3">
-                        <Pill tone={p.source === "github" ? "neutral" : "blue"}>{p.source}</Pill>
+                        <Pill tone="neutral">{p.source}</Pill>
                       </td>
                       <td className="px-4 py-3">
                         <Pill tone={cfg.tone}>{p.status.replace(/_/g, " ")}</Pill>
@@ -130,7 +131,7 @@ export default function AdminPreviewDeploymentsPage() {
                             href={p.previewUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
+                            className="flex items-center gap-1 text-xs text-red-300 hover:text-red-200"
                           >
                             <ExternalLink size={12} /> View
                           </a>
@@ -169,6 +170,6 @@ export default function AdminPreviewDeploymentsPage() {
           </div>
         )}
       </Card>
-    </div>
+    </AdminPageLayout>
   );
 }

@@ -15,11 +15,11 @@ import (
 )
 
 type Config struct {
-	WarningThreshold    time.Duration `json:"warningThreshold"`
-	OfflineThreshold    time.Duration `json:"offlineThreshold"`
-	UnavailableAfter    time.Duration `json:"unavailableAfter"`
-	RecoveryThreshold   int           `json:"recoveryThreshold"`
-	Interval            time.Duration `json:"interval"`
+	WarningThreshold  time.Duration `json:"warningThreshold"`
+	OfflineThreshold  time.Duration `json:"offlineThreshold"`
+	UnavailableAfter  time.Duration `json:"unavailableAfter"`
+	RecoveryThreshold int           `json:"recoveryThreshold"`
+	Interval          time.Duration `json:"interval"`
 }
 
 type Metrics struct {
@@ -196,13 +196,13 @@ func (s *Service) evaluate(ctx context.Context, node store.Node, persist bool) (
 		return evaluation, nil
 	}
 
-	s.increment(func(metrics *Metrics) {
-		metrics.HeartbeatEvaluationsTotal++
-	})
 	previous, updated, err := s.store.SetNodeHeartbeatClassification(ctx, node.ID, state, actualState, recoveryCount, reason)
 	if err != nil {
 		return Evaluation{}, err
 	}
+	s.increment(func(metrics *Metrics) {
+		metrics.HeartbeatEvaluationsTotal++
+	})
 	evaluation.Node = updated
 	evaluation.PreviousState = previous.HeartbeatState
 	evaluation.PreviousActualState = previous.ActualState
@@ -231,6 +231,9 @@ func (s *Service) classify(node store.Node, history []store.NodeHeartbeatHistory
 	}
 	age := now.Sub(*node.LastSeenAt)
 	if age < 0 {
+		if -age > 30*time.Second {
+			return store.NodeHeartbeatStateSuspected, store.NodeActualStateDegraded, 0, 0, "heartbeat timestamp is too far in the future"
+		}
 		age = 0
 	}
 	ageSeconds = int(age.Seconds())

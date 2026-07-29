@@ -7,7 +7,7 @@ import {
   ShieldOff, SlidersHorizontal, Trash2, Zap,
 } from "lucide-react";
 import { fetchJSON, postJSON, patchJSON, deleteJSON } from "@/lib/api";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
+import { AdminPageLayout, AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
 
 type RouteRule = {
   id: string;
@@ -57,8 +57,8 @@ export default function AdminTrafficPage() {
   const [policySearch, setPolicySearch] = useState("");
 
   const routesQuery = useQuery({
-    queryKey: ["admin", "traffic", "routes"],
-    queryFn: () => fetchJSON<RouteRule[]>("/admin/traffic/routes"),
+    queryKey: ["admin", "traffic", "rules"],
+    queryFn: () => fetchJSON<RouteRule[]>("/admin/traffic/rules"),
   });
 
   const policiesQuery = useQuery({
@@ -78,9 +78,9 @@ export default function AdminTrafficPage() {
   );
 
   const createRouteMutation = useMutation({
-    mutationFn: () => postJSON("/admin/traffic/routes", { ...routeForm, methods: routeForm.methods.split(",").map((m) => m.trim()) }),
+    mutationFn: () => postJSON("/admin/traffic/rules", { ...routeForm, methods: routeForm.methods.split(",").map((m) => m.trim()) }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["admin", "traffic", "routes"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "traffic", "rules"] });
       setShowCreateRoute(false);
       setRouteForm(defaultRouteForm);
     },
@@ -88,16 +88,16 @@ export default function AdminTrafficPage() {
 
   const updateRouteMutation = useMutation({
     mutationFn: () =>
-      patchJSON(`/admin/traffic/routes/${editingRoute!.id}`, { ...routeForm, methods: routeForm.methods.split(",").map((m) => m.trim()) }),
+      patchJSON(`/admin/traffic/rules/${encodeURIComponent(editingRoute!.id)}`, { ...routeForm, methods: routeForm.methods.split(",").map((m) => m.trim()) }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["admin", "traffic", "routes"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "traffic", "rules"] });
       setEditingRoute(null);
     },
   });
 
   const deleteRouteMutation = useMutation({
-    mutationFn: (id: string) => deleteJSON(`/admin/traffic/routes/${id}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin", "traffic", "routes"] }),
+    mutationFn: (id: string) => deleteJSON(`/admin/traffic/rules/${encodeURIComponent(id)}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin", "traffic", "rules"] }),
   });
 
   const [policyConfigError, setPolicyConfigError] = useState<string | null>(null);
@@ -118,13 +118,13 @@ export default function AdminTrafficPage() {
   });
 
   const deletePolicyMutation = useMutation({
-    mutationFn: (id: string) => deleteJSON(`/admin/traffic/policies/${id}`),
+    mutationFn: (id: string) => deleteJSON(`/admin/traffic/policies/${encodeURIComponent(id)}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin", "traffic", "policies"] }),
   });
 
   const syncRoutesMutation = useMutation({
-    mutationFn: () => postJSON("/admin/traffic/routes/sync"),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin", "traffic", "routes"] }),
+    mutationFn: () => postJSON("/admin/traffic/sync"),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin", "traffic", "rules"] }),
   });
 
   const tabs: Array<{ id: Tab; label: string }> = [
@@ -133,7 +133,7 @@ export default function AdminTrafficPage() {
   ];
 
   return (
-    <div className="space-y-6">
+    <AdminPageLayout>
       <SectionHeader
         title="Traffic Management"
         sub="Route rules and traffic policies for the API gateway."
@@ -144,17 +144,7 @@ export default function AdminTrafficPage() {
         }
       />
 
-      <div className="flex gap-1 rounded-lg border border-white/[0.06] bg-[#161b28] p-1 w-fit">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            className={`px-4 py-2 text-xs font-semibold rounded-md transition ${tab === t.id ? "bg-[#dc2626] text-white" : "text-slate-400 hover:text-slate-200"}`}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <AdminTabs tabs={tabs} active={tab} onChange={(id) => setTab(id as Tab)} />
 
       {tab === "routes" && (
         <Card>
@@ -188,7 +178,7 @@ export default function AdminTrafficPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/[0.04]">
-                  {filteredRoutes.map((rule) => (
+                  {Array.isArray(filteredRoutes) && filteredRoutes.map((rule) => (
                     <tr key={rule.id} className="hover:bg-white/[0.02]">
                       <td className="px-4 py-3 font-mono text-xs font-medium text-slate-200">{rule.path}</td>
                       <td className="px-4 py-3 text-xs text-slate-400">{rule.targetGroup}</td>
@@ -234,7 +224,7 @@ export default function AdminTrafficPage() {
             <EmptyState icon={Shield} message="No traffic policies configured." />
           ) : (
             <div className="divide-y divide-white/[0.04]">
-              {filteredPolicies.map((p) => (
+              {Array.isArray(filteredPolicies) && filteredPolicies.map((p) => (
                 <div key={p.id} className="flex items-center justify-between px-4 py-3">
                   <div className="flex items-center gap-3">
                     {p.type === "rate_limit" ? (
@@ -244,7 +234,7 @@ export default function AdminTrafficPage() {
                     ) : p.type === "ip_blacklist" ? (
                       <ShieldOff size={16} className="text-red-400" />
                     ) : (
-                      <Zap size={16} className="text-blue-400" />
+                      <Zap size={16} className="text-slate-400" />
                     )}
                     <div>
                       <p className="text-sm font-medium text-slate-200">{p.name}</p>
@@ -320,7 +310,7 @@ export default function AdminTrafficPage() {
           />
         </Modal>
       )}
-    </div>
+    </AdminPageLayout>
   );
 }
 

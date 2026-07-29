@@ -1,8 +1,29 @@
 package http
 
 import (
+	"context"
+	"errors"
+	"net/url"
+
 	"github.com/gofiber/fiber/v2"
 )
+
+func mapDaemonError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return fiber.NewError(fiber.StatusGatewayTimeout, "Node unreachable — request timed out")
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		if urlErr.Timeout() {
+			return fiber.NewError(fiber.StatusGatewayTimeout, "Node unreachable — connection timed out")
+		}
+		return fiber.NewError(fiber.StatusBadGateway, "Node offline — Beacon daemon unreachable")
+	}
+	return fiber.NewError(fiber.StatusBadGateway, err.Error())
+}
 
 type nodeHostTarget struct {
 	NodeURL   string
@@ -58,7 +79,7 @@ func registerHostRoutes(protected fiber.Router, cfg Config) {
 		defer cancel()
 		info, err := cfg.Daemon.GetHostInfo(ctx, target.NodeURL, target.NodeToken)
 		if err != nil {
-			return fiber.NewError(fiber.StatusBadGateway, err.Error())
+			return mapDaemonError(err)
 		}
 		return c.JSON(info)
 	})
@@ -75,7 +96,7 @@ func registerHostRoutes(protected fiber.Router, cfg Config) {
 		defer cancel()
 		disk, err := cfg.Daemon.GetHostDisk(ctx, target.NodeURL, target.NodeToken)
 		if err != nil {
-			return fiber.NewError(fiber.StatusBadGateway, err.Error())
+			return mapDaemonError(err)
 		}
 		return c.JSON(disk)
 	})
@@ -92,7 +113,7 @@ func registerHostRoutes(protected fiber.Router, cfg Config) {
 		defer cancel()
 		mem, err := cfg.Daemon.GetHostMemory(ctx, target.NodeURL, target.NodeToken)
 		if err != nil {
-			return fiber.NewError(fiber.StatusBadGateway, err.Error())
+			return mapDaemonError(err)
 		}
 		return c.JSON(mem)
 	})
@@ -109,7 +130,7 @@ func registerHostRoutes(protected fiber.Router, cfg Config) {
 		defer cancel()
 		netIfaces, err := cfg.Daemon.GetHostNetwork(ctx, target.NodeURL, target.NodeToken)
 		if err != nil {
-			return fiber.NewError(fiber.StatusBadGateway, err.Error())
+			return mapDaemonError(err)
 		}
 		return c.JSON(netIfaces)
 	})
@@ -126,7 +147,7 @@ func registerHostRoutes(protected fiber.Router, cfg Config) {
 		defer cancel()
 		procs, err := cfg.Daemon.GetHostProcesses(ctx, target.NodeURL, target.NodeToken)
 		if err != nil {
-			return fiber.NewError(fiber.StatusBadGateway, err.Error())
+			return mapDaemonError(err)
 		}
 		return c.JSON(procs)
 	})

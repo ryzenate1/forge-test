@@ -3,10 +3,15 @@ package backup
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +21,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"golang.org/x/oauth2/google"
 )
 
 // S3StorageAdapter implements StorageAdapter for S3-compatible storage (AWS S3, MinIO, etc.)
@@ -528,13 +534,39 @@ func (a *AzureStorageAdapter) GetFileInfo(ctx context.Context, path string) (Fil
 	}, nil
 }
 
-// GCSStorageAdapter implements StorageAdapter for Google Cloud Storage
-// This adapter is a stub that returns an error. To use GCS, build with the GCS SDK.
-type GCSStorageAdapter struct{}
+// GCSStorageAdapter implements StorageAdapter using the authenticated GCS JSON API.
+type GCSStorageAdapter struct {
+	bucket string
+	prefix string
+	client *http.Client
+}
 
 // NewGCSStorageAdapter creates a new GCSStorageAdapter
 func NewGCSStorageAdapter(config *GCSStorageConfig) (*GCSStorageAdapter, error) {
-	return nil, fmt.Errorf("GCS storage adapter is not available in this build")
+	if config == nil || strings.TrimSpace(config.Bucket) == "" {
+		return nil, fmt.Errorf("GCS bucket is required")
+	}
+	if strings.ContainsAny(config.Bucket, "/?#") {
+		return nil, fmt.Errorf("invalid GCS bucket")
+	}
+	credentials := []byte(strings.TrimSpace(config.ServiceAccount))
+	if len(credentials) == 0 {
+		return nil, fmt.Errorf("GCS service account JSON is required")
+	}
+	jwtConfig, err := google.JWTConfigFromJSON(credentials, "https://www.googleapis.com/auth/devstorage.read_write")
+	if err != nil {
+		return nil, fmt.Errorf("parse GCS service account: %w", err)
+	}
+	client := jwtConfig.Client(context.Background())
+	client.Timeout = 2 * time.Minute
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &GCSStorageAdapter{
+		bucket: strings.TrimSpace(config.Bucket),
+		prefix: strings.Trim(strings.TrimSpace(config.Prefix), "/"),
+		client: client,
+	}, nil
 }
 
 func (a *GCSStorageAdapter) Name() string {
@@ -542,35 +574,210 @@ func (a *GCSStorageAdapter) Name() string {
 }
 
 func (a *GCSStorageAdapter) Upload(ctx context.Context, path string, data []byte) error {
-	return fmt.Errorf("GCS storage adapter is not available in this build")
+	return a.UploadStream(ctx, path, bytes.NewReader(data), int64(len(data)))
 }
 
-func (a *GCSStorageAdapter) UploadStream(ctx context.Context, path string, reader io.Reader, size int64) error {
-	return fmt.Errorf("GCS storage adapter is not available in this build")
+func (a *GCSStorageAdapter) UploadStream(ctx context.Context, objectPath string, reader io.Reader, size int64) error {
+	key, err := a.objectKey(objectPath)
+	if err != nil {
+		return err
+	}
+	endpoint := "https://storage.googleapis.com/upload/storage/v1/b/" + url.PathEscape(a.bucket) +
+		"/o?uploadType=media&name=" + url.QueryEscape(key)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, reader)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	if size >= 0 {
+		req.ContentLength = size
+	}
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("GCS upload: %w", err)
+	}
+	defer resp.Body.Close()
+	return gcsResponseError(resp, "upload")
 }
 
-func (a *GCSStorageAdapter) Download(ctx context.Context, path string) ([]byte, error) {
-	return nil, fmt.Errorf("GCS storage adapter is not available in this build")
+func (a *GCSStorageAdapter) Download(ctx context.Context, objectPath string) ([]byte, error) {
+	reader, err := a.DownloadStream(ctx, objectPath)
+	if err != nil {
+		return nil, err
+	}
+	if closer, ok := reader.(io.Closer); ok {
+		defer closer.Close()
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("GCS download read: %w", err)
+	}
+	return data, nil
 }
 
-func (a *GCSStorageAdapter) DownloadStream(ctx context.Context, path string) (io.Reader, error) {
-	return nil, fmt.Errorf("GCS storage adapter is not available in this build")
+func (a *GCSStorageAdapter) DownloadStream(ctx context.Context, objectPath string) (io.Reader, error) {
+	req, err := a.objectRequest(ctx, http.MethodGet, objectPath, "?alt=media")
+	if err != nil {
+		return nil, err
+	}
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GCS download: %w", err)
+	}
+	if err := gcsResponseError(resp, "download"); err != nil {
+		resp.Body.Close()
+		return nil, err
+	}
+	return resp.Body, nil
 }
 
-func (a *GCSStorageAdapter) Delete(ctx context.Context, path string) error {
-	return fmt.Errorf("GCS storage adapter is not available in this build")
+func (a *GCSStorageAdapter) Delete(ctx context.Context, objectPath string) error {
+	req, err := a.objectRequest(ctx, http.MethodDelete, objectPath, "")
+	if err != nil {
+		return err
+	}
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("GCS delete: %w", err)
+	}
+	defer resp.Body.Close()
+	return gcsResponseError(resp, "delete")
 }
 
-func (a *GCSStorageAdapter) List(ctx context.Context, prefix string) ([]string, error) {
-	return nil, fmt.Errorf("GCS storage adapter is not available in this build")
+func (a *GCSStorageAdapter) List(ctx context.Context, objectPrefix string) ([]string, error) {
+	prefix := a.prefix
+	if strings.TrimSpace(objectPrefix) != "" {
+		var err error
+		prefix, err = a.objectKey(objectPrefix)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var result []string
+	pageToken := ""
+	for {
+		values := url.Values{"prefix": []string{prefix}}
+		if pageToken != "" {
+			values.Set("pageToken", pageToken)
+		}
+		endpoint := "https://storage.googleapis.com/storage/v1/b/" + url.PathEscape(a.bucket) + "/o?" + values.Encode()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := a.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("GCS list: %w", err)
+		}
+		if err := gcsResponseError(resp, "list"); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+		var page struct {
+			Items []struct {
+				Name string `json:"name"`
+			} `json:"items"`
+			NextPageToken string `json:"nextPageToken"`
+		}
+		err = json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&page)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("decode GCS list: %w", err)
+		}
+		for _, item := range page.Items {
+			result = append(result, item.Name)
+		}
+		if page.NextPageToken == "" {
+			return result, nil
+		}
+		pageToken = page.NextPageToken
+	}
 }
 
-func (a *GCSStorageAdapter) Exists(ctx context.Context, path string) (bool, error) {
-	return false, fmt.Errorf("GCS storage adapter is not available in this build")
+func (a *GCSStorageAdapter) Exists(ctx context.Context, objectPath string) (bool, error) {
+	req, err := a.objectRequest(ctx, http.MethodGet, objectPath, "?fields=name")
+	if err != nil {
+		return false, err
+	}
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("GCS exists: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	return resp.StatusCode >= 200 && resp.StatusCode < 300, gcsResponseError(resp, "exists")
 }
 
-func (a *GCSStorageAdapter) GetFileInfo(ctx context.Context, path string) (FileInfo, error) {
-	return FileInfo{}, fmt.Errorf("GCS storage adapter is not available in this build")
+func (a *GCSStorageAdapter) GetFileInfo(ctx context.Context, objectPath string) (FileInfo, error) {
+	req, err := a.objectRequest(ctx, http.MethodGet, objectPath, "?fields=name,size,updated")
+	if err != nil {
+		return FileInfo{}, err
+	}
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return FileInfo{}, fmt.Errorf("GCS metadata: %w", err)
+	}
+	defer resp.Body.Close()
+	if err := gcsResponseError(resp, "metadata"); err != nil {
+		return FileInfo{}, err
+	}
+	var metadata struct {
+		Name    string `json:"name"`
+		Size    string `json:"size"`
+		Updated string `json:"updated"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&metadata); err != nil {
+		return FileInfo{}, err
+	}
+	size, err := strconv.ParseInt(metadata.Size, 10, 64)
+	if err != nil {
+		return FileInfo{}, fmt.Errorf("invalid GCS object size: %w", err)
+	}
+	updated, err := time.Parse(time.RFC3339Nano, metadata.Updated)
+	if err != nil {
+		return FileInfo{}, fmt.Errorf("invalid GCS update time: %w", err)
+	}
+	return FileInfo{Name: filepath.Base(metadata.Name), Path: objectPath, Size: size, Modified: updated}, nil
+}
+
+func (a *GCSStorageAdapter) objectKey(objectPath string) (string, error) {
+	objectPath = strings.TrimSpace(objectPath)
+	for _, segment := range strings.Split(strings.ReplaceAll(objectPath, "\\", "/"), "/") {
+		if segment == ".." {
+			return "", fmt.Errorf("invalid GCS object path")
+		}
+	}
+	cleaned := path.Clean("/" + objectPath)
+	if cleaned == "/" || strings.Contains(cleaned, "\x00") {
+		if a.prefix != "" && strings.TrimSpace(objectPath) == "" {
+			return a.prefix, nil
+		}
+		return "", fmt.Errorf("invalid GCS object path")
+	}
+	key := strings.TrimPrefix(cleaned, "/")
+	if a.prefix != "" {
+		key = a.prefix + "/" + key
+	}
+	return key, nil
+}
+
+func (a *GCSStorageAdapter) objectRequest(ctx context.Context, method, objectPath, query string) (*http.Request, error) {
+	key, err := a.objectKey(objectPath)
+	if err != nil {
+		return nil, err
+	}
+	endpoint := "https://storage.googleapis.com/storage/v1/b/" + url.PathEscape(a.bucket) + "/o/" + url.PathEscape(key) + query
+	return http.NewRequestWithContext(ctx, method, endpoint, nil)
+}
+
+func gcsResponseError(resp *http.Response, operation string) error {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return fmt.Errorf("GCS %s failed with HTTP %d: %s", operation, resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
 // LocalStorageAdapter implements StorageAdapter for local filesystem storage

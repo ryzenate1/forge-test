@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -319,6 +322,10 @@ func (s *Store) ListDeploymentLogs(ctx context.Context, deploymentID string, lim
 
 // Beacon Command Logs
 func (s *Store) CreateBeaconCommandLog(ctx context.Context, req CreateBeaconCommandLogRequest) (BeaconCommandLog, error) {
+	const maxCommandPayloadBytes = 64 << 10
+	if strings.TrimSpace(req.CommandID) == "" || len(req.CommandID) > 512 {
+		return BeaconCommandLog{}, errors.New("command ID is required and must not exceed 512 bytes")
+	}
 	id := uuid.NewString()
 	if req.Status == "" {
 		req.Status = "pending"
@@ -331,10 +338,19 @@ func (s *Store) CreateBeaconCommandLog(ctx context.Context, req CreateBeaconComm
 	if respPayload == nil {
 		respPayload = map[string]any{}
 	}
-	reqBytes, _ := json.Marshal(reqPayload)
-	respBytes, _ := json.Marshal(respPayload)
+	reqBytes, err := json.Marshal(reqPayload)
+	if err != nil {
+		return BeaconCommandLog{}, fmt.Errorf("encode command request payload: %w", err)
+	}
+	respBytes, err := json.Marshal(respPayload)
+	if err != nil {
+		return BeaconCommandLog{}, fmt.Errorf("encode command response payload: %w", err)
+	}
+	if len(reqBytes) > maxCommandPayloadBytes || len(respBytes) > maxCommandPayloadBytes {
+		return BeaconCommandLog{}, errors.New("command payload exceeds 64 KiB limit")
+	}
 
-	_, err := s.db.Exec(ctx, `
+	_, err = s.db.Exec(ctx, `
 		INSERT INTO beacon_command_logs (id, command_id, operation_id, correlation_id, node_id, server_id,
 			command_type, status, request_payload, response_payload, exit_code, duration_ms, error_message, executed_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12,$13,$14)
@@ -515,13 +531,26 @@ func (s *Store) ListBeaconCommandLogs(ctx context.Context, filter BeaconCommandL
 }
 
 func (s *Store) UpdateBeaconCommandLogStatus(ctx context.Context, commandID, status string, exitCode int, responsePayload map[string]any) error {
-	respBytes, _ := json.Marshal(responsePayload)
+	respBytes, err := json.Marshal(responsePayload)
+	if err != nil {
+		return fmt.Errorf("encode command response payload: %w", err)
+	}
+	if len(respBytes) > 64<<10 {
+		return errors.New("command response payload exceeds 64 KiB limit")
+	}
 	now := time.Now().UTC()
-	_, err := s.db.Exec(ctx, `
+	result, err := s.db.Exec(ctx, `
 		UPDATE beacon_command_logs SET status = $1, exit_code = $2, response_payload = $3::jsonb, executed_at = $4
 		WHERE command_id = $5
 	`, status, exitCode, string(respBytes), now, commandID)
-	return err
+	if err != nil {
+		return err
+	}
+	affected := result.RowsAffected()
+	if affected != 1 {
+		return fmt.Errorf("command log %q not found", commandID)
+	}
+	return nil
 }
 
 // Correlation Links
