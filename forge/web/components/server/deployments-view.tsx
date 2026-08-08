@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { fetchJSON, postJSON, putJSON, type ApiServer } from "@/lib/api";
 import { errorMessage } from "@/lib/utils";
 import { AlertCircle, CheckCircle, Clock, Loader2, Play, RotateCcw, XCircle } from "lucide-react";
+import { EmptyState, StatusPill } from "@/components/ui/primitives";
+import { CardSkeleton } from "@/components/ui/loading-skeleton";
 
 interface Release {
   id: string;
@@ -43,13 +45,23 @@ interface DeploymentEvent {
 }
 
 const statusIcons: Record<string, ReactNode> = {
-  live: <CheckCircle className="w-4 h-4 text-green-500" />,
-  failed: <XCircle className="w-4 h-4 text-red-500" />,
-  rolled_back: <RotateCcw className="w-4 h-4 text-yellow-500" />,
-  pending: <Clock className="w-4 h-4 text-gray-400" />,
-  building: <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />,
-  deploying: <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />,
-  health_checking: <Loader2 className="w-4 h-4 text-purple-500 animate-spin" />,
+  live: <CheckCircle className="h-4 w-4 text-emerald-500" />,
+  failed: <XCircle className="h-4 w-4 text-red-400" />,
+  rolled_back: <RotateCcw className="h-4 w-4 text-amber-400" />,
+  pending: <Clock className="h-4 w-4 text-slate-500" />,
+  building: <Loader2 className="h-4 w-4 animate-spin text-sky-400" />,
+  deploying: <Loader2 className="h-4 w-4 animate-spin text-sky-400" />,
+  health_checking: <Loader2 className="h-4 w-4 animate-spin text-purple-400" />,
+};
+
+const statusTone: Record<string, "neutral" | "success" | "warning" | "danger" | "info"> = {
+  pending: "neutral",
+  building: "info",
+  deploying: "info",
+  health_checking: "info",
+  live: "success",
+  rolled_back: "warning",
+  failed: "danger",
 };
 
 const statusLabels: Record<string, string> = {
@@ -199,28 +211,24 @@ export function DeploymentsView({ server }: DeploymentsViewProps) {
   };
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64 text-gray-400">
-        <Loader2 className="w-6 h-6 animate-spin mr-2" /> Loading deployments...
-      </div>
-    );
+    return <CardSkeleton />;
   }
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-gray-100">Deployments</h2>
+        <h2 className="text-lg font-bold text-white">Deployments</h2>
         <button
           onClick={() => setShowConfig(!showConfig)}
-          className="text-xs text-gray-400 hover:text-gray-200 underline"
+          className="ui-button ui-button-ghost"
         >
-          {showConfig ? "Hide" : "Configure"} Health Checks
+          {showConfig ? "Hide" : "Configure"} health checks
         </button>
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 p-3 bg-red-900/20 border border-red-700 rounded text-red-400 text-sm">
-          <AlertCircle className="w-4 h-4 shrink-0" /> {error}
+        <div className="ui-alert ui-alert-error" role="alert">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /> {error}
         </div>
       )}
 
@@ -230,143 +238,147 @@ export function DeploymentsView({ server }: DeploymentsViewProps) {
           value={imageTag}
           onChange={(e) => setImageTag(e.target.value)}
           placeholder="Docker image tag (e.g. myapp:v2)"
-          className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+          className="ui-input min-w-0 flex-1 font-mono"
           onKeyDown={(e) => e.key === "Enter" && handleDeploy()}
         />
         <button
           onClick={handleDeploy}
           disabled={deploying || !imageTag.trim()}
-          className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm text-white transition-colors"
+          className="ui-button ui-button-primary"
         >
-          {deploying ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+          {deploying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
           Deploy
         </button>
       </div>
 
       {activeRelease && (
-        <div className="flex items-center gap-2 p-3 bg-green-900/10 border border-green-800 rounded text-sm">
-          <CheckCircle className="w-4 h-4 text-green-500 shrink-0" />
-          <span className="text-green-300 font-medium">Active Release:</span>
-          <span className="text-gray-200">
-            v{activeRelease.version} — {activeRelease.imageTag}
-          </span>
+        <div className="ui-alert ui-alert-success">
+          <CheckCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="text-sm">
+            <span className="font-semibold">Active release: </span>
+            <span className="font-mono">v{activeRelease.version} — {activeRelease.imageTag}</span>
+          </div>
         </div>
       )}
 
       {showConfig && (
-        <div className="p-4 bg-gray-800/50 border border-gray-700 rounded space-y-3">
-          <h3 className="text-sm font-medium text-gray-200">Health Check Configuration</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="ui-card space-y-3">
+          <h3 className="text-sm font-medium text-slate-200">Health check configuration</h3>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Path</label>
+              <label className="ui-label" htmlFor="hc-path">Path</label>
               <input
+                id="hc-path"
                 type="text"
                 value={hcConfig.path}
                 onChange={(e) => setHcConfig({ ...hcConfig, path: e.target.value })}
-                className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-gray-100"
+                className="ui-input mt-1 font-mono"
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Port</label>
+              <label className="ui-label" htmlFor="hc-port">Port</label>
               <input
+                id="hc-port"
                 type="number"
                 value={hcConfig.port}
                 onChange={(e) => setHcConfig({ ...hcConfig, port: parseInt(e.target.value) || 0 })}
-                className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-gray-100"
+                className="ui-input mt-1 font-mono"
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Interval (s)</label>
+              <label className="ui-label" htmlFor="hc-interval">Interval (s)</label>
               <input
+                id="hc-interval"
                 type="number"
                 value={hcConfig.intervalSeconds}
                 onChange={(e) => setHcConfig({ ...hcConfig, intervalSeconds: parseInt(e.target.value) || 10 })}
-                className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-gray-100"
+                className="ui-input mt-1 font-mono"
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Timeout (s)</label>
+              <label className="ui-label" htmlFor="hc-timeout">Timeout (s)</label>
               <input
+                id="hc-timeout"
                 type="number"
                 value={hcConfig.timeoutSeconds}
                 onChange={(e) => setHcConfig({ ...hcConfig, timeoutSeconds: parseInt(e.target.value) || 5 })}
-                className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-gray-100"
+                className="ui-input mt-1 font-mono"
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Healthy Threshold</label>
+              <label className="ui-label" htmlFor="hc-healthy">Healthy threshold</label>
               <input
+                id="hc-healthy"
                 type="number"
                 value={hcConfig.healthyThreshold}
                 onChange={(e) => setHcConfig({ ...hcConfig, healthyThreshold: parseInt(e.target.value) || 2 })}
-                className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-gray-100"
+                className="ui-input mt-1 font-mono"
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Unhealthy Threshold</label>
+              <label className="ui-label" htmlFor="hc-unhealthy">Unhealthy threshold</label>
               <input
+                id="hc-unhealthy"
                 type="number"
                 value={hcConfig.unhealthyThreshold}
                 onChange={(e) => setHcConfig({ ...hcConfig, unhealthyThreshold: parseInt(e.target.value) || 3 })}
-                className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-gray-100"
+                className="ui-input mt-1 font-mono"
               />
             </div>
           </div>
-          {configError && <p className="text-xs text-red-400">{configError}</p>}
+          {configError && <p className="text-xs text-red-300">{configError}</p>}
           <button
             onClick={handleSaveConfig}
-            className="px-3 py-1.5 bg-green-700 hover:bg-green-600 rounded text-xs text-white transition-colors"
+            className="ui-button ui-button-primary"
           >
-            {configSaved ? "Saved!" : "Save Configuration"}
+            {configSaved ? "Saved!" : "Save configuration"}
           </button>
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 space-y-2">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div className="space-y-2 lg:col-span-2">
           {releases.length === 0 ? (
-            <p className="text-gray-500 text-sm py-8 text-center">No deployments yet.</p>
+            <EmptyState icon={<RotateCcw size={20} />} title="No deployments yet" description="Deploy an image tag above to create the first release. Releases appear here with their health-check results." />
           ) : (
             releases.map((release) => (
               <div
                 key={release.id}
                 onClick={() => selectRelease(release)}
-                className={`flex items-center justify-between p-3 rounded border cursor-pointer transition-colors ${
+                className={`flex cursor-pointer items-center justify-between gap-3 rounded-lg border p-3 transition-colors ${
                   selectedRelease?.id === release.id
-                    ? "bg-blue-900/20 border-blue-700"
-                    : "bg-gray-800/50 border-gray-700 hover:border-gray-600"
+                    ? "border-red-500/40 bg-red-500/10"
+                    : "border-white/[0.06] bg-white/[0.02] hover:border-white/[0.14]"
                 }`}
               >
-                <div className="flex items-center gap-3">
-                  {statusIcons[release.status] || <Clock className="w-4 h-4 text-gray-400" />}
-                  <div>
-                    <span className="text-sm font-mono text-gray-100">
+                <div className="flex min-w-0 items-center gap-3">
+                  {statusIcons[release.status] || <Clock className="h-4 w-4 text-slate-500" />}
+                  <div className="min-w-0">
+                    <span className="text-sm font-mono text-slate-100">
                       v{release.version}
                     </span>
-                    <span className="text-xs text-gray-500 ml-2">{release.imageTag}</span>
+                    <span className="ml-2 truncate text-xs text-slate-500">{release.imageTag}</span>
                   </div>
-                  <span className="text-xs px-2 py-0.5 rounded bg-gray-700 text-gray-300">
-                    {statusLabels[release.status] || release.status}
-                  </span>
+                  <StatusPill tone={statusTone[release.status] ?? "neutral"}>{statusLabels[release.status] || release.status}</StatusPill>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-500">
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="font-mono text-xs text-slate-500">
                     {new Date(release.createdAt).toLocaleString()}
                   </span>
                   {release.status === "live" && (
                     <button
                       onClick={(e) => { e.stopPropagation(); handleRollback(release.id); }}
-                      className="flex items-center gap-1 px-2 py-1 bg-yellow-700/50 hover:bg-yellow-700 rounded text-xs text-yellow-300"
+                      className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs font-bold text-amber-200 hover:bg-amber-500/20"
                     >
-                      <RotateCcw className="w-3 h-3" /> Rollback
+                      <RotateCcw className="h-3 w-3" /> Rollback
                     </button>
                   )}
                   {(release.status === "deploying" || release.status === "health_checking") && (
                     <button
                       onClick={(e) => { e.stopPropagation(); handleForcePromote(release.id); }}
-                      className="flex items-center gap-1 px-2 py-1 bg-blue-700/50 hover:bg-blue-700 rounded text-xs text-blue-300"
+                      className="ui-button ui-button-secondary"
                     >
-                      <Play className="w-3 h-3" /> Force Promote
+                      <Play className="h-3 w-3" /> Force promote
                     </button>
                   )}
                 </div>
@@ -377,18 +389,18 @@ export function DeploymentsView({ server }: DeploymentsViewProps) {
 
         {selectedRelease && (
           <div className="space-y-4">
-            <div className="p-3 bg-gray-800/50 border border-gray-700 rounded">
-              <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Events</h3>
+            <div className="ui-card">
+              <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-400">Events</h3>
               {events.length === 0 ? (
-                <p className="text-xs text-gray-500">No events</p>
+                <p className="text-xs text-slate-500">No events</p>
               ) : (
-                <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                <div className="max-h-48 space-y-1.5 overflow-y-auto">
                   {events.map((ev) => (
                     <div key={ev.id} className="flex items-start gap-2 text-xs">
-                      <span className="text-gray-500 shrink-0 font-mono">
+                      <span className="shrink-0 font-mono text-slate-500">
                         {new Date(ev.createdAt).toLocaleTimeString()}
                       </span>
-                      <span className="text-gray-300">{ev.message}</span>
+                      <span className="text-slate-300">{ev.message}</span>
                     </div>
                   ))}
                 </div>
@@ -396,21 +408,21 @@ export function DeploymentsView({ server }: DeploymentsViewProps) {
             </div>
 
             {healthResults.length > 0 && (
-              <div className="p-3 bg-gray-800/50 border border-gray-700 rounded">
-                <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Health Results</h3>
+              <div className="ui-card">
+                <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-400">Health results</h3>
                 <div className="space-y-1">
                   {healthResults.slice(0, 20).map((hr) => (
                     <div key={hr.id} className="flex items-center justify-between text-xs">
                       <div className="flex items-center gap-1.5">
                         {hr.status === "healthy" ? (
-                          <CheckCircle className="w-3 h-3 text-green-500" />
+                          <CheckCircle className="h-3 w-3 text-emerald-500" />
                         ) : (
-                          <XCircle className="w-3 h-3 text-red-500" />
+                          <XCircle className="h-3 w-3 text-red-400" />
                         )}
-                        <span className="text-gray-300">{hr.responseCode}</span>
+                        <span className="font-mono text-slate-300">{hr.responseCode}</span>
                       </div>
-                      <span className="text-gray-500">{hr.responseTimeMs}ms</span>
-                      <span className="text-gray-500 font-mono">
+                      <span className="font-mono text-slate-500">{hr.responseTimeMs}ms</span>
+                      <span className="font-mono text-slate-500">
                         {new Date(hr.checkTimestamp).toLocaleTimeString()}
                       </span>
                     </div>

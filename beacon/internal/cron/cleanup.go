@@ -80,6 +80,10 @@ const staleTransferSafetyMargin = 24 * time.Hour
 
 func (cc *CleanupCron) removeOldTransferArchives() error {
 	tmpDir := os.TempDir()
+	canonicalTmpDir, canonicalErr := filepath.EvalSymlinks(tmpDir)
+	if canonicalErr != nil {
+		return nil
+	}
 	cutoff := time.Now().Add(-24 * time.Hour)
 	fallbackCutoff := cutoff.Add(-staleTransferSafetyMargin)
 	entries, err := os.ReadDir(tmpDir)
@@ -87,6 +91,16 @@ func (cc *CleanupCron) removeOldTransferArchives() error {
 		return nil
 	}
 	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "gamepanel-transfers-") {
+			info, infoErr := entry.Info()
+			path := filepath.Join(tmpDir, entry.Name())
+			if infoErr == nil && info.ModTime().Before(fallbackCutoff) && ownedByCurrentUser(info) && info.Mode().Perm()&0o077 == 0 {
+				if resolved, resolveErr := filepath.EvalSymlinks(path); resolveErr == nil && filepath.Dir(resolved) == canonicalTmpDir {
+					_ = os.RemoveAll(resolved)
+				}
+			}
+			continue
+		}
 		if entry.IsDir() {
 			continue
 		}

@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { fetchJSON, postJSON, deleteJSON } from "@/lib/api";
 import { AdminPageHeader, AdminPageLayout, AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, cn } from "@/components/admin/admin-ui";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type NodeScore = {
   nodeId: string;
@@ -54,6 +55,7 @@ const defaultConstraintForm = {
 };
 
 export default function AdminSchedulerPage() {
+  const [confirm, renderConfirm] = useConfirm();
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<"scores" | "affinity" | "constraints">("scores");
   const [showCreateAffinity, setShowCreateAffinity] = useState(false);
@@ -223,7 +225,7 @@ export default function AdminSchedulerPage() {
                   <div className="flex items-center gap-2">
                     <Pill tone={rule.type === "affinity" ? "green" : "red"}>{rule.type.replace("_", " ")}</Pill>
                     <Pill tone={rule.enabled ? "green" : "neutral"}>{rule.enabled ? "Enabled" : "Disabled"}</Pill>
-                    <Btn size="sm" tone="danger" onClick={() => { if (confirm("Delete rule?")) deleteAffinityMutation.mutate(rule.id); }}>
+                    <Btn size="sm" tone="danger" onClick={() => { void (async () => { if (await confirm({ title: "Delete this affinity rule?", description: "The scheduler will stop applying this rule. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteAffinityMutation.mutate(rule.id); })(); }}>
                       <Trash2 size={12} />
                     </Btn>
                   </div>
@@ -282,7 +284,7 @@ export default function AdminSchedulerPage() {
                         <Pill tone={c.enabled ? "green" : "neutral"}>{c.enabled ? "Active" : "Inactive"}</Pill>
                       </td>
                       <td className="px-4 py-3">
-                        <Btn size="sm" tone="danger" onClick={() => { if (confirm("Delete constraint?")) deleteConstraintMutation.mutate(c.id); }}>
+                        <Btn size="sm" tone="danger" onClick={() => { void (async () => { if (await confirm({ title: "Delete this constraint?", description: "The scheduler will stop applying this constraint. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteConstraintMutation.mutate(c.id); })(); }}>
                           <Trash2 size={12} />
                         </Btn>
                       </td>
@@ -383,6 +385,8 @@ export default function AdminSchedulerPage() {
           />
         </Modal>
       )}
+      {renderConfirm()}
     </AdminPageLayout>
   );
 }
+

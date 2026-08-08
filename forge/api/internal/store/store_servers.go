@@ -12,6 +12,20 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// clampPageParams enforces page >= 1 and 1 <= perPage <= 200.
+func clampPageParams(page, perPage int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 {
+		perPage = 50
+	}
+	if perPage > 200 {
+		perPage = 200
+	}
+	return page, perPage
+}
+
 func (s *Store) ListServers(ctx context.Context) ([]Server, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT s.id::text, s.name, COALESCE(s.description, ''), s.status, s.desired_state::text, s.actual_state::text, s.config_sync_pending, s.suspended, s.transferring, s.transfer_target_node_id::text, s.transfer_state, s.transfer_error, s.transfer_run_token::text, s.memory_mb, s.cpu_shares, s.disk_mb, n.name, u.email, e.name
@@ -38,6 +52,7 @@ func (s *Store) ListServers(ctx context.Context) ([]Server, error) {
 }
 
 func (s *Store) ListServersForUser(ctx context.Context, userID, role string, page, perPage int, search string) ([]Server, int, error) {
+	page, perPage = clampPageParams(page, perPage)
 	if role == "admin" {
 		return s.ListServersPaginated(ctx, page, perPage, search)
 	}
@@ -102,6 +117,7 @@ func (s *Store) ListServersForUser(ctx context.Context, userID, role string, pag
 }
 
 func (s *Store) ListServersPaginated(ctx context.Context, page, perPage int, search string) ([]Server, int, error) {
+	page, perPage = clampPageParams(page, perPage)
 	offset := (page - 1) * perPage
 	baseQuery := `
 		SELECT id, name, description, status, desired_state, actual_state, config_sync_pending, suspended, transferring, transfer_target_node_id, transfer_state, transfer_error, transfer_run_token, memory_mb, cpu_shares, disk_mb, node_name, owner_email, template_name

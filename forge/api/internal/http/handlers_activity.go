@@ -51,11 +51,11 @@ func handleQueryActivity(c *fiber.Ctx, cfg Config) error {
 
 	events, err := svc.Query(ctx, filter)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return respondInternalError(c, err)
 	}
 	total, err := svc.Count(ctx, filter)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return respondInternalError(c, err)
 	}
 
 	return c.JSON(fiber.Map{
@@ -75,7 +75,7 @@ func handleActivityStats(c *fiber.Ctx, cfg Config) error {
 
 	stats, err := svc.Stats(ctx)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return respondInternalError(c, err)
 	}
 	return c.JSON(stats)
 }
@@ -99,7 +99,7 @@ func handleExportActivity(c *fiber.Ctx, cfg Config) error {
 
 	events, err := svc.Query(ctx, filter)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return respondInternalError(c, err)
 	}
 
 	switch format {
@@ -151,7 +151,7 @@ func handleExportActivity(c *fiber.Ctx, cfg Config) error {
 		c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=activity_export_%s.json", time.Now().Format("20060102_150405")))
 		data, err := json.Marshal(events)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Send(data)
 	}

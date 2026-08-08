@@ -1,18 +1,18 @@
 "use client";
 
-import { useState, useRef, useCallback, use, Suspense, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, use, Suspense, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
-import { toast, Toaster } from "@/components/ui/sonner";
 import {
   ArrowLeft, Cloud, Cpu, Database, FileText,
   Globe, HardDrive, History, KeyRound, Power,
   RefreshCw, RotateCcw, Settings, Square, Terminal,
   Wrench, XCircle,
 } from "lucide-react";
+import { useToast } from "@/components/ui/toast";
 import {
   fetchApp, fetchAppDeployments, fetchAppLogs, fetchAppDomains, fetchAppBackups,
-  fetchAppConsoleWSURL,
+  connectAppConsoleWebSocket,
   addAppDomain, deleteAppDomain, createAppBackup, restoreAppBackup, deleteAppBackup,
   startApp, stopApp, restartApp, triggerDeploy, updateApp,
   typeLabel,
@@ -21,6 +21,7 @@ import {
 import { Btn, Card, CardHeader, EmptyState, Input, Modal, Pill, SectionHeader, cn } from "@/components/admin/admin-ui";
 import { DeployStatusBadge, LogViewer, ResourceGauge, EnvVarEditor, PortMapper, VolumeEditor } from "@/components/admin/AdminAppsShared";
 import { formatDate, formatBytes } from "@/lib/utils";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type TabId = "overview" | "deployments" | "configuration" | "logs" | "console" | "domains" | "backups";
 
@@ -116,7 +117,6 @@ function AdminAppDetailContent({ params }: { params: Promise<{ id: string }> }) 
       {tab === "console" && <ConsoleTab app={app} />}
       {tab === "domains" && <DomainsTab appId={id} />}
       {tab === "backups" && <BackupsTab appId={id} />}
-      <Toaster />
     </div>
   );
 }
@@ -136,25 +136,26 @@ export default function AdminAppDetailPage({ params }: { params: Promise<{ id: s
 
 function OverviewTab({ app, id }: { app: ApiAppDetail; id: string }) {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const startMut = useMutation({
     mutationFn: () => startApp(id),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["app", id] }),
-    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to start app"),
+    onError: (error) => toast({ tone: "error", title: "Start failed", message: error instanceof Error ? error.message : "Failed to start app" }),
   });
   const stopMut = useMutation({
     mutationFn: () => stopApp(id),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["app", id] }),
-    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to stop app"),
+    onError: (error) => toast({ tone: "error", title: "Stop failed", message: error instanceof Error ? error.message : "Failed to stop app" }),
   });
   const restartMut = useMutation({
     mutationFn: () => restartApp(id),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["app", id] }),
-    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to restart app"),
+    onError: (error) => toast({ tone: "error", title: "Restart failed", message: error instanceof Error ? error.message : "Failed to restart app" }),
   });
   const triggerMut = useMutation({
     mutationFn: () => triggerDeploy(id),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["app", id] }),
-    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to trigger deploy"),
+    onError: (error) => toast({ tone: "error", title: "Deploy failed", message: error instanceof Error ? error.message : "Failed to trigger deploy" }),
   });
 
   const cpuUsage = app.cpuUsage ?? 0;
@@ -377,6 +378,7 @@ function DeploymentsTab({ appId }: { appId: string }) {
 
 function ConfigurationTab({ app, id }: { app: ApiAppDetail; id: string }) {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [envVars, setEnvVars] = useState<Record<string, string>>(app.envVars ?? {});
   const [ports, setPorts] = useState(app.ports ?? []);
   const [volumes, setVolumes] = useState(app.volumes ?? []);
@@ -396,7 +398,7 @@ function ConfigurationTab({ app, id }: { app: ApiAppDetail; id: string }) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["app", id] });
     },
-    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to update app configuration"),
+    onError: (error) => toast({ tone: "error", title: "Update failed", message: error instanceof Error ? error.message : "Failed to update app configuration" }),
   });
 
   return (
@@ -495,21 +497,44 @@ function ConsoleTab({ app }: { app: ApiAppDetail }) {
     }
 
     try {
-      const socket = new WebSocket(fetchAppConsoleWSURL(app.serverId));
-
-      socket.onopen = () => { if (wsRef.current === socket) setConnected(true); };
-      socket.onclose = () => { if (wsRef.current === socket) setConnected(false); };
-      socket.onmessage = (event) => {
-        if (wsRef.current !== socket) return;
-        setOutput((prev) => [...prev.slice(-500), event.data]);
-      };
-      socket.onerror = () => { if (wsRef.current === socket) setConnected(false); };
-
-      wsRef.current = socket;
+      void connectAppConsoleWebSocket(app.serverId).then((socket) => {
+        if (wsRef.current) {
+          const old = wsRef.current;
+          old.onopen = null;
+          old.onclose = null;
+          old.onerror = null;
+          old.onmessage = null;
+          old.close();
+        }
+        socket.onopen = () => { if (wsRef.current === socket) setConnected(true); };
+        socket.onclose = () => { if (wsRef.current === socket) setConnected(false); };
+        socket.onmessage = (event) => {
+          if (wsRef.current !== socket) return;
+          setOutput((prev) => [...prev.slice(-500), event.data]);
+        };
+        socket.onerror = () => { if (wsRef.current === socket) setConnected(false); };
+        wsRef.current = socket;
+      }).catch(() => {
+        setConnected(false);
+        setOutput((prev) => [...prev, "Console connection failed — could not obtain a session ticket."]);
+      });
     } catch {
       setConnected(false);
     }
   }, [app.serverId]);
+
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.onopen = null;
+        wsRef.current.onclose = null;
+        wsRef.current.onerror = null;
+        wsRef.current.onmessage = null;
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, []);
 
   const send = (e: React.FormEvent) => {
     e.preventDefault();
@@ -569,7 +594,9 @@ function ConsoleTab({ app }: { app: ApiAppDetail }) {
 }
 
 function DomainsTab({ appId }: { appId: string }) {
+  const [confirm, renderConfirm] = useConfirm();
   const qc = useQueryClient();
+  const { toast } = useToast();
   const { data: domainsRaw, isLoading } = useQuery({
     queryKey: ["app-domains", appId],
     queryFn: () => fetchAppDomains(appId),
@@ -585,13 +612,13 @@ function DomainsTab({ appId }: { appId: string }) {
       setEnableTls(false);
       void qc.invalidateQueries({ queryKey: ["app-domains", appId] });
     },
-    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to add domain"),
+    onError: (error) => toast({ tone: "error", title: "Add domain failed", message: error instanceof Error ? error.message : "Failed to add domain" }),
   });
 
   const deleteMut = useMutation({
     mutationFn: (domainId: string) => deleteAppDomain(appId, domainId),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["app-domains", appId] }),
-    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to delete domain"),
+    onError: (error) => toast({ tone: "error", title: "Remove domain failed", message: error instanceof Error ? error.message : "Failed to delete domain" }),
   });
 
   return (
@@ -648,7 +675,7 @@ function DomainsTab({ appId }: { appId: string }) {
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-500">{formatDate(d.createdAt)}</td>
                     <td className="px-4 py-3 text-right">
-                      <Btn tone="danger" size="sm" onClick={() => { if (confirm(`Remove ${d.domain}?`)) deleteMut.mutate(d.id); }}>
+                      <Btn tone="danger" size="sm" onClick={() => { void (async () => { if (await confirm({ title: `Remove ${d.domain}?`, description: "The domain will stop routing to this app. This cannot be undone.", danger: true, confirmLabel: "Remove" })) deleteMut.mutate(d.id); })(); }}>
                         Remove
                       </Btn>
                     </td>
@@ -659,12 +686,15 @@ function DomainsTab({ appId }: { appId: string }) {
           </div>
         )}
       </Card>
+      {renderConfirm()}
     </div>
   );
 }
 
 function BackupsTab({ appId }: { appId: string }) {
+  const [confirm, renderConfirm] = useConfirm();
   const qc = useQueryClient();
+  const { toast } = useToast();
   const { data: backupsRaw, isLoading } = useQuery({
     queryKey: ["app-backups", appId],
     queryFn: () => fetchAppBackups(appId),
@@ -675,19 +705,19 @@ function BackupsTab({ appId }: { appId: string }) {
   const createMut = useMutation({
     mutationFn: () => createAppBackup(appId),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["app-backups", appId] }),
-    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to create backup"),
+    onError: (error) => toast({ tone: "error", title: "Backup failed", message: error instanceof Error ? error.message : "Failed to create backup" }),
   });
 
   const restoreMut = useMutation({
     mutationFn: (backupId: string) => restoreAppBackup(appId, backupId),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["app-backups", appId] }),
-    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to restore backup"),
+    onError: (error) => toast({ tone: "error", title: "Restore failed", message: error instanceof Error ? error.message : "Failed to restore backup" }),
   });
 
   const deleteMut = useMutation({
     mutationFn: (backupId: string) => deleteAppBackup(appId, backupId),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["app-backups", appId] }),
-    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to delete backup"),
+    onError: (error) => toast({ tone: "error", title: "Delete failed", message: error instanceof Error ? error.message : "Failed to delete backup" }),
   });
 
   return (
@@ -736,7 +766,7 @@ function BackupsTab({ appId }: { appId: string }) {
                         <Btn
                           size="sm"
                           tone="ghost"
-                          onClick={() => { if (confirm("Restore this backup?")) restoreMut.mutate(b.id); }}
+                          onClick={() => { void (async () => { if (await confirm({ title: `Restore backup from ${formatDate(b.createdAt)}?`, description: "The app will be restored to this backup, overwriting current data.", confirmLabel: "Restore" })) restoreMut.mutate(b.id); })(); }}
                           disabled={restoreMut.isPending}
                         >
                           Restore
@@ -744,7 +774,7 @@ function BackupsTab({ appId }: { appId: string }) {
                         <Btn
                           size="sm"
                           tone="danger"
-                          onClick={() => { if (confirm("Delete this backup?")) deleteMut.mutate(b.id); }}
+                          onClick={() => { void (async () => { if (await confirm({ title: `Delete backup from ${formatDate(b.createdAt)}?`, description: "The backup will be permanently removed. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMut.mutate(b.id); })(); }}
                           disabled={deleteMut.isPending}
                         >
                           Delete
@@ -758,6 +788,7 @@ function BackupsTab({ appId }: { appId: string }) {
           </div>
         )}
       </Card>
+      {renderConfirm()}
     </div>
   );
 }

@@ -137,21 +137,24 @@ func (r *ContainerdRuntime) Create(ctx context.Context, req CreateRequest) error
 	specOpts := []oci.SpecOpts{
 		oci.WithImageConfig(image),
 		oci.WithEnv(req.Env),
+		oci.WithCapabilities(nil),
+		oci.WithNoNewPrivileges,
+		oci.WithRootFSReadonly(),
 	}
 
 	if len(req.Command) > 0 {
 		specOpts = append(specOpts, oci.WithProcessArgs(req.Command...))
 	}
 
-	if req.UID > 0 || req.GID > 0 {
-		uid := req.UID
-		gid := req.GID
-		if uid == 0 && gid == 0 {
-			uid = 998
-			gid = 998
-		}
-		specOpts = append(specOpts, oci.WithUIDGID(uint32(uid), uint32(gid)))
+	uid := req.UID
+	gid := req.GID
+	if uid == 0 {
+		uid = 998
 	}
+	if gid == 0 {
+		gid = 998
+	}
+	specOpts = append(specOpts, oci.WithUIDGID(uint32(uid), uint32(gid)))
 
 	mounts, err := containerdMounts(req.RootDir, req.Mounts)
 	if err != nil {
@@ -186,9 +189,15 @@ func (r *ContainerdRuntime) Install(ctx context.Context, req InstallRequest) (In
 		req.Entrypoint = "sh"
 	}
 
-	image, err := r.client.Pull(ctx, req.Image, containerdclient.WithPullUnpack)
+	image, err := r.client.GetImage(ctx, req.Image)
 	if err != nil {
-		return InstallResult{}, fmt.Errorf("pull image: %w", err)
+		if !pinnedImagePattern.MatchString(req.Image) {
+			return InstallResult{}, fmt.Errorf("remote image %q is not digest-pinned", req.Image)
+		}
+		image, err = r.client.Pull(ctx, req.Image, containerdclient.WithPullUnpack)
+		if err != nil {
+			return InstallResult{}, fmt.Errorf("pull image: %w", err)
+		}
 	}
 
 	name := containerName(req.ServerID) + "-installer"
@@ -209,6 +218,9 @@ func (r *ContainerdRuntime) Install(ctx context.Context, req InstallRequest) (In
 			oci.WithProcessArgs(req.Entrypoint, "-lc", req.Script),
 			oci.WithEnv(req.Env),
 			oci.WithMounts(mounts),
+			oci.WithCapabilities(nil),
+			oci.WithNoNewPrivileges,
+			oci.WithRootFSReadonly(),
 		),
 		containerdclient.WithContainerLabels(labels),
 	)

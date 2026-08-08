@@ -21,7 +21,7 @@ func registerAcmeAccountRoutes(protected fiber.Router, cfg Config, adminIPAccess
 		defer cancel()
 		accounts, err := cfg.Store.ListAcmeAccounts(ctx)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": accounts})
 	})
@@ -46,7 +46,7 @@ func registerAcmeAccountRoutes(protected fiber.Router, cfg Config, adminIPAccess
 			CAURL:      body.CAURL,
 		})
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(201).JSON(fiber.Map{"data": account})
 	})
@@ -80,7 +80,7 @@ func registerAcmeAccountRoutes(protected fiber.Router, cfg Config, adminIPAccess
 			IsDefault: body.IsDefault,
 		})
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": account})
 	})
@@ -89,7 +89,7 @@ func registerAcmeAccountRoutes(protected fiber.Router, cfg Config, adminIPAccess
 		ctx, cancel := requestContext()
 		defer cancel()
 		if err := cfg.Store.DeleteAcmeAccount(ctx, c.Params("id")); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.SendStatus(204)
 	})
@@ -101,7 +101,7 @@ func registerAcmeAccountRoutes(protected fiber.Router, cfg Config, adminIPAccess
 		provider := c.Query("provider")
 		accounts, err := cfg.Store.ListDNSProviderAccounts(ctx, provider)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": accounts})
 	})
@@ -127,7 +127,7 @@ func registerAcmeAccountRoutes(protected fiber.Router, cfg Config, adminIPAccess
 			Credentials: raw,
 		})
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(201).JSON(fiber.Map{"data": account})
 	})
@@ -165,7 +165,7 @@ func registerAcmeAccountRoutes(protected fiber.Router, cfg Config, adminIPAccess
 			Credentials: credsRaw,
 		})
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": account})
 	})
@@ -174,7 +174,7 @@ func registerAcmeAccountRoutes(protected fiber.Router, cfg Config, adminIPAccess
 		ctx, cancel := requestContext()
 		defer cancel()
 		if err := cfg.Store.DeleteDNSProviderAccount(ctx, c.Params("id")); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.SendStatus(204)
 	})

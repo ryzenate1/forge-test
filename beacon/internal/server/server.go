@@ -31,6 +31,7 @@ import (
 	"gamepanel/beacon/internal/backup"
 	"gamepanel/beacon/internal/events"
 	"gamepanel/beacon/internal/ignore"
+	"gamepanel/beacon/internal/metrics"
 	"gamepanel/beacon/internal/remote"
 	"gamepanel/beacon/internal/rootfs"
 	"gamepanel/beacon/internal/runtime"
@@ -40,6 +41,8 @@ import (
 
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/expfmt"
 )
 
 // Ensure UpgradePayload can be referenced from handlers defined in this file.
@@ -93,6 +96,7 @@ type Server struct {
 	shutdownOnce      sync.Once
 	nonceMu           sync.Mutex
 	seenNonces        map[string]time.Time
+	diskFreeFn        func(dir string) (int64, error)
 }
 
 // SetPanelClient wires the remote panel client so that install-status
@@ -314,6 +318,7 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", server.health)
+	mux.HandleFunc("GET /ready", server.ready)
 	mux.HandleFunc("GET /metrics", server.metrics)
 	mux.HandleFunc("POST /servers", server.create)
 	mux.HandleFunc("DELETE /servers/{id}", server.delete)
@@ -474,7 +479,23 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 	mux.HandleFunc("POST /v1/firewall/forward", server.handleFirewallAddForward)
 	mux.HandleFunc("DELETE /v1/firewall/forward/{id}", server.handleFirewallDeleteForward)
 
-	return server, sanitizeInternalErrors(securityHeaders(requestTimeout(server.authenticate(mux))))
+	return server, sanitizeInternalErrors(recoverPanics(securityHeaders(requestTimeout(server.authenticate(mux)))))
+}
+
+// recoverPanics converts a panic in any handler into a 500 response instead of
+// crashing the daemon process, and logs the stack for diagnosis.
+func recoverPanics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				stack := make([]byte, 64*1024)
+				n := stdruntime.Stack(stack, false)
+				log.Printf("beacon: handler panic path=%s panic=%v\n%s", r.URL.Path, rec, stack[:n])
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 type sanitizingResponseWriter struct {
@@ -586,6 +607,14 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "daemon", "runtime": s.runtime != nil})
 }
 
+func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
+	if s.runtime == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ready": false, "reason": "runtime unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ready": true})
+}
+
 func (s *Server) sessions() *sessionRegistry { return s.sessionsReg }
 
 // TrackSession registers non-WebSocket transports (notably SFTP) in the same
@@ -614,25 +643,64 @@ func (s *Server) dockerStatus() string {
 }
 
 func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
-	var mem stdruntime.MemStats
-	stdruntime.ReadMemStats(&mem)
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	_, _ = w.Write([]byte("# HELP game_panel_daemon_uptime_seconds Daemon process uptime.\n"))
-	_, _ = w.Write([]byte("# TYPE game_panel_daemon_uptime_seconds gauge\n"))
-	_, _ = w.Write([]byte("game_panel_daemon_uptime_seconds " + formatFloat(time.Since(s.started).Seconds()) + "\n"))
-	_, _ = w.Write([]byte("# HELP game_panel_daemon_runtime_enabled Docker runtime availability, 1 when enabled.\n"))
-	_, _ = w.Write([]byte("# TYPE game_panel_daemon_runtime_enabled gauge\n"))
+	w.WriteHeader(http.StatusOK)
+
+	process := metrics.CollectProcess(s.started)
+	writeMetric := func(name, help, metricType string, value string) {
+		_, _ = fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s %s\n", name, help, name, metricType, name, value)
+	}
+
+	writeMetric("game_panel_daemon_uptime_seconds", "Daemon process uptime.", "gauge", formatFloat(time.Since(process.StartTime).Seconds()))
 	runtimeEnabled := "0"
 	if s.runtime != nil {
 		runtimeEnabled = "1"
 	}
-	_, _ = w.Write([]byte("game_panel_daemon_runtime_enabled " + runtimeEnabled + "\n"))
-	_, _ = w.Write([]byte("# HELP game_panel_daemon_goroutines Current goroutine count.\n"))
-	_, _ = w.Write([]byte("# TYPE game_panel_daemon_goroutines gauge\n"))
-	_, _ = w.Write([]byte("game_panel_daemon_goroutines " + formatInt(stdruntime.NumGoroutine()) + "\n"))
-	_, _ = w.Write([]byte("# HELP game_panel_daemon_memory_alloc_bytes Current Go heap allocation.\n"))
-	_, _ = w.Write([]byte("# TYPE game_panel_daemon_memory_alloc_bytes gauge\n"))
-	_, _ = w.Write([]byte("game_panel_daemon_memory_alloc_bytes " + formatUint(mem.Alloc) + "\n"))
+	writeMetric("game_panel_daemon_runtime_enabled", "Runtime availability, 1 when enabled.", "gauge", runtimeEnabled)
+	writeMetric("game_panel_daemon_cpu_user_seconds_total", "Cumulative user CPU time consumed by the daemon process.", "counter", formatFloat(process.UserCPUSeconds))
+	writeMetric("game_panel_daemon_cpu_system_seconds_total", "Cumulative system CPU time consumed by the daemon process.", "counter", formatFloat(process.SystemCPUSeconds))
+	writeMetric("game_panel_daemon_goroutines", "Current goroutine count.", "gauge", formatInt(process.Goroutines))
+	writeMetric("game_panel_daemon_memory_alloc_bytes", "Current Go heap allocation.", "gauge", formatUint(process.MemAllocBytes))
+	writeMetric("game_panel_daemon_memory_heap_bytes", "Heap bytes reserved by the Go runtime.", "gauge", formatUint(process.MemHeapBytes))
+	writeMetric("game_panel_daemon_gc_total", "Number of completed garbage collection cycles.", "counter", formatUint(process.NumGC))
+
+	if s.runtime != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		for _, serverID := range s.manager.ServerIDs() {
+			stats, err := s.runtime.Stats(ctx, serverID)
+			if err != nil {
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "# HELP game_panel_daemon_container_cpu_percent Container CPU usage percent.\n")
+			_, _ = fmt.Fprintf(w, "# TYPE game_panel_daemon_container_cpu_percent gauge\n")
+			_, _ = fmt.Fprintf(w, "game_panel_daemon_container_cpu_percent{server_id=%q} %s\n", serverID, formatFloat(stats.CPUPercent))
+			_, _ = fmt.Fprintf(w, "# HELP game_panel_daemon_container_memory_usage_bytes Container memory usage in bytes.\n")
+			_, _ = fmt.Fprintf(w, "# TYPE game_panel_daemon_container_memory_usage_bytes gauge\n")
+			_, _ = fmt.Fprintf(w, "game_panel_daemon_container_memory_usage_bytes{server_id=%q} %s\n", serverID, formatUint(stats.MemoryBytes))
+			_, _ = fmt.Fprintf(w, "# HELP game_panel_daemon_container_memory_limit_bytes Container memory limit in bytes.\n")
+			_, _ = fmt.Fprintf(w, "# TYPE game_panel_daemon_container_memory_limit_bytes gauge\n")
+			_, _ = fmt.Fprintf(w, "game_panel_daemon_container_memory_limit_bytes{server_id=%q} %s\n", serverID, formatUint(stats.MemoryLimit))
+			_, _ = fmt.Fprintf(w, "# HELP game_panel_daemon_container_network_rx_bytes_total Cumulative container network bytes received.\n")
+			_, _ = fmt.Fprintf(w, "# TYPE game_panel_daemon_container_network_rx_bytes_total counter\n")
+			_, _ = fmt.Fprintf(w, "game_panel_daemon_container_network_rx_bytes_total{server_id=%q} %s\n", serverID, formatUint(stats.NetworkRxBytes))
+			_, _ = fmt.Fprintf(w, "# HELP game_panel_daemon_container_network_tx_bytes_total Cumulative container network bytes sent.\n")
+			_, _ = fmt.Fprintf(w, "# TYPE game_panel_daemon_container_network_tx_bytes_total counter\n")
+			_, _ = fmt.Fprintf(w, "game_panel_daemon_container_network_tx_bytes_total{server_id=%q} %s\n", serverID, formatUint(stats.NetworkTxBytes))
+		}
+	}
+
+	// Append anything recorded against the default Prometheus registry (for
+	// example backup durations) so registered collectors are actually exposed.
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err == nil {
+		encoder := expfmt.NewEncoder(w, expfmt.NewFormat(expfmt.TypeTextPlain))
+		for _, family := range families {
+			if err := encoder.Encode(family); err != nil {
+				break
+			}
+		}
+	}
 }
 
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
@@ -855,6 +923,12 @@ func (s *Server) runtimeRequestFromConfiguration(serverID string, payload map[st
 	}
 	if value, ok := firstMapValue(build, "oomDisabled", "oom_disabled").(bool); ok {
 		req.OOMKillDisabled = value
+	}
+	if uid, ok := payload["uid"].(float64); ok {
+		req.UID = int(uid)
+	}
+	if gid, ok := payload["gid"].(float64); ok {
+		req.GID = int(gid)
 	}
 	allocations, _ := payload["allocations"].(map[string]any)
 	ports := make([]runtime.PortBinding, 0)
@@ -1470,7 +1544,8 @@ func (s *Server) downloadBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.URL.Query().Get("name")
-	if !safeBackupName(name) {
+	name, ok := normalizeBackupName(name)
+	if !ok {
 		http.Error(w, "invalid backup name", http.StatusBadRequest)
 		return
 	}
@@ -1545,17 +1620,20 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name     string `json:"name"`
-		Truncate bool   `json:"truncate"`
+		Name     string   `json:"name"`
+		Truncate bool     `json:"truncate"`
+		Paths    []string `json:"paths"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	if !safeBackupName(body.Name) {
+	name, ok := normalizeBackupName(body.Name)
+	if !ok {
 		http.Error(w, "invalid backup name", http.StatusBadRequest)
 		return
 	}
+	body.Name = name
 	serverID := r.PathValue("id")
 	root, err := s.safePath(serverID, "")
 	if err != nil {
@@ -1569,11 +1647,16 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 	s.backupMu.Lock()
 	_, snapshotErr := s.backups.Create(r.Context(), root, serverID, rollbackName, nil)
 	if snapshotErr == nil {
-		err = s.backups.Restore(r.Context(), serverID, body.Name, root, body.Truncate)
+		if len(body.Paths) > 0 {
+			log.Printf("targeted restore for server %s from %s (paths: %v)", serverID, body.Name, body.Paths)
+		} else {
+			log.Printf("full restore for server %s from %s (truncate=%t)", serverID, body.Name, body.Truncate)
+		}
+		err = s.backups.Restore(r.Context(), serverID, body.Name, root, body.Truncate, body.Paths)
 	}
 	if err != nil {
 		rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Minute)
-		rollbackErr := s.backups.Restore(rollbackCtx, serverID, rollbackName, root, true)
+		rollbackErr := s.backups.Restore(rollbackCtx, serverID, rollbackName, root, true, nil)
 		cancelRollback()
 		if rollbackErr != nil {
 			err = errors.Join(err, fmt.Errorf("automatic rollback failed: %w", rollbackErr))
@@ -1581,10 +1664,12 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	s.backupMu.Unlock()
 	if snapshotErr != nil {
-		http.Error(w, "pre-restore snapshot failed: "+snapshotErr.Error(), backupErrorStatus(snapshotErr))
+		log.Printf("pre-restore snapshot failed for server %s: %v", serverID, snapshotErr)
+		http.Error(w, "pre-restore snapshot failed", backupErrorStatus(snapshotErr))
 		return
 	}
 	if err != nil {
+		log.Printf("backup restore failed for server %s: %v", serverID, err)
 		if s.panelClient != nil {
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1593,11 +1678,11 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 					BackupUUID: strings.TrimSuffix(body.Name, ".zip"),
 					ServerUUID: serverID,
 					Successful: false,
-					Error:      err.Error(),
+					Error:      "backup restore failed",
 				})
 			}()
 		}
-		http.Error(w, err.Error(), backupErrorStatus(err))
+		http.Error(w, "backup restore failed", backupErrorStatus(err))
 		return
 	}
 
@@ -1629,7 +1714,8 @@ func (s *Server) deleteBackup(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = r.URL.Query().Get("name")
 	}
-	if !safeBackupName(name) {
+	name, ok := normalizeBackupName(name)
+	if !ok {
 		http.Error(w, "invalid backup name", http.StatusBadRequest)
 		return
 	}
@@ -2105,6 +2191,10 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInsufficientStorage)
 		return
 	}
+	if err := s.ensureDiskSpaceForSpool(filepath.Join(s.dataDir, serverID), reservation); err != nil {
+		http.Error(w, err.Error(), http.StatusInsufficientStorage)
+		return
+	}
 	if err := fsys.AtomicWrite(name, r.Body, maxFileWriteBytes, 0o640); err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, rootfs.ErrTooLarge) {
@@ -2174,6 +2264,10 @@ func (s *Server) uploadFileChunk(w http.ResponseWriter, r *http.Request) {
 		reservation = maxUploadChunkBytes
 	}
 	if err := s.manager.HasSpaceForWriteFS(serverID, reservation, fsys); err != nil {
+		http.Error(w, err.Error(), http.StatusInsufficientStorage)
+		return
+	}
+	if err := s.ensureDiskSpaceForSpool(filepath.Join(s.dataDir, serverID), reservation); err != nil {
 		http.Error(w, err.Error(), http.StatusInsufficientStorage)
 		return
 	}
@@ -2625,6 +2719,10 @@ func (s *Server) pullRemoteFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInsufficientStorage)
 		return
 	}
+	if err := s.ensureDiskSpaceForSpool(filepath.Join(s.dataDir, serverID), reservation); err != nil {
+		http.Error(w, err.Error(), http.StatusInsufficientStorage)
+		return
+	}
 	finalName := path.Join(target, fileName)
 	if resp.ContentLength >= 0 {
 		err = fsys.AtomicWriteExact(finalName, resp.Body, maxBytes, resp.ContentLength, 0o640)
@@ -2741,6 +2839,10 @@ func (s *Server) receiveTransferArchive(w http.ResponseWriter, r *http.Request) 
 	defer fsys.Close()
 	if err := fsys.MkdirAll(".backups", 0o750); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.ensureDiskSpaceForSpool(filepath.Join(s.dataDir, serverID), totalSize-offset); err != nil {
+		http.Error(w, err.Error(), http.StatusInsufficientStorage)
 		return
 	}
 	tempName := path.Join(".backups", ".transfer-"+transferID+".tar.gz")
@@ -2950,6 +3052,31 @@ func safeBackupName(name string) bool {
 		return false
 	}
 	return true
+}
+
+// normalizeBackupName validates a backup identifier and canonicalizes it to
+// the on-disk archive name. Stored archives always carry a ".zip" suffix, but
+// callers may send a bare identifier (UUID or timestamp name) without one;
+// the suffix is appended here so restore/delete/download work for both forms.
+// Path traversal and absolute paths are always rejected.
+func normalizeBackupName(name string) (string, bool) {
+	if name == "" || len(name) > 128 || strings.Contains(name, "..") ||
+		strings.HasPrefix(name, "/") || strings.ContainsAny(name, `/\`) {
+		return "", false
+	}
+	for _, char := range name {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' {
+			continue
+		}
+		return "", false
+	}
+	if !strings.HasSuffix(name, ".zip") {
+		name += ".zip"
+	}
+	if len(name) > 128 {
+		return "", false
+	}
+	return name, true
 }
 
 func randomHex(size int) (string, error) {
@@ -3309,10 +3436,10 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Only the exact GET health route is public. Metrics contain operational
-		// information and require the same signed authentication as other API
-		// routes.
-		if s.token == "" || (r.Method == http.MethodGet && r.URL.Path == "/health") || r.URL.Path == "/download/backup" || isScopedTokenRoute(r.URL.Path) || (strings.HasPrefix(r.URL.Path, "/api/v1/transfers/") && r.URL.Path != "/api/v1/transfers/credentials") {
+		// Only the exact GET health and readiness routes are public. Metrics
+		// contain operational information and require the same signed
+		// authentication as other API routes.
+		if s.token == "" || (r.Method == http.MethodGet && (r.URL.Path == "/health" || r.URL.Path == "/ready")) || r.URL.Path == "/download/backup" || isScopedTokenRoute(r.URL.Path) || (strings.HasPrefix(r.URL.Path, "/api/v1/transfers/") && r.URL.Path != "/api/v1/transfers/credentials") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -3326,18 +3453,19 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		}
 		var body []byte
 		if isStreamingUpload(r) {
-			spooled, expected, err := s.spoolSignedRequest(r, timestamp, nonce)
-			if err != nil {
-				http.Error(w, "invalid streaming request body", http.StatusBadRequest)
-				return
-			}
+			// Streaming clients authenticate the request metadata with an empty
+			// body signature. Verify it before reading a single body byte so an
+			// unauthenticated caller cannot force multi-gigabyte disk spooling.
+			expected := sign(s.token, r.Method, r.URL.RequestURI(), timestamp, nil, nonce)
 			if !hmac.Equal([]byte(signature), []byte(expected)) {
-				_ = spooled.Close()
 				http.Error(w, "invalid signature", http.StatusUnauthorized)
 				return
 			}
-			r.Body = spooled
-			defer spooled.Close()
+			if r.ContentLength > maxSignedStreamingBodyBytes {
+				http.Error(w, "streaming request body exceeds size limit", http.StatusRequestEntityTooLarge)
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, maxSignedStreamingBodyBytes)
 		} else {
 			body, err = io.ReadAll(io.LimitReader(r.Body, 1024*1024+1))
 			if err != nil || len(body) > 1024*1024 {
@@ -3368,6 +3496,11 @@ func validRequestNonce(nonce string) bool {
 	return err == nil
 }
 
+// maxSeenNonces bounds the in-memory replay cache. Entries already expire
+// after the 5-minute skew window, so the cap only matters under sustained
+// request volume; when full, the oldest entry is evicted.
+const maxSeenNonces = 4096
+
 func (s *Server) acceptRequestNonce(nonce string, timestamp time.Time) bool {
 	s.nonceMu.Lock()
 	defer s.nonceMu.Unlock()
@@ -3380,61 +3513,23 @@ func (s *Server) acceptRequestNonce(nonce string, timestamp time.Time) bool {
 	if _, exists := s.seenNonces[nonce]; exists {
 		return false
 	}
+	if len(s.seenNonces) >= maxSeenNonces {
+		oldest, oldestExpiry := "", time.Time{}
+		for value, expires := range s.seenNonces {
+			if oldest == "" || expires.Before(oldestExpiry) {
+				oldest, oldestExpiry = value, expires
+			}
+		}
+		delete(s.seenNonces, oldest)
+	}
 	s.seenNonces[nonce] = timestamp.Add(5 * time.Minute)
 	return true
 }
 
-const maxSignedStreamingBodyBytes = int64(50 << 30)
-
-type removeFileReadCloser struct {
-	*os.File
-	path string
-}
-
-func (r *removeFileReadCloser) Close() error {
-	closeErr := r.File.Close()
-	removeErr := os.Remove(r.path)
-	return errors.Join(closeErr, removeErr)
-}
-
-func (s *Server) spoolSignedRequest(r *http.Request, timestamp, nonce string) (*removeFileReadCloser, string, error) {
-	dir := filepath.Join(s.dataDir, ".beacon", "request-spool")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, "", err
-	}
-	file, err := os.CreateTemp(dir, ".signed-body-*")
-	if err != nil {
-		return nil, "", err
-	}
-	cleanup := func() {
-		_ = file.Close()
-		_ = os.Remove(file.Name())
-	}
-	if err := file.Chmod(0o600); err != nil {
-		cleanup()
-		return nil, "", err
-	}
-	mac := hmac.New(sha256.New, []byte(s.token))
-	_, _ = io.WriteString(mac, r.Method+"\n"+r.URL.RequestURI()+"\n"+timestamp+"\n"+nonce+"\n")
-	written, err := io.Copy(io.MultiWriter(file, mac), io.LimitReader(r.Body, maxSignedStreamingBodyBytes+1))
-	_ = r.Body.Close()
-	if err != nil || written > maxSignedStreamingBodyBytes {
-		cleanup()
-		if err != nil {
-			return nil, "", err
-		}
-		return nil, "", errors.New("streaming request body exceeds size limit")
-	}
-	if err := file.Sync(); err != nil {
-		cleanup()
-		return nil, "", err
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		cleanup()
-		return nil, "", err
-	}
-	return &removeFileReadCloser{File: file, path: file.Name()}, hex.EncodeToString(mac.Sum(nil)), nil
-}
+// The only signed streaming route accepts file-upload chunks, whose handler
+// enforces the same 8 MiB ceiling. Keeping the authentication-layer cap in
+// lockstep prevents oversized chunked bodies from reaching application code.
+const maxSignedStreamingBodyBytes = int64(maxUploadChunkBytes)
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3611,11 +3706,9 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleConnectivityDiagnostics(w http.ResponseWriter, r *http.Request) {
-	panelURL := r.URL.Query().Get("url")
-	if panelURL == "" {
-		panelURL = os.Getenv("PANEL_API_URL")
-	}
-	diag := s.RunConnectivityDiagnostics(r.Context(), panelURL)
+	// Never accept a caller-controlled probe target. Besides being an SSRF
+	// primitive, the authentication probe carries the node credential.
+	diag := s.RunConnectivityDiagnostics(r.Context(), os.Getenv("PANEL_API_URL"))
 	writeJSON(w, http.StatusOK, diag)
 }
 

@@ -127,6 +127,7 @@ type Service struct {
 	publisher    events.Publisher
 	reservations *reservations.Manager
 	scheduler    *scheduler2.Scheduler
+	daemonCli    *daemon.Client
 }
 
 var (
@@ -135,9 +136,10 @@ var (
 	ErrInvalidCompose    = errors.New("invalid compose yaml")
 	ErrNodeNotAvailable  = errors.New("node is not available")
 	ErrReservationFailed = errors.New("resource reservation failed")
+	ErrComposeTooLarge   = fmt.Errorf("compose YAML exceeds maximum size of %d bytes", MaxComposeYAMLBytes)
 )
 
-func New(store *store.Store, publishers ...events.Publisher) (*Service, error) {
+func New(store *store.Store, cli *daemon.Client, publishers ...events.Publisher) (*Service, error) {
 	if store == nil {
 		return nil, errors.New("store required")
 	}
@@ -147,6 +149,7 @@ func New(store *store.Store, publishers ...events.Publisher) (*Service, error) {
 	}
 	return &Service{
 		store:     store,
+		daemonCli: cli,
 		publisher: publisher,
 	}, nil
 }
@@ -162,7 +165,7 @@ func (s *Service) WithScheduler(sched *scheduler2.Scheduler) *Service {
 }
 
 func (s *Service) getClient() *daemon.Client {
-	return daemon.NewClient()
+	return s.daemonCli
 }
 
 func (s *Service) createStackID() string {
@@ -233,6 +236,9 @@ func extractRestartCount(status string) int {
 func (s *Service) DeployComposeStack(ctx context.Context, req DeployComposeRequest) (*ComposeStack, error) {
 	if req.Name == "" || req.ComposeYAML == "" {
 		return nil, fmt.Errorf("name and composeYaml are required")
+	}
+	if len(req.ComposeYAML) > MaxComposeYAMLBytes {
+		return nil, ErrComposeTooLarge
 	}
 	if req.UserID == "" {
 		return nil, fmt.Errorf("userId is required")
@@ -399,6 +405,10 @@ func (s *Service) confirmReservation(ctx context.Context, reservationID string) 
 }
 
 func (s *Service) UpdateComposeStack(ctx context.Context, stackID string, req UpdateComposeRequest) (*ComposeStack, error) {
+	if len(req.ComposeYAML) > MaxComposeYAMLBytes {
+		return nil, ErrComposeTooLarge
+	}
+
 	existing, err := s.store.GetComposeStack(ctx, stackID)
 	if err != nil {
 		return nil, ErrStackNotFound

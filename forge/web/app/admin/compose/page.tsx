@@ -2,7 +2,8 @@
 
 import { useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useToast } from "@/components/ui/toast";
+import { useToast } from "@/components/ui/toast"
+import { useConfirm } from "@/components/ui/confirm-dialog";;
 import { useRouter } from "next/navigation";
 import { deleteJSON, fetchJSON, postJSON } from "@/lib/api";
 import { AdminLoadingState, AdminPageHeader, Btn, Card, EmptyState } from "@/components/admin/admin-ui";
@@ -44,6 +45,7 @@ const statusConfig: Record<string, { color: string; bg: string; icon: React.Reac
 
 export default function ComposeStacksPage() {
   const queryClient = useQueryClient();
+  const [confirm, renderConfirm] = useConfirm();
   const { toast } = useToast();
   const router = useRouter();
 
@@ -94,7 +96,7 @@ export default function ComposeStacksPage() {
       case "stop": stopMutation.mutate(id); break;
       case "start": startMutation.mutate(id); break;
       case "delete":
-        if (confirm("Delete this compose stack?")) deleteMutation.mutate(id);
+        void (async () => { if (await confirm({ title: "Delete this compose stack?", description: "The stack and its services will be removed. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMutation.mutate(id); })();
         break;
     }
   };
@@ -160,6 +162,7 @@ export default function ComposeStacksPage() {
           })}
         </div>
       )}
+      {renderConfirm()}
     </div>
   );
 }

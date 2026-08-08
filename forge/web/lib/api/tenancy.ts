@@ -85,7 +85,6 @@ export interface EnvVarRevision {
 }
 
 import { fetchJSON, postJSON, putJSON, patchJSON, deleteJSON } from "./http";
-import { deleteEnvVar as deleteEnvVarById } from './env-vars';
 
 // ---- Organizations ----
 

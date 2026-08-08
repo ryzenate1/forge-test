@@ -90,7 +90,7 @@ func registerCrossNodeRoutes(protected fiber.Router, cfg Config, resolver *cross
 			defer cancel()
 
 			if err := ingressSync.Sync(ctx); err != nil {
-				return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+				return respondInternalError(c, err)
 			}
 
 			return c.JSON(fiber.Map{"message": "sync triggered successfully"})
@@ -108,7 +108,7 @@ func registerCrossNodeRoutes(protected fiber.Router, cfg Config, resolver *cross
 			defer cancel()
 
 			if err := ingressSync.CleanupStale(ctx); err != nil {
-				return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+				return respondInternalError(c, err)
 			}
 
 			return c.JSON(fiber.Map{"message": "stale routes cleaned up"})

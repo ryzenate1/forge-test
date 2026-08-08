@@ -70,7 +70,7 @@ func (h *GitDeploymentHandlers) CreateGitDeploymentHandler() fiber.Handler {
 		deployResult, err := h.gitDeployService.TriggerDeployment(ctx, &req)
 		if err != nil {
 			h.logger.Error("Failed to trigger deployment", "error", err, "gitSourceId", req.GitSourceID)
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 
 		return c.Status(fiber.StatusAccepted).JSON(deployResult)
@@ -111,7 +111,7 @@ func (h *GitDeploymentHandlers) GetGitDeploymentHandler() fiber.Handler {
 		deployment, err := h.gitDeployService.GetDeploymentStatus(ctx, gitSourceID)
 		if err != nil {
 			h.logger.Error("Failed to get deployment status", "error", err, "gitSourceId", gitSourceID)
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 
 		return c.JSON(deployment)
@@ -161,7 +161,7 @@ func (h *GitDeploymentHandlers) ListGitDeploymentsHandler() fiber.Handler {
 		deployments, err := h.gitDeployService.ListDeployments(ctx, gitSourceID, limit)
 		if err != nil {
 			h.logger.Error("Failed to list deployments", "error", err, "gitSourceId", gitSourceID)
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 
 		return c.JSON(deployments)
@@ -208,7 +208,7 @@ func (h *GitDeploymentHandlers) CancelGitDeploymentHandler() fiber.Handler {
 		err = h.gitDeployService.CancelDeployment(ctx, deploymentID)
 		if err != nil {
 			h.logger.Error("Failed to cancel deployment", "error", err, "deploymentId", deploymentID)
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 
 		return c.JSON(fiber.Map{

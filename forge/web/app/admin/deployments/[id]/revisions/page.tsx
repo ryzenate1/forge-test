@@ -8,6 +8,7 @@ import {
   Package, RefreshCw, RotateCcw, Search, ShieldAlert,
 } from "lucide-react";
 import { fetchJSON, postJSON } from "@/lib/api";
+import { compareRevisions, fetchDeploymentRevisions } from "@/lib/api/deployments";
 import { Btn, Card, CardHeader, EmptyState, Pill, SectionHeader, cn } from "@/components/admin/admin-ui";
 
 type Revision = {
@@ -51,7 +52,7 @@ export default function DeploymentRevisionsPage() {
 
   const revsQuery = useQuery({
     queryKey: ["admin", "deployments", id, "revisions"],
-    queryFn: () => fetchJSON<Revision[]>(`/admin/deployments/${id}/revisions`),
+    queryFn: () => fetchDeploymentRevisions(id),
   });
 
   const rollbackMutation = useMutation({
@@ -68,9 +69,7 @@ export default function DeploymentRevisionsPage() {
 
   const handleCompare = async (from: string, to: string) => {
     try {
-      const data = await fetchJSON<RevisionDiff>(
-        `/admin/deployments/${encodeURIComponent(id)}/compare?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
-      );
+      const data = await compareRevisions(id, from, to);
       setDiffData(data);
       setShowDiff(true);
     } catch {}

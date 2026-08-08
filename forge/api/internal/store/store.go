@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -28,6 +30,32 @@ const (
 	ScheduleTaskActionBackup  ScheduleTaskAction = "backup"
 	ScheduleTaskActionCommand ScheduleTaskAction = "command"
 )
+
+// migrationAdvisoryLockID is a well-known session-level advisory lock key that
+// serializes schema migrations across horizontally scaled API instances so two
+// processes can never apply migrations concurrently (which would race on
+// schema_migrations bookkeeping and DDL).
+const migrationAdvisoryLockID int64 = 0x466F7267656D6967 // "ForgeMig"
+
+// acquireMigrationLock takes a session-level pg_advisory_lock on a dedicated
+// pool connection. The returned release func releases the lock and returns the
+// connection to the pool. The lock is automatically dropped if the session
+// dies, so a crashed process cannot permanently wedge migrations.
+func (s *Store) acquireMigrationLock(ctx context.Context) (func(), error) {
+	conn, err := s.db.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire migration lock connection: %w", err)
+	}
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationAdvisoryLockID); err != nil {
+		conn.Release()
+		return nil, fmt.Errorf("acquire migration advisory lock: %w", err)
+	}
+	release := func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrationAdvisoryLockID)
+		conn.Release()
+	}
+	return release, nil
+}
 
 type User struct {
 	ID              string  `json:"id"`
@@ -591,6 +619,8 @@ type ServerProvisionTarget struct {
 	IOWeight          int64
 	Threads           string
 	OOMDisabled       bool
+	ContainerUID      int64
+	ContainerGID      int64
 	AllocationIP      string
 	AllocationPort    int
 	Allocations       []ServerRuntimeAllocation
@@ -624,6 +654,8 @@ type ServerProvisionTargetDTO struct {
 	IOWeight          int64
 	Threads           string
 	OOMDisabled       bool
+	ContainerUID      int64
+	ContainerGID      int64
 	AllocationIP      string
 	AllocationPort    int
 	Allocations       []ServerRuntimeAllocation
@@ -658,6 +690,8 @@ func (t ServerProvisionTarget) ToDTO() ServerProvisionTargetDTO {
 		IOWeight:          t.IOWeight,
 		Threads:           t.Threads,
 		OOMDisabled:       t.OOMDisabled,
+		ContainerUID:      t.ContainerUID,
+		ContainerGID:      t.ContainerGID,
 		AllocationIP:      t.AllocationIP,
 		AllocationPort:    t.AllocationPort,
 		Allocations:       t.Allocations,
@@ -1068,6 +1102,12 @@ func (s *Store) RunSelectedMigrations(ctx context.Context, dir string, names []s
 }
 
 func (s *Store) runMigrations(ctx context.Context, dir string, names []string) error {
+	releaseLock, err := s.acquireMigrationLock(ctx)
+	if err != nil {
+		return err
+	}
+	defer releaseLock()
+
 	if _, err := s.db.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version TEXT PRIMARY KEY,
@@ -1120,6 +1160,12 @@ func (s *Store) runMigrations(ctx context.Context, dir string, names []string) e
 // Rollback reverts applied migrations to a target version by applying
 // .down.sql files from the rollbacks directory in reverse order.
 func (s *Store) Rollback(ctx context.Context, rollbacksDir string, targetVersion string) error {
+	releaseLock, err := s.acquireMigrationLock(ctx)
+	if err != nil {
+		return err
+	}
+	defer releaseLock()
+
 	if _, err := s.db.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version TEXT PRIMARY KEY,
@@ -1182,7 +1228,7 @@ func (s *Store) Seed(ctx context.Context) error {
 	adminID := "11111111-1111-1111-1111-111111111111"
 	nodeID := "22222222-2222-2222-2222-222222222222"
 	templateID := "33333333-3333-3333-3333-333333333333"
-	serverID := "44444444-4444-4444-4444-444444444444"
+	serverID := "44444444-4444-4444-8444-444444444444"
 	allocationID := "55555555-5555-5555-5555-555555555555"
 	spareAllocationID := "66666666-6666-6666-6666-666666666666"
 
@@ -1194,7 +1240,29 @@ func (s *Store) Seed(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	nodeToken := "dev-node-token"
+	nodeTokenID := "devnodetoken0001"
+	nodeBaseURL := strings.TrimSpace(os.Getenv("BEACON_BASE_URL"))
+	if nodeBaseURL == "" {
+		nodeBaseURL = strings.TrimSpace(os.Getenv("DAEMON_BASE_URL"))
+	}
+	if nodeBaseURL == "" {
+		nodeBaseURL = "http://daemon:9090"
+	}
+	nodeToken := strings.TrimSpace(os.Getenv("FORGE_DEMO_NODE_TOKEN"))
+	if nodeToken == "" {
+		nodeToken = strings.TrimSpace(os.Getenv("DAEMON_NODE_TOKEN"))
+	}
+	if nodeToken == "" {
+		randomSecret := make([]byte, 24)
+		if _, err := crand.Read(randomSecret); err != nil {
+			return err
+		}
+		nodeToken = hex.EncodeToString(randomSecret)
+	} else if strings.Contains(nodeToken, ".") {
+		parts := strings.SplitN(nodeToken, ".", 2)
+		nodeTokenID = parts[0]
+		nodeToken = parts[1]
+	}
 	nodeTokenEncrypted, err := s.encryptSecret(nodeToken, secretAAD("nodes", nodeID, "daemon_token"))
 	if err != nil {
 		return err
@@ -1244,16 +1312,17 @@ func (s *Store) Seed(ctx context.Context) error {
 			id, uuid, name, region, base_url, fqdn, scheme, status, token_hash,
 			daemon_token_id, daemon_token, daemon_token_encrypted, daemon_listen, daemon_sftp, daemon_base, last_seen_at
 		)
-		VALUES ($1, $1, 'Ubuntu Demo Node', 'local-lab', 'http://daemon:9090', 'daemon', 'http', 'online',
-		        $2, 'devnodetoken0001', '', $3, 9090, 2022, '/srv/game-panel/servers', now())
+		VALUES ($1, $1, 'Ubuntu Demo Node', 'local-lab', $5, 'daemon', 'http', 'online',
+		        $2, $4, '', $3, 9090, 2022, '/srv/game-panel/servers', now())
 		ON CONFLICT (id) DO UPDATE SET
 			status = EXCLUDED.status,
+			base_url = EXCLUDED.base_url,
 			token_hash = EXCLUDED.token_hash,
 			daemon_token_id = EXCLUDED.daemon_token_id,
 			daemon_token = '',
 			daemon_token_encrypted = EXCLUDED.daemon_token_encrypted,
 			last_seen_at = EXCLUDED.last_seen_at
-	`, nodeID, string(nodeTokenHash), nodeTokenEncrypted); err != nil {
+	`, nodeID, string(nodeTokenHash), nodeTokenEncrypted, nodeTokenID, nodeBaseURL); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `
@@ -1277,9 +1346,9 @@ func (s *Store) Seed(ctx context.Context) error {
 		return fmt.Errorf("seed: no egg found for 'Minecraft Java' in 'Games' nest; server not created: %w", err)
 	}
 	if _, err = tx.Exec(ctx, `
-		INSERT INTO servers (id, node_id, owner_id, template_id, egg_id, name, status, memory_mb, cpu_shares, disk_mb)
-		VALUES ($1, $2, $3, $4, $4, 'Survival SMP', 'stopped', 2048, 1024, 10240)
-		ON CONFLICT (id) DO NOTHING
+		INSERT INTO servers (id, node_id, owner_id, template_id, egg_id, name, status, memory_mb, cpu_shares, disk_mb, container_uid, container_gid)
+		VALUES ($1, $2, $3, $4, $4, 'Survival SMP', 'stopped', 2048, 1024, 10240, 1000, 1000)
+		ON CONFLICT (id) DO UPDATE SET container_uid = EXCLUDED.container_uid, container_gid = EXCLUDED.container_gid
 	`, serverID, nodeID, adminID, eggID); err != nil {
 		return err
 	}

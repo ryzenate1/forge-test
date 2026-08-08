@@ -13,6 +13,7 @@ import { fetchAppDomains, deleteAppDomain } from "@/lib/api/apps";
 import type { AppDomain } from "@/lib/api/apps";
 import { errorMessage, formatDate } from "@/lib/utils";
 import type { ReactNode } from "react";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 interface DomainsViewProps {
   appId: string;
@@ -22,6 +23,7 @@ interface DomainsViewProps {
 export function DomainsView({ appId, action }: DomainsViewProps) {
   const qc = useQueryClient();
   const { success: showSuccess, error: showError } = useAppToast();
+  const [confirm, renderConfirm] = useConfirm();
 
   const query = useQuery<AppDomain[]>({
     queryKey: ["app-domains", appId],
@@ -60,6 +62,7 @@ export function DomainsView({ appId, action }: DomainsViewProps) {
 
   return (
     <div className="ui-card">
+      {renderConfirm()}
       <div className="ui-card-header">
         <span className="text-sm font-semibold text-slate-200">
           {domains.length} domain{domains.length === 1 ? "" : "s"}
@@ -84,9 +87,7 @@ export function DomainsView({ appId, action }: DomainsViewProps) {
             <button
               className="rounded border border-red-500/30 px-3 py-1.5 text-xs font-semibold text-red-300 hover:bg-red-500/10"
               disabled={deleteMut.isPending}
-              onClick={() => {
-                if (window.confirm(`Remove ${domain.domain}?`)) deleteMut.mutate(domain.id);
-              }}
+              onClick={async () => { if (await confirm({ title: `Remove ${domain.domain}?`, description: "The domain will be removed and its certificate revoked.", danger: true, confirmLabel: "Remove" })) deleteMut.mutate(domain.id); }}
               type="button"
             >
               {deleteMut.isPending ? "Removing…" : "Remove"}

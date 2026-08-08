@@ -10,6 +10,14 @@ type ToastContextValue = { toast: (input: Omit<Toast, "id">) => number; dismiss:
 const ToastContext = createContext<ToastContextValue>({ toast: () => 0, dismiss: () => undefined });
 let nextToastId = 1;
 
+let toastPusher: ((input: Omit<Toast, "id">) => void) | null = null;
+export function setToastPusher(fn: ((input: Omit<Toast, "id">) => void) | null) {
+  toastPusher = fn;
+}
+export function pushToast(input: Omit<Toast, "id">) {
+  toastPusher?.(input);
+}
+
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const timeoutsRef = useRef<Map<number, number>>(new Map());
@@ -29,6 +37,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, [dismiss]);
   const value = useMemo(() => ({ toast, dismiss }), [dismiss, toast]);
   useEffect(() => () => { timeoutsRef.current.forEach((tid) => window.clearTimeout(tid)); timeoutsRef.current.clear(); }, []);
+  useEffect(() => {
+    setToastPusher(toast);
+    return () => setToastPusher(null);
+  }, [toast]);
 
   return <ToastContext.Provider value={value}>{children}<div aria-atomic="true" aria-label="Notifications" aria-live="polite" className="ui-toast-region">{toasts.map((item) => {
     const Icon = item.tone === "success" ? CheckCircle2 : item.tone === "error" || item.tone === "warning" ? TriangleAlert : item.tone === "loading" ? LoaderCircle : Info;

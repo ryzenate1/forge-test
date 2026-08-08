@@ -131,7 +131,7 @@ func TestGitOpsComposeStackScenario(t *testing.T) {
 	credentialID := gitCred.ID
 
 	mockGitSvc := newMockGitCloneService(testComposeYAML)
-	composeSvc, err := compose.New(suite.Store, suite.Publisher)
+	composeSvc, err := compose.New(suite.Store, suite.DaemonClient, suite.Publisher)
 	require.NoError(t, err)
 
 	gitOpsSvc := compose.NewGitOpsService(
@@ -140,6 +140,7 @@ func TestGitOpsComposeStackScenario(t *testing.T) {
 		mockGitSvc,
 		suite.Publisher,
 		suite.Logger,
+		suite.DaemonClient,
 	)
 
 	t.Run("Create Git-backed Compose stack", func(t *testing.T) {
@@ -488,7 +489,7 @@ func TestGitOpsComposeStackEdgeCases(t *testing.T) {
 
 	mockGitSvc := newMockGitCloneService(testComposeYAML)
 
-	composeSvc2, err := compose.New(suite.Store, suite.Publisher)
+	composeSvc2, err := compose.New(suite.Store, suite.DaemonClient, suite.Publisher)
 	require.NoError(t, err)
 	gitOpsSvc := compose.NewGitOpsService(
 		suite.Store,
@@ -496,6 +497,7 @@ func TestGitOpsComposeStackEdgeCases(t *testing.T) {
 		mockGitSvc,
 		suite.Publisher,
 		suite.Logger,
+		suite.DaemonClient,
 	)
 
 	t.Run("Invalid webhook signature", func(t *testing.T) {

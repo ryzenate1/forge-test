@@ -3,7 +3,9 @@
 # gen-env.sh — GamePanel Production .env Generator
 #
 # Generates a complete production .env file with cryptographically
-# random secrets.  Can run interactively or silently.
+# random secrets, plus Docker secret files in infra/secrets/ that match the
+# .env values (used by compose.secrets.yml).  Can run interactively or
+# silently.
 #
 # Usage:
 #   ./gen-env.sh [output-path]              interactive
@@ -113,6 +115,23 @@ SOKETI_APP_SECRET="$(rand_hex32)"
 METRICS_TOKEN="$(rand_base64)"
 DAEMON_SFTP_HOST_KEY_PASSPHRASE="$(rand_base64)"
 
+# ---- Release / Image Tag ----------------------------------------------------
+# compose.yml pins every image (forge-api, forge-web, beacon, docs) to
+# ${TAG}. Default to the nearest git tag when available, otherwise "dev".
+# Preset TAG in the environment to pin a specific release.
+if [ -z "${TAG:-}" ]; then
+    if git_tag="$(git -C "$SELF_DIR/.." describe --tags --always 2>/dev/null)" && [ -n "$git_tag" ]; then
+        # Docker image tags allow only [A-Za-z0-9._-]; sanitize the
+        # git describe output (branch names may contain slashes).
+        TAG="$(printf '%s' "$git_tag" | sed -e 's/[^A-Za-z0-9._-]/-/g' -e 's/^-*//' -e 's/-*$//')"
+        if [ -z "$TAG" ]; then
+            TAG="dev"
+        fi
+    else
+        TAG="dev"
+    fi
+fi
+
 # ---- Write Output File -----------------------------------------------------
 mkdir -p "$(dirname "$OUTPUT")"
 cat > "$OUTPUT" <<ENV
@@ -131,6 +150,12 @@ cat > "$OUTPUT" <<ENV
 #   3. Complete the /setup wizard, then restart daemon + monitoring
 #      with the assigned DAEMON_NODE_ID.
 # =====================================================================
+
+# =====================================================================
+# --- Release / Image Tag ---
+# Pins forge-api, forge-web, beacon and docs images to one release.
+# =====================================================================
+TAG=${TAG}
 
 # =====================================================================
 # --- Database (PostgreSQL) ---
@@ -199,7 +224,7 @@ DAEMON_UPGRADE_PUBLIC_KEY=${DAEMON_UPGRADE_PUBLIC_KEY:-}
 # =====================================================================
 DAEMON_ADDR=:9090
 DAEMON_SFTP_ADDR=:2022
-DAEMON_SFTP_BIND_ADDR=127.0.0.1:2022
+DAEMON_SFTP_BIND_ADDR=0.0.0.0:2022
 DAEMON_DATA_DIR=/srv/game-panel/servers
 GAME_SERVERS_HOST_DIR=/srv/game-panel/servers
 DAEMON_NODE_ID=${NODE_ID}
@@ -217,6 +242,8 @@ PANEL_API_URL=https://${PANEL_DOMAIN}/api/v1
 #AWS_SECURITY_GROUP_IDS=sg-0123456789abcdef0
 #AWS_IAM_INSTANCE_PROFILE=gamepanel-beacon
 DAEMON_IMAGE=ghcr.io/gamepanel/beacon:${TAG}
+API_IMAGE=ghcr.io/gamepanel/forge-api:${TAG}
+WEB_IMAGE=ghcr.io/gamepanel/forge-web:${TAG}
 METRICS_TOKEN=${METRICS_TOKEN}
 METRICS_TOKEN_FILE=./.metrics-token
 
@@ -314,9 +341,26 @@ chmod 600 "$OUTPUT"
 printf '%s\n' "$METRICS_TOKEN" > "$(dirname "$OUTPUT")/.metrics-token"
 chmod 600 "$(dirname "$OUTPUT")/.metrics-token"
 
+# ---- Docker Secrets Files ---------------------------------------------------
+# compose.secrets.yml mounts these files as Docker secrets. Values are kept
+# in sync with the plain environment variables above, because the forge API,
+# beacon daemon, and web frontend read secrets via os.Getenv only (the
+# postgres image is the one consumer of the *_FILE mechanism).
+SECRETS_DIR="$SELF_DIR/secrets"
+mkdir -p "$SECRETS_DIR"
+write_secret() {
+    printf '%s' "$1" > "$SECRETS_DIR/$2"
+    chmod 600 "$SECRETS_DIR/$2"
+}
+write_secret "$POSTGRES_PASSWORD" "postgres_password.secret"
+write_secret "$FORGE_MASTER_KEY" "forge_master_key.secret"
+write_secret "$NODE_TOKEN" "daemon_node_token.secret"
+write_secret "$API_AUTH_SECRET" "api_auth_secret.secret"
+write_secret "$APP_KEY" "app_key.secret"
+
 # ---- Validate Required Variables -------------------------------------------
 missing=0
-required_vars="POSTGRES_PASSWORD DATABASE_URL API_AUTH_SECRET APP_KEY FORGE_MASTER_KEY DAEMON_NODE_TOKEN DAEMON_SFTP_HOST_KEY_PASSPHRASE METRICS_TOKEN GRAFANA_ADMIN_PASSWORD PANEL_URL DAEMON_NODE_ID REDIS_PASSWORD"
+required_vars="TAG POSTGRES_PASSWORD DATABASE_URL API_AUTH_SECRET APP_KEY FORGE_MASTER_KEY DAEMON_NODE_TOKEN DAEMON_SFTP_HOST_KEY_PASSPHRASE METRICS_TOKEN GRAFANA_ADMIN_PASSWORD PANEL_URL DAEMON_NODE_ID REDIS_PASSWORD"
 
 for var in $required_vars; do
     line=$(grep -E "^(#)?${var}=" "$OUTPUT" 2>/dev/null || true)

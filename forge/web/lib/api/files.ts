@@ -7,12 +7,19 @@ import {
   getCSRFToken,
   API_BASE_URL,
 } from './http';
+import type { ApiFileEntry } from './types';
 
-export async function fetchServerFiles(serverId: string, path?: string): Promise<any[]> {
+export async function fetchServerFiles(serverId: string, path?: string): Promise<ApiFileEntry[]> {
   const url = path
     ? `/servers/${encodeURIComponent(serverId)}/files?path=${encodeURIComponent(path)}`
     : `/servers/${encodeURIComponent(serverId)}/files`;
-  return fetchJSON<any[]>(url);
+  const files = await fetchJSON<ApiFileEntry[]>(url);
+  // The daemon returns modTime; the web API type uses modifiedAt. Normalize so
+  // consumers never read an undefined timestamp.
+  return (files ?? []).map((file) => ({
+    ...file,
+    modifiedAt: file.modifiedAt ?? file.createdAt,
+  }));
 }
 
 export async function downloadServerFile(serverId: string, path: string): Promise<Blob> {

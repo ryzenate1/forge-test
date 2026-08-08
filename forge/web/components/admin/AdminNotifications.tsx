@@ -19,6 +19,8 @@ import {
   EVENT_LABELS,
 } from "@/lib/api/notifications";
 import { AdminFormSection, AdminSelect, Btn, Card, CardHeader, EmptyState, Input, Pill, SectionHeader, Textarea } from "./admin-ui";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { TableSkeleton } from "@/components/ui/loading-skeleton";
 
 const CHANNEL_ICONS: Record<NotificationChannelType, typeof Bell> = {
   slack: MessageSquare,
@@ -43,6 +45,7 @@ function channelIcon(type: NotificationChannelType) {
 
 export function AdminNotifications() {
   const qc = useQueryClient();
+  const [confirm, renderConfirm] = useConfirm();
   const [showCreate, setShowCreate] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -255,7 +258,7 @@ export function AdminNotifications() {
           <Card>
             <CardHeader title="Notification Channels" icon={Bell} />
             {channelsQuery.isLoading ? (
-              <div className="py-10 text-center text-sm text-slate-500">Loading...</div>
+              <TableSkeleton rows={3} />
             ) : channelsQuery.isError ? (
               <div className="p-4">
                 <div className="flex items-start justify-between gap-4 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-200">
@@ -305,7 +308,7 @@ export function AdminNotifications() {
                         </div>
                       </td>
                       <td className="px-4 py-3">
-                        <button className="text-red-400 hover:text-red-300" onClick={() => { if (confirm("Delete this channel?")) deleteMut.mutate(ch.id); }}>
+                        <button className="text-red-400 hover:text-red-300" onClick={() => { void (async () => { if (await confirm({ title: `Delete notification channel ${ch.name}?`, description: "Notifications for this channel will stop. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMut.mutate(ch.id); })(); }}>
                           <Trash2 size={14} />
                         </button>
                       </td>
@@ -350,7 +353,7 @@ export function AdminNotifications() {
         <Card>
           <CardHeader title="Delivery Logs" icon={RefreshCw} />
           {logsQuery.isLoading ? (
-            <div className="py-10 text-center text-sm text-slate-500">Loading...</div>
+            <TableSkeleton rows={3} />
           ) : !Array.isArray(logs) || logs.length === 0 ? (
             <EmptyState icon={Bell} message="No delivery logs yet." />
           ) : (
@@ -379,6 +382,7 @@ export function AdminNotifications() {
           )}
         </Card>
       )}
+      {renderConfirm()}
     </div>
   );
 }

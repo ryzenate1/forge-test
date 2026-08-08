@@ -10,8 +10,9 @@ import {
 } from "@/lib/api";
 import { hasServerPermission, useOptionalServerContext } from "./server-context";
 import { errorMessage as message, cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/loading-skeleton";
 
-const inputBase = "h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15";
+const inputBase = "ui-input";
 const iconClasses = "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500";
 
 type ScheduleDraft = Pick<ApiSchedule, "name" | "cronMinute" | "cronHour" | "cronDayOfMonth" | "cronMonth" | "cronDayOfWeek" | "onlyWhenOnline" | "enabled">;
@@ -45,16 +46,16 @@ function validateTask(draft: TaskDraft) {
 
 function Runs({ serverId, scheduleId }: { serverId: string; scheduleId: string }) {
   const query = useQuery({ queryKey: ["server-schedule-runs", serverId, scheduleId], queryFn: () => fetchServerScheduleRuns(serverId, scheduleId), refetchInterval: 10_000 });
-  if (query.isLoading) return <p className="text-xs text-slate-400">Loading run history&hellip;</p>;
+  if (query.isLoading) return <p className="py-6 text-center text-sm text-slate-500">Loading run history&hellip;</p>;
   if (query.isError) return <p className="text-xs text-red-300">{message(query.error, "Run history unavailable.")}</p>;
   if (!query.data?.length) return <p className="text-xs text-slate-400">No execution history yet.</p>;
-  return <div className="space-y-2">{[...query.data].slice(0, 10).map((run) => <div className="rounded-lg border border-white/[0.06] bg-[#0f141f] p-3 text-xs" key={run.id}><div className="flex flex-wrap justify-between gap-2"><span className="font-semibold uppercase text-slate-100">{run.status}</span><span className="text-slate-400">{new Date(run.startedAt ?? "").toLocaleString()} &middot; {run.trigger}</span></div>{run.error ? <p className="mt-1 text-red-300">{run.error}</p> : null}{run.tasks?.length ? <ul className="mt-2 space-y-1 text-slate-400">{(run.tasks ?? []).map((task: any) => <li key={task.id}>{task.status} &middot; {new Date(task.executedAt).toLocaleTimeString()}{task.error ? ` &middot; ${task.error}` : ""}</li>)}</ul> : null}</div>)}</div>;
+  return <div className="space-y-2">{[...query.data].slice(0, 10).map((run) => <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 text-xs" key={run.id}><div className="flex flex-wrap justify-between gap-2"><span className="ui-status-pill ui-status-pill-neutral">{run.status}</span><span className="font-mono text-slate-400">{new Date(run.startedAt ?? "").toLocaleString()} &middot; {run.trigger}</span></div>{run.error ? <p className="mt-1 text-red-300">{run.error}</p> : null}{run.tasks?.length ? <ul className="mt-2 space-y-1 text-slate-400">{(run.tasks ?? []).map((task: { id: string; status: string; executedAt?: string; error?: string }) => <li key={task.id}><span className="ui-status-pill ui-status-pill-neutral">{task.status}</span> &middot; <span className="font-mono">{task.executedAt ? new Date(task.executedAt).toLocaleTimeString() : "—"}</span>{task.error ? ` &middot; ${task.error}` : ""}</li>)}</ul> : null}</div>)}</div>;
 }
 
 function TaskEditor({ initial, pending, onCancel, onSave }: { initial: TaskDraft; pending: boolean; onCancel: () => void; onSave: (draft: TaskDraft) => void }) {
   const [draft, setDraft] = useState(initial);
   const error = validateTask(draft);
-  return <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4 space-y-4">
+  return <div className="ui-card space-y-4">
     <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">Action
       <select className={cn(inputBase, "mt-1.5 px-3")} value={draft.action} onChange={(event) => setDraft({ ...draft, action: event.target.value as TaskDraft["action"], value: event.target.value === "power" ? "start" : "" })}>
         <option value="command">Command</option><option value="power">Power</option><option value="backup">Backup</option>
@@ -92,8 +93,8 @@ function TaskEditor({ initial, pending, onCancel, onSave }: { initial: TaskDraft
     <label className="flex items-center gap-2 text-sm text-slate-300"><input checked={draft.continueOnFailure} onChange={(event) => setDraft({ ...draft, continueOnFailure: event.target.checked })} type="checkbox" className="accent-red-600" /> Continue on failure</label>
     {error ? <p className="text-xs text-red-300">{error}</p> : null}
     <div className="flex justify-end gap-2">
-      <button className="rounded-lg border border-white/10 px-3 py-2 text-xs font-bold text-slate-300 hover:bg-white/[0.04]" onClick={onCancel} type="button">Cancel</button>
-      <button className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-500 disabled:opacity-50" disabled={Boolean(error) || pending} onClick={() => onSave(draft)} type="button">{pending ? "Saving&hellip;" : "Save Task"}</button>
+      <button className="ui-button ui-button-ghost" onClick={onCancel} type="button">Cancel</button>
+      <button className="ui-button ui-button-primary" disabled={Boolean(error) || pending} onClick={() => onSave(draft)} type="button">{pending ? "Saving&hellip;" : "Save Task"}</button>
     </div>
   </div>;
 }
@@ -119,7 +120,7 @@ function CronFields({ draft, setDraft }: { draft: ScheduleDraft; setDraft: (v: S
 export function SchedulesView({ server }: { server?: ApiServer }) {
   const serverId = server?.id ?? "";
   const context = useOptionalServerContext();
-  const access = context?.access ?? { user: null, permissions: [], isAdmin: true, isOwner: true };
+  const access = context?.access ?? { user: null, permissions: null, isAdmin: false, isOwner: false };
   const canCreate = hasServerPermission(access, "schedule.create");
   const canUpdate = hasServerPermission(access, "schedule.update");
   const canDelete = hasServerPermission(access, "schedule.delete");
@@ -145,7 +146,7 @@ export function SchedulesView({ server }: { server?: ApiServer }) {
   const schedules = query.data ?? [];
 
   return <div className="space-y-6">
-    <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
+    <div className="ui-card">
       <div className="mb-5 flex items-center gap-2"><Archive className="text-slate-400" size={17} strokeWidth={1.5} /><h2 className="text-sm font-semibold text-slate-200">Create Schedule</h2></div>
       <div className="space-y-5">
         <div>
@@ -165,21 +166,21 @@ export function SchedulesView({ server }: { server?: ApiServer }) {
           <label className="flex items-center gap-2 text-sm text-slate-300"><input checked={createDraft.enabled} onChange={(e) => setCreateDraft({ ...createDraft, enabled: e.target.checked })} type="checkbox" className="accent-red-600" /> Enabled</label>
         </div>
         <div className="flex justify-end">
-          <button className="rounded-lg bg-red-600 px-4 py-2 text-sm font-bold text-white hover:bg-red-500 disabled:opacity-50" disabled={!canCreate || !serverId || Boolean(validateSchedule(createDraft)) || createMut.isPending} onClick={() => createMut.mutate(createDraft)} type="button">{createMut.isPending ? "Creating&hellip;" : "Create Schedule"}</button>
+          <button className="ui-button ui-button-primary" disabled={!canCreate || !serverId || Boolean(validateSchedule(createDraft)) || createMut.isPending} onClick={() => createMut.mutate(createDraft)} type="button">{createMut.isPending ? "Creating&hellip;" : "Create Schedule"}</button>
         </div>
       </div>
     </div>
 
-    {status ? <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 text-sm text-slate-200" role="status">{status}</div> : null}
+    {status ? <div className="ui-alert ui-alert-info" role="status"><p className="text-sm">{status}</p></div> : null}
 
-    <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
+    <div className="ui-card">
       <div className="mb-5 flex items-center gap-2"><Archive className="text-slate-400" size={17} strokeWidth={1.5} /><h2 className="text-sm font-semibold text-slate-200">Schedules</h2></div>
-      {query.isLoading ? <p className="py-6 text-center text-sm text-slate-500">Loading schedules&hellip;</p> : null}
-      {query.isError ? <p className="text-sm text-red-300">{message(query.error, "Schedules unavailable.")}</p> : null}
-      {!query.isLoading && !query.isError && !schedules.length ? <p className="py-6 text-center text-sm text-slate-500">No schedules configured.</p> : null}
+      {query.isLoading ? <div className="space-y-3">{Array.from({ length: 2 }).map((_, index) => <Skeleton className="h-24 w-full" key={index} />)}</div> : null}
+      {query.isError ? <p className="text-sm text-red-300">{message(query.error, "Schedules could not be loaded. Check the API connection and your permissions, then retry.")}</p> : null}
+      {!query.isLoading && !query.isError && !schedules.length ? <div className="ui-empty"><div className="ui-empty-icon"><Archive size={18} /></div><h3 className="mt-3 text-sm font-semibold text-slate-200">No schedules configured</h3><p className="mt-1 max-w-md text-sm leading-6 text-slate-400">Create a schedule above to run commands, power actions, or backups on a cron cadence.</p></div> : null}
       <div className="space-y-4">
         {schedules.map((schedule) => (
-          <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4" key={schedule.id}>
+          <div className="ui-card" key={schedule.id}>
             {editingSchedule === schedule.id ? (
               <div className="space-y-5">
                 <div>
@@ -198,8 +199,8 @@ export function SchedulesView({ server }: { server?: ApiServer }) {
                   <label className="flex items-center gap-2 text-sm text-slate-300"><input checked={editDraft.enabled} onChange={(e) => setEditDraft({ ...editDraft, enabled: e.target.checked })} type="checkbox" className="accent-red-600" /> Enabled</label>
                 </div>
                 <div className="flex justify-end gap-2">
-                  <button className="rounded-lg border border-white/10 px-3 py-2 text-xs font-bold text-slate-300 hover:bg-white/[0.04]" onClick={() => setEditingSchedule(null)} type="button">Cancel</button>
-                  <button className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-500 disabled:opacity-50" disabled={!canUpdate || Boolean(validateSchedule(editDraft)) || updateMut.isPending} onClick={() => updateMut.mutate({ id: schedule.id, draft: editDraft })} type="button">{updateMut.isPending ? "Saving&hellip;" : "Save Schedule"}</button>
+                  <button className="ui-button ui-button-ghost" onClick={() => setEditingSchedule(null)} type="button">Cancel</button>
+                  <button className="ui-button ui-button-primary" disabled={!canUpdate || Boolean(validateSchedule(editDraft)) || updateMut.isPending} onClick={() => updateMut.mutate({ id: schedule.id, draft: editDraft })} type="button">{updateMut.isPending ? "Saving&hellip;" : "Save Schedule"}</button>
                 </div>
               </div>
             ) : (
@@ -209,35 +210,35 @@ export function SchedulesView({ server }: { server?: ApiServer }) {
                     <h3 className="text-sm font-semibold text-slate-100">{schedule.name}</h3>
                     <p className="mt-0.5 font-mono text-xs text-slate-400">{schedule.cronMinute} {schedule.cronHour} {schedule.cronDayOfMonth} {schedule.cronMonth} {schedule.cronDayOfWeek}</p>
                     <p className="mt-0.5 text-xs text-slate-500">
-                      {schedule.enabled ? <span className="text-emerald-300">Enabled</span> : "Disabled"}
-                      &nbsp;&middot;&nbsp;{schedule.onlyWhenOnline ? "Online only" : "Any power state"}
-                      &nbsp;&middot;&nbsp;Next: {schedule.nextRunAt ? new Date(schedule.nextRunAt).toLocaleString() : "not scheduled"}
+                      {schedule.enabled ? <span className="ui-status-pill ui-status-pill-success">Enabled</span> : <span className="ui-status-pill ui-status-pill-neutral">Disabled</span>}
+                      <span className="ml-2">&middot; {schedule.onlyWhenOnline ? "Online only" : "Any power state"}</span>
+                      <span className="ml-2">&middot; Next: {schedule.nextRunAt ? new Date(schedule.nextRunAt).toLocaleString() : "not scheduled"}</span>
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-1.5">
-                    <button aria-label={`Edit ${schedule.name}`} className="rounded-lg border border-white/10 p-2 text-slate-400 hover:bg-white/[0.04] hover:text-slate-100 disabled:opacity-40" disabled={!canUpdate} onClick={() => { setEditingSchedule(schedule.id); setEditDraft(scheduleDraft(schedule)); }} type="button"><Pencil size={14} /></button>
-                    <button className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-3 py-2 text-xs font-bold text-slate-300 hover:bg-white/[0.04] disabled:opacity-40" disabled={!canUpdate || runMut.isPending} onClick={() => runMut.mutate(schedule.id)} type="button"><Play size={13} /> Run</button>
-                    <button className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-3 py-2 text-xs font-bold text-slate-300 hover:bg-white/[0.04] disabled:opacity-40" disabled={!canUpdate} onClick={() => { setTaskTarget({ scheduleId: schedule.id }); setTaskInitial({ ...defaultTask, sequence: (schedule.tasks ?? []).length + 1 }); }} type="button"><Plus size={13} /> Task</button>
-                    <button aria-label={`Delete ${schedule.name}`} className="rounded-lg border border-red-500/30 p-2 text-red-300 hover:bg-red-500/10 disabled:opacity-40" disabled={!canDelete || deleteMut.isPending} onClick={() => setDeleteScheduleConfirm(schedule.id)} type="button"><Trash2 size={14} /></button>
+                    <button aria-label={`Edit ${schedule.name}`} className="ui-icon-button" disabled={!canUpdate} onClick={() => { setEditingSchedule(schedule.id); setEditDraft(scheduleDraft(schedule)); }} type="button"><Pencil size={14} /></button>
+                    <button className="ui-button ui-button-secondary" disabled={!canUpdate || runMut.isPending} onClick={() => runMut.mutate(schedule.id)} type="button"><Play size={13} /> Run</button>
+                    <button className="ui-button ui-button-secondary" disabled={!canUpdate} onClick={() => { setTaskTarget({ scheduleId: schedule.id }); setTaskInitial({ ...defaultTask, sequence: (schedule.tasks ?? []).length + 1 }); }} type="button"><Plus size={13} /> Task</button>
+                    <button aria-label={`Delete ${schedule.name}`} className="ui-icon-button ui-button-danger" disabled={!canDelete || deleteMut.isPending} onClick={() => setDeleteScheduleConfirm(schedule.id)} type="button"><Trash2 size={14} /></button>
                   </div>
                 </div>
                 {(schedule.tasks ?? []).length > 0 && (
                   <div className="mt-3 space-y-2">
                     {[...(schedule.tasks ?? [])].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0)).map((task, index, ordered) => (
-                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/[0.04] bg-[#0f141f] p-3" key={task.id}>
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/[0.04] bg-white/[0.02] p-3" key={task.id}>
                         <div className="min-w-0 flex-1">
                           <p className="text-sm font-medium text-slate-100">
-                            <span className="text-slate-500">#{task.sequence}</span> {task.action}
+                            <span className="font-mono text-slate-500">#{task.sequence}</span> {task.action}
                             {task.payload.command ? <span className="text-slate-400">: <span className="font-mono text-xs">{String(task.payload.command)}</span></span> : null}
-                            {task.payload.signal ? <span className="text-slate-400">: {String(task.payload.signal)}</span> : null}
+                            {task.payload.signal ? <span className="text-slate-400">: <span className="font-mono text-xs">{String(task.payload.signal)}</span></span> : null}
                           </p>
-                          <p className="text-xs text-slate-500">Offset {task.timeOffsetSeconds}s &middot; Continue on failure: {task.continueOnFailure ? "yes" : "no"}</p>
+                          <p className="text-xs text-slate-500">Offset <span className="font-mono">{task.timeOffsetSeconds}s</span> &middot; Continue on failure: {task.continueOnFailure ? "yes" : "no"}</p>
                         </div>
                         <div className="flex gap-1.5">
-                          <button aria-label="Move up" className="rounded border border-white/10 p-1.5 text-slate-500 hover:text-slate-100 disabled:opacity-40" disabled={!canUpdate || index === 0 || reorderMut.isPending} onClick={() => reorderMut.mutate({ scheduleId: schedule.id, tasks: ordered, index, direction: -1 })} type="button"><ChevronUp size={13} /></button>
-                          <button aria-label="Move down" className="rounded border border-white/10 p-1.5 text-slate-500 hover:text-slate-100 disabled:opacity-40" disabled={!canUpdate || index === ordered.length - 1 || reorderMut.isPending} onClick={() => reorderMut.mutate({ scheduleId: schedule.id, tasks: ordered, index, direction: 1 })} type="button"><ChevronDown size={13} /></button>
-                          <button aria-label="Edit task" className="rounded border border-white/10 p-1.5 text-slate-500 hover:text-slate-100 disabled:opacity-40" disabled={!canUpdate} onClick={() => { setTaskTarget({ scheduleId: schedule.id, taskId: task.id }); setTaskInitial(taskDraft(task)); }} type="button"><Pencil size={13} /></button>
-                          <button aria-label="Delete task" className="rounded border border-red-500/30 p-1.5 text-red-300 hover:bg-red-500/10 disabled:opacity-40" disabled={!canUpdate || removeTaskMut.isPending} onClick={() => setDeleteTaskConfirm({ scheduleId: schedule.id, taskId: task.id, seq: task.sequence ?? 0 })} type="button"><Trash2 size={13} /></button>
+                          <button aria-label="Move up" className="ui-icon-button" disabled={!canUpdate || index === 0 || reorderMut.isPending} onClick={() => reorderMut.mutate({ scheduleId: schedule.id, tasks: ordered, index, direction: -1 })} type="button"><ChevronUp size={13} /></button>
+                          <button aria-label="Move down" className="ui-icon-button" disabled={!canUpdate || index === ordered.length - 1 || reorderMut.isPending} onClick={() => reorderMut.mutate({ scheduleId: schedule.id, tasks: ordered, index, direction: 1 })} type="button"><ChevronDown size={13} /></button>
+                          <button aria-label="Edit task" className="ui-icon-button" disabled={!canUpdate} onClick={() => { setTaskTarget({ scheduleId: schedule.id, taskId: task.id }); setTaskInitial(taskDraft(task)); }} type="button"><Pencil size={13} /></button>
+                          <button aria-label="Delete task" className="ui-icon-button ui-button-danger" disabled={!canUpdate || removeTaskMut.isPending} onClick={() => setDeleteTaskConfirm({ scheduleId: schedule.id, taskId: task.id, seq: task.sequence ?? 0 })} type="button"><Trash2 size={13} /></button>
                         </div>
                       </div>
                     ))}
@@ -257,26 +258,26 @@ export function SchedulesView({ server }: { server?: ApiServer }) {
     </div>
 
     {deleteScheduleConfirm && (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) setDeleteScheduleConfirm(null); }}>
-        <div className="w-full max-w-md rounded-xl border border-white/[0.06] bg-surface-card p-5 shadow-xl" role="dialog" aria-modal="true">
-          <h3 className="text-base font-semibold text-slate-100">Delete schedule?</h3>
+      <div className="ui-dialog-layer" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget && !deleteMut.isPending) setDeleteScheduleConfirm(null); }}>
+        <div className="ui-dialog" role="dialog" aria-modal="true">
+          <h3 className="text-base font-semibold text-slate-100">Delete schedule <span className="font-mono text-red-300">{deleteScheduleConfirm}</span>?</h3>
           <p className="mt-2 text-sm leading-6 text-slate-400">This action cannot be undone. Tasks in this schedule will stop running.</p>
           <div className="mt-5 flex justify-end gap-2 border-t border-white/[0.06] pt-4">
-            <button className="rounded-lg border border-white/10 px-3 py-2 text-xs font-bold text-slate-300 hover:bg-white/[0.04]" onClick={() => setDeleteScheduleConfirm(null)} type="button">Cancel</button>
-            <button className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-500 disabled:opacity-50" disabled={deleteMut.isPending} onClick={() => deleteMut.mutate(deleteScheduleConfirm)} type="button">{deleteMut.isPending ? "Deleting&hellip;" : "Delete Schedule"}</button>
+            <button className="ui-button ui-button-ghost" disabled={deleteMut.isPending} onClick={() => setDeleteScheduleConfirm(null)} type="button">Cancel</button>
+            <button className="ui-button ui-button-danger" disabled={deleteMut.isPending} onClick={() => deleteMut.mutate(deleteScheduleConfirm)} type="button">{deleteMut.isPending ? "Deleting&hellip;" : "Delete schedule"}</button>
           </div>
         </div>
       </div>
     )}
 
     {deleteTaskConfirm && (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) setDeleteTaskConfirm(null); }}>
-        <div className="w-full max-w-md rounded-xl border border-white/[0.06] bg-surface-card p-5 shadow-xl" role="dialog" aria-modal="true">
-          <h3 className="text-base font-semibold text-slate-100">Delete task #{deleteTaskConfirm.seq}?</h3>
-          <p className="mt-2 text-sm leading-6 text-slate-400">Remove this task from the schedule.</p>
+      <div className="ui-dialog-layer" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget && !removeTaskMut.isPending) setDeleteTaskConfirm(null); }}>
+        <div className="ui-dialog" role="dialog" aria-modal="true">
+          <h3 className="text-base font-semibold text-slate-100">Delete task <span className="font-mono text-red-300">#{deleteTaskConfirm.seq}</span>?</h3>
+          <p className="mt-2 text-sm leading-6 text-slate-400">Remove this task from the schedule. Other tasks are not affected.</p>
           <div className="mt-5 flex justify-end gap-2 border-t border-white/[0.06] pt-4">
-            <button className="rounded-lg border border-white/10 px-3 py-2 text-xs font-bold text-slate-300 hover:bg-white/[0.04]" onClick={() => setDeleteTaskConfirm(null)} type="button">Cancel</button>
-            <button className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-500 disabled:opacity-50" disabled={removeTaskMut.isPending} onClick={() => removeTaskMut.mutate({ scheduleId: deleteTaskConfirm.scheduleId, taskId: deleteTaskConfirm.taskId })} type="button">{removeTaskMut.isPending ? "Deleting&hellip;" : "Delete Task"}</button>
+            <button className="ui-button ui-button-ghost" disabled={removeTaskMut.isPending} onClick={() => setDeleteTaskConfirm(null)} type="button">Cancel</button>
+            <button className="ui-button ui-button-danger" disabled={removeTaskMut.isPending} onClick={() => removeTaskMut.mutate({ scheduleId: deleteTaskConfirm.scheduleId, taskId: deleteTaskConfirm.taskId })} type="button">{removeTaskMut.isPending ? "Deleting&hellip;" : "Delete task"}</button>
           </div>
         </div>
       </div>

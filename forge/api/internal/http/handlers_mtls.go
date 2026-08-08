@@ -21,7 +21,7 @@ func registerMTLSRoutes(protected fiber.Router, cfg Config, certSvc services.MTL
 
 		cert, err := certSvc.GenerateCA(c.Context(), req.Organization, req.CommonName)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(201).JSON(fiber.Map{"data": cert})
 	})
@@ -29,7 +29,7 @@ func registerMTLSRoutes(protected fiber.Router, cfg Config, certSvc services.MTL
 	mtls.Post("/nodes/:id/certificates/generate", mutationLimiter, requireRole("admin"), requireAdminScope("certificates.write"), func(c *fiber.Ctx) error {
 		cert, err := certSvc.GenerateNodeCert(c.Context(), c.Params("id"))
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(201).JSON(fiber.Map{"data": cert})
 	})
@@ -48,14 +48,14 @@ func registerMTLSRoutes(protected fiber.Router, cfg Config, certSvc services.MTL
 
 		certs, err := certSvc.ListCerts(c.Context(), filter)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": certs})
 	})
 
 	mtls.Post("/certificates/:id/revoke", mutationLimiter, requireRole("admin"), requireAdminScope("certificates.write"), func(c *fiber.Ctx) error {
 		if err := certSvc.RevokeCert(c.Context(), c.Params("id")); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"ok": true})
 	})
@@ -71,7 +71,7 @@ func registerMTLSRoutes(protected fiber.Router, cfg Config, certSvc services.MTL
 	mtls.Get("/status", requireRole("admin"), requireAdminScope("certificates.read"), func(c *fiber.Ctx) error {
 		status, err := certSvc.GetStatus(c.Context())
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": status})
 	})
@@ -82,7 +82,7 @@ func registerMTLSRoutes(protected fiber.Router, cfg Config, certSvc services.MTL
 		}
 		status, err := migrator.Status(c.Context())
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": status})
 	})
@@ -92,7 +92,7 @@ func registerMTLSRoutes(protected fiber.Router, cfg Config, certSvc services.MTL
 			return c.Status(400).JSON(fiber.Map{"error": "migration service not available"})
 		}
 		if err := migrator.Run(c.Context()); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"ok": true})
 	})

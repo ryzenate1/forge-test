@@ -4,10 +4,12 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plug, Plus, Trash2, Zap } from "lucide-react";
 import { deleteJSON, fetchJSON, postJSON, type ApiPlugin } from "@/lib/api";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, AdminFormSection } from "./admin-ui";
 
 export function AdminPlugins() {
   const qc = useQueryClient();
+  const [confirm, renderConfirm] = useConfirm();
   const query = useQuery({
     queryKey: ["plugins"],
     queryFn: () => fetchJSON<ApiPlugin[]>("/admin/plugins"),
@@ -79,7 +81,7 @@ export function AdminPlugins() {
                    <Btn size="sm" tone="ghost" onClick={() => lifecycleMut.mutate({ id: plugin.id, enabled: plugin.enabled })}>
                      {plugin.enabled ? "Disable" : "Enable"}
                    </Btn>
-                   <Btn size="sm" tone="danger" onClick={() => { if (confirm(`Delete metadata for ${plugin.name}?`)) deleteMut.mutate(plugin.id); }}>
+                   <Btn size="sm" tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Delete metadata for ${plugin.name}?`, description: "The plugin record will be removed from the panel. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMut.mutate(plugin.id); })(); }}>
                      <Trash2 size={12}/>
                    </Btn>
                  </td>
@@ -107,6 +109,7 @@ export function AdminPlugins() {
         />
       </Modal>
     ) : null}
+    {renderConfirm()}
     
 
   </div>;

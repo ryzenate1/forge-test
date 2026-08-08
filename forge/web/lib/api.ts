@@ -41,6 +41,7 @@ export * from './api/database-services';
 export * from './api/preview-deployments';
 export * from './api/source-deployments';
 export * from './api/domains';
+export * from './api/rateLimits';
 
 import type {
   ApiUser, ApiServer, ApiNode, ApiAllocationNode, ApiAllocation, ApiDatabase, ApiBackup,
@@ -64,7 +65,6 @@ import type {
   CreateMountInput, AssignMountInput, ApiMountAssignmentResponse, RenameFileInput, PatchScheduleTaskInput,
   CreateEggInput, UpdateEggInput, SocialProvider,
   ApiEndpoint, ApiEndpointDiagnostics, ApiEndpointInventorySummary, ApiEndpointHealthRecord, ApiEndpointAccessPolicy, ApiEndpointNodeMember,
-  BackupCreateInput,
 } from './api/types';
 import { API_BASE_URL, getErrorMessage, requestJSON } from './api/http';
 export { API_BASE_URL } from './api/http';
@@ -111,11 +111,6 @@ export function getBeaconAPIURL(): string {
   if (typeof window !== "undefined") return new URL(API_BASE_URL, window.location.origin).toString().replace(/\/$/, "");
   return "";
 }
-
-const API_WS_URL = API_BASE_URL.replace(/^http:/, "ws:").replace(
-  /^https:/,
-  "wss:",
-);
 
 /**
  * Compatibility response shaping for legacy callers. Transport, CSRF, and
@@ -196,10 +191,6 @@ export async function runSetup(
 
 export async function fetchJSON<T>(path: string): Promise<T> {
   return apiFetch<T>(path);
-}
-
-async function getJSON<T>(path: string): Promise<T> {
-  return fetchJSON<T>(path);
 }
 
 export async function postJSON<T>(path: string, body?: unknown): Promise<T> {
@@ -1006,7 +997,7 @@ export async function deleteMyOAuthClient(id: string): Promise<void> {
 }
 
 export async function fetchAdminOAuthClients(userId: string): Promise<ApiOAuthClient[]> {
-  return apiFetch<ApiOAuthClient[]>(`/admin/users/${encodeURIComponent(userId)}/oauth-clients`);
+  return apiFetch<ApiOAuthClient[]>(`/admin/oauth-clients?userId=${encodeURIComponent(userId)}`);
 }
 
 export async function createAdminOAuthClient(input: {
@@ -1038,12 +1029,8 @@ export async function fetchWebhookDeliveries(
   limit = 100,
 ): Promise<ApiWebhookDelivery[]> {
   return apiFetch<ApiWebhookDelivery[]>(
-    `/admin/webhooks/${encodeURIComponent(webhookId)}/deliveries?limit=${limit}`,
+    `/webhooks/${encodeURIComponent(webhookId)}/deliveries?limit=${limit}`,
   );
-}
-
-export async function testWebhook(id: string): Promise<{ ok: boolean }> {
-  return postJSON(`/admin/webhooks/${encodeURIComponent(id)}/test`);
 }
 
 export async function retryWebhookDelivery(
@@ -1051,7 +1038,7 @@ export async function retryWebhookDelivery(
   deliveryId: string,
 ): Promise<{ ok: boolean }> {
   return postJSON(
-    `/admin/webhooks/${encodeURIComponent(webhookId)}/deliveries/${encodeURIComponent(deliveryId)}/retry`,
+    `/webhooks/${encodeURIComponent(webhookId)}/deliveries/${encodeURIComponent(deliveryId)}/retry`,
   );
 }
 
@@ -1398,21 +1385,6 @@ export async function createServerArchive(
   );
 }
 
-export async function extractServerArchive(
-  serverId: string,
-  archive: string,
-  path: string = "/",
-): Promise<{ ok: boolean }> {
-  return apiFetch<{ ok: boolean }>(
-    `/servers/${encodeURIComponent(serverId)}/files/extract`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ archive, path }),
-    },
-  );
-}
-
 export async function getFileDownloadUrl(
   serverId: string,
   path: string,
@@ -1437,7 +1409,7 @@ export async function createTemplate(input: {
 
 export async function runServerSchedule(serverId: string, scheduleId: string): Promise<{ ok: boolean }> {
   return apiFetch<{ ok: boolean }>(
-    `/servers/${encodeURIComponent(serverId)}/schedules/${encodeURIComponent(scheduleId)}/execute`,
+    `/servers/${encodeURIComponent(serverId)}/schedules/${encodeURIComponent(scheduleId)}/run`,
     { method: "POST" },
   );
 }
@@ -1475,8 +1447,7 @@ export async function cancelTransfer(serverId: string): Promise<never> {
 // ---- Infrastructure Endpoints (Portainer-style Environment abstraction) ----
 
 export async function fetchEndpoints(): Promise<ApiEndpoint[]> {
-  const res = await apiFetch<{ data: ApiEndpoint[] }>("/endpoints");
-  return res.data ?? [];
+  return apiFetch<ApiEndpoint[]>("/endpoints");
 }
 
 export async function fetchEndpoint(id: string): Promise<ApiEndpoint> {
@@ -1528,8 +1499,7 @@ export async function deleteEndpoint(id: string): Promise<void> {
 }
 
 export async function fetchEndpointNodes(id: string): Promise<ApiEndpointNodeMember[]> {
-  const res = await apiFetch<{ data: ApiEndpointNodeMember[] }>(`/endpoints/${encodeURIComponent(id)}/nodes`);
-  return res.data ?? [];
+  return apiFetch<ApiEndpointNodeMember[]>(`/endpoints/${encodeURIComponent(id)}/nodes`);
 }
 
 export async function addEndpointNode(endpointId: string, nodeId: string): Promise<void> {
@@ -1555,15 +1525,13 @@ export async function fetchEndpointInventory(id: string): Promise<ApiEndpointInv
 }
 
 export async function fetchEndpointHealthHistory(id: string, limit = 50): Promise<ApiEndpointHealthRecord[]> {
-  const res = await apiFetch<{ data: ApiEndpointHealthRecord[] }>(
+  return apiFetch<ApiEndpointHealthRecord[]>(
     `/endpoints/${encodeURIComponent(id)}/health?limit=${limit}`,
   );
-  return res.data ?? [];
 }
 
 export async function fetchEndpointAccessPolicies(id: string): Promise<ApiEndpointAccessPolicy[]> {
-  const res = await apiFetch<{ data: ApiEndpointAccessPolicy[] }>(`/endpoints/${encodeURIComponent(id)}/policies`);
-  return res.data ?? [];
+  return apiFetch<ApiEndpointAccessPolicy[]>(`/endpoints/${encodeURIComponent(id)}/policies`);
 }
 
 export async function setEndpointAccessPolicy(

@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { type ApiEgg, fetchNest, fetchEggs, createEgg, updateEgg, deleteEgg } from "@/lib/api";
 import { AdminPageLayout, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, SectionHeader, Textarea } from "@/components/admin/admin-ui";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -82,6 +83,7 @@ function EggCard({
 }
 
 export default function NestEggsPage() {
+  const [confirm, renderConfirm] = useConfirm();
   const params = useParams();
   const router = useRouter();
   const nestId = params.nestId as string;
@@ -249,7 +251,7 @@ export default function NestEggsPage() {
                 onEdit={() => openEggEdit(egg)}
                 onClone={() => cloneEggMut.mutate(egg)}
                 onExport={() => exportEgg(egg)}
-                onDelete={() => { if (confirm(`Delete egg "${egg.name}"?`)) deleteEggMut.mutate(egg.id); }}
+                onDelete={() => { void (async () => { if (await confirm({ title: `Delete egg "${egg.name}"?`, description: "Servers using this egg will keep running, but new servers cannot use it. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteEggMut.mutate(egg.id); })(); }}
                 onVariables={() => router.push(`/admin/nests/${nestId}/eggs/${egg.id}/variables`)}
               />
             ))}
@@ -291,7 +293,7 @@ export default function NestEggsPage() {
           />
         </Modal>
       ) : null}
-
+      {renderConfirm()}
     </AdminPageLayout>
   );
 }

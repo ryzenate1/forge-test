@@ -1,21 +1,30 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Check, Copy, TriangleAlert } from "lucide-react";
-import { useState } from "react";
+import { Check, Copy, Eye, EyeOff, TriangleAlert } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Modal } from "@/components/admin/admin-ui";
 import { getDBContainerCredentials } from "@/lib/api/database-containers";
+import { copySecret } from "@/lib/clipboard";
 
 function CopyField({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState(false);
+  const [revealed, setRevealed] = useState(false);
+
+  useEffect(() => {
+    const hide = () => setRevealed(false);
+    window.addEventListener("blur", hide);
+    document.addEventListener("visibilitychange", hide);
+    return () => {
+      window.removeEventListener("blur", hide);
+      document.removeEventListener("visibilitychange", hide);
+    };
+  }, []);
 
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(value);
+    if (await copySecret(value)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // silently fail
     }
   };
 
@@ -24,11 +33,19 @@ function CopyField({ label, value }: { label: string; value: string }) {
       <label className="mb-1 block text-xs font-medium text-slate-400 uppercase tracking-wider">{label}</label>
       <div className="flex items-center gap-2">
         <code className="flex-1 rounded-lg bg-[#0f141f] px-3 py-2 text-sm text-emerald-300 break-all font-mono">
-          {value}
+          {revealed ? value : "••••••••••••••••••••••"}
         </code>
         <button
           className="grid h-8 w-8 shrink-0 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"
-          onClick={copy}
+          onClick={() => setRevealed((visible) => !visible)}
+          title={revealed ? `Hide ${label}` : `Reveal ${label}`}
+          type="button"
+        >
+          {revealed ? <EyeOff size={14} /> : <Eye size={14} />}
+        </button>
+        <button
+          className="grid h-8 w-8 shrink-0 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"
+          onClick={() => void copy()}
           title={`Copy ${label}`}
           type="button"
         >
@@ -68,7 +85,7 @@ export function DBContainerCredentialsModal({
             <TriangleAlert size={14} className="mt-0.5 shrink-0" />
             <span>
               These credentials are shown once. Store them securely. If you lose them, you may need to reset the
-              container credentials.
+              container credentials. Revealed values are hidden automatically when this window loses focus.
             </span>
           </div>
 

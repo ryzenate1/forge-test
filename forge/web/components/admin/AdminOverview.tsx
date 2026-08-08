@@ -8,7 +8,6 @@ import { Card, CardHeader, EmptyState, SectionHeader, StatsRow, Pill } from "./a
 
 function StatusBreakdown({ data, total }: { data: { label: string; value: number; color: string }[]; total: number }) {
   const safeTotal = total > 0 ? total : 1;
-  const maxValue = Math.max(...data.map((d) => d.value), 1);
   return (
     <div className="space-y-2">
       <div className="flex h-3 w-full overflow-hidden rounded-full bg-white/[0.05]">
@@ -85,14 +84,14 @@ function hasHealthyPersistedHeartbeat(node: ApiNode) {
 }
 
 export function AdminOverview() {
-  const nodesQuery = useQuery({ queryKey: ["nodes", "all"], queryFn: fetchAllNodes, refetchInterval: 30_000, retry: 3 });
-  const serversQuery = useQuery({ queryKey: ["servers", "all"], queryFn: fetchAllServers, refetchInterval: 30_000, retry: 3 });
-  const usersQuery = useQuery({ queryKey: ["users"], queryFn: fetchUsers, refetchInterval: 60_000, retry: 2 });
-  const healthQuery = useQuery<{ checks?: ApiHealthCheck[] }>({ queryKey: ["health"], queryFn: fetchHealthStatus, retry: 2, refetchInterval: 30_000 });
-  const activityQuery = useQuery<ApiAdminAuditEvent[]>({ queryKey: ["admin-audit"], queryFn: fetchAdminAudit, retry: 2, refetchInterval: 15_000 });
+  const nodesQuery = useQuery({ queryKey: ["nodes", "all"], queryFn: fetchAllNodes, refetchInterval: 60_000, refetchIntervalInBackground: false, retry: 3 });
+  const serversQuery = useQuery({ queryKey: ["servers", "all"], queryFn: fetchAllServers, refetchInterval: 60_000, refetchIntervalInBackground: false, retry: 3 });
+  const usersQuery = useQuery({ queryKey: ["users"], queryFn: fetchUsers, refetchInterval: 60_000, refetchIntervalInBackground: false, retry: 2 });
+  const healthQuery = useQuery<{ checks?: ApiHealthCheck[] }>({ queryKey: ["health"], queryFn: fetchHealthStatus, retry: 2, refetchInterval: 30_000, refetchIntervalInBackground: false });
+  const activityQuery = useQuery<ApiAdminAuditEvent[]>({ queryKey: ["admin-audit"], queryFn: fetchAdminAudit, retry: 2, refetchInterval: 15_000, refetchIntervalInBackground: false });
 
-  const nodes = nodesQuery.data ?? [];
-  const servers = serversQuery.data ?? [];
+  const nodes = useMemo(() => nodesQuery.data ?? [], [nodesQuery.data]);
+  const servers = useMemo(() => serversQuery.data ?? [], [serversQuery.data]);
   const users = usersQuery.data ?? [];
 
   const onlineNodes = useMemo(() => Array.isArray(nodes) ? nodes.filter(hasHealthyPersistedHeartbeat).length : 0, [nodes]);
@@ -100,7 +99,7 @@ export function AdminOverview() {
   const runningServers = useMemo(() => Array.isArray(servers) ? servers.filter((server) => server.status === "running").length : 0, [servers]);
   const failures = useMemo(() => [
     ...(nodesQuery.isError ? [] : Array.isArray(nodes) ? nodes.filter((node) => !hasHealthyPersistedHeartbeat(node) || node.heartbeatError).map((node) => ({ id: `node-${node.id}`, label: node.name, detail: node.heartbeatError ?? `Persisted heartbeat is ${node.heartbeatState ?? "unreported"}` })) : []),
-    ...(serversQuery.isError ? [] : Array.isArray(servers) ? servers.filter((server) => server.status === "failed" || server.status === "install_failed" || server.transferError).map((server) => ({ id: `server-${server.id}`, label: server.name, detail: server.transferError ?? `Server is ${server.status}` })) : []),
+    ...(serversQuery.isError ? [] : Array.isArray(servers) ? servers.filter((server) => server.status === "crashed" || server.transferError).map((server) => ({ id: `server-${server.id}`, label: server.name, detail: server.transferError ?? `Server is ${server.status}` })) : []),
     ...(healthQuery.isError ? [] : (Array.isArray(healthQuery.data?.checks) ? healthQuery.data.checks.filter((check) => check.status !== "ok").map((check) => ({ id: `health-${check.name}`, label: check.label ?? check.name, detail: check.notificationMessage })) : [])),
   ], [nodes, servers, nodesQuery.isError, serversQuery.isError, healthQuery.isError, healthQuery.data?.checks]);
   const nodeMemoryCapacity = useMemo(() => reportedTotal(nodes, "memoryMb"), [nodes]);
@@ -112,7 +111,7 @@ export function AdminOverview() {
     const srv = Array.isArray(servers) ? servers : [];
     const running = srv.filter((s) => s.status === "running").length;
     const stopped = srv.filter((s) => s.status === "stopped" && !s.suspended).length;
-    const failed = srv.filter((s) => s.status === "failed" || s.status === "install_failed").length;
+    const failed = srv.filter((s) => s.status === "crashed").length;
     const suspended = srv.filter((s) => s.suspended).length;
     const installing = srv.filter((s) => s.status === "installing").length;
     const other = srv.length - running - stopped - failed - suspended - installing;

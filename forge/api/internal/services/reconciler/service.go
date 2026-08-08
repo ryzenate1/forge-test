@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"runtime"
@@ -20,6 +21,20 @@ import (
 )
 
 const DefaultInterval = 30 * time.Second
+
+const (
+	// MaxRestartAttempts caps consecutive automatic restarts of an unhealthy
+	// server before the reconciler stops and raises an alert.
+	MaxRestartAttempts = 3
+	// RestartCooldown is the minimum time between restart attempts for the
+	// same server.
+	RestartCooldown = 15 * time.Minute
+	// PlanDedupeWindow suppresses duplicate reconcile plans for the same
+	// resource/config hash within this window.
+	PlanDedupeWindow = 30 * time.Minute
+	// PlanTTL expires reconcile plans stuck in a pending state after this age.
+	PlanTTL = time.Hour
+)
 
 type HealthChecker interface {
 	ListUnhealthyTargets(ctx context.Context) []HealthCheckTarget
@@ -60,6 +75,7 @@ type reconcilerStore interface {
 	ListReconcilePlans(ctx context.Context, offset, limit int) ([]store.ReconcilePlanRow, int, error)
 	UpdateReconcilePlanState(ctx context.Context, id, state, execError string) error
 	ConfirmReconcilePlan(ctx context.Context, id string) error
+	ExpireStaleReconcilePlans(ctx context.Context, olderThan time.Duration) (int64, error)
 	RecordReconcileEvent(ctx context.Context, event *store.ReconcileEventRow) error
 	ListReconcileEvents(ctx context.Context, resourceID string, limit int) ([]store.ReconcileEventRow, error)
 	ReconcileSummary(ctx context.Context) (*store.ReconcileSummary, error)
@@ -93,6 +109,10 @@ type Service struct {
 	gitOpsService  GitOpsService
 	autoReconcile  bool
 	cancel         context.CancelFunc
+
+	restartAttempts  map[string]int
+	restartCooldowns map[string]time.Time
+	recoveryMu       sync.Mutex
 }
 
 func New(store *store.Store, clusterManager *clustermanager.Service, interval time.Duration, publishers ...events.Publisher) *Service {
@@ -103,7 +123,15 @@ func New(store *store.Store, clusterManager *clustermanager.Service, interval ti
 	if len(publishers) > 0 {
 		publisher = publishers[0]
 	}
-	return &Service{store: store, clusterManager: clusterManager, publisher: publisher, interval: interval, autoReconcile: true}
+	return &Service{
+		store:            store,
+		clusterManager:   clusterManager,
+		publisher:        publisher,
+		interval:         interval,
+		autoReconcile:    true,
+		restartAttempts:  make(map[string]int),
+		restartCooldowns: make(map[string]time.Time),
+	}
 }
 
 func (s *Service) SetHealthChecker(hc HealthChecker) {
@@ -163,6 +191,14 @@ func (s *Service) RunOnce(ctx context.Context) error {
 	s.increment(func(metrics *MetricsSnapshot) {
 		metrics.ReconciliationCount++
 	})
+
+	// Expire reconcile plans stuck in a pending state past their TTL so a
+	// dead plan cannot block the generation of fresh plans forever.
+	if expired, err := s.store.ExpireStaleReconcilePlans(ctx, PlanTTL); err != nil {
+		slog.Warn("reconciler: expire stale reconcile plans", "error", err)
+	} else if expired > 0 {
+		slog.Info("reconciler: expired stale reconcile plans", "count", expired)
+	}
 
 	slog.Debug("reconciler run started", "correlationId", correlationID)
 
@@ -242,6 +278,10 @@ func (s *Service) autoReconcileDrifts(ctx context.Context, correlationID string)
 		plan.ID = uuid.NewString()
 		plan.CreatedAt = time.Now().UTC()
 
+		if s.hasPendingDuplicatePlan(ctx, plan) {
+			continue
+		}
+
 		row := s.planToRow(plan)
 		if err := s.store.CreateReconcilePlan(ctx, row); err != nil {
 			slog.Warn("auto-reconcile: persist plan", "serverId", server.ID, "error", err)
@@ -311,6 +351,10 @@ func (s *Service) autoReconcileComposeStacks(ctx context.Context, correlationID 
 		sortDiffsByType(plan.Diffs)
 		plan.ID = uuid.NewString()
 		plan.CreatedAt = time.Now().UTC()
+
+		if s.hasPendingDuplicatePlan(ctx, plan) {
+			continue
+		}
 
 		row := s.planToRow(plan)
 		if err := s.store.CreateReconcilePlan(ctx, row); err != nil {
@@ -505,6 +549,7 @@ func (s *Service) recoverUnhealthyTargets(ctx context.Context, correlationID str
 	if len(unhealthy) == 0 {
 		return
 	}
+	now := time.Now().UTC()
 	seenServers := make(map[string]bool)
 	for _, target := range unhealthy {
 		if seenServers[target.ServerID] {
@@ -534,6 +579,30 @@ func (s *Service) recoverUnhealthyTargets(ctx context.Context, correlationID str
 			continue
 		}
 
+		// Gate restarts on a failure-count threshold and a per-server
+		// cooldown; stop entirely after MaxRestartAttempts and raise an alert
+		// so operators are notified instead of the restart loop churning.
+		s.recoveryMu.Lock()
+		cooldownUntil := s.restartCooldowns[server.ID]
+		attempts := s.restartAttempts[server.ID]
+		s.recoveryMu.Unlock()
+		if !cooldownUntil.IsZero() && now.Before(cooldownUntil) {
+			continue
+		}
+		if attempts >= MaxRestartAttempts {
+			s.publish(ctx, events.EventTargetHealthChanged, "server", server.ID, map[string]any{
+				"status":       "unhealthy",
+				"reason":       "restart loop stopped after max attempts",
+				"targetId":     target.TargetID,
+				"failureCount": target.FailureCount,
+				"attempts":     attempts,
+				"alert":        true,
+				"message":      "server restart loop halted after max attempts; manual intervention required",
+				"correlationId": correlationID,
+			})
+			continue
+		}
+
 		s.increment(func(metrics *MetricsSnapshot) {
 			metrics.HealthRecoveryAttempts++
 		})
@@ -546,12 +615,45 @@ func (s *Service) recoverUnhealthyTargets(ctx context.Context, correlationID str
 			"correlationId": correlationID,
 		})
 
-		if _, err := s.clusterManager.RestartServer(ctx, server.ID); err != nil {
+		_, err = s.clusterManager.RestartServer(ctx, server.ID)
+		s.recoveryMu.Lock()
+		if err != nil {
+			s.restartAttempts[server.ID] = attempts + 1
 			s.increment(func(metrics *MetricsSnapshot) {
 				metrics.HealthRecoveryFailures++
 			})
+		} else {
+			s.restartAttempts[server.ID] = attempts + 1
+		}
+		s.restartCooldowns[server.ID] = now.Add(RestartCooldown)
+		s.recoveryMu.Unlock()
+	}
+}
+
+// hasPendingDuplicatePlan reports whether a pending reconcile plan with the
+// same config hash already exists for the resource within the dedupe window.
+func (s *Service) hasPendingDuplicatePlan(ctx context.Context, plan *ReconcilePlan) bool {
+	existing, err := s.store.ListReconcilePlansByResource(ctx, plan.ResourceID, string(plan.ResourceKind))
+	if err != nil {
+		return false
+	}
+	wantHash := snapshotHash(plan.Diffs)
+	cutoff := time.Now().UTC().Add(-PlanDedupeWindow)
+	for _, row := range existing {
+		if row.State != "pending" && row.State != "confirmed" && row.State != "queued" {
+			continue
+		}
+		if row.CreatedAt.Before(cutoff) {
+			continue
+		}
+		var rowDiffs []ReconcileDiff
+		if len(row.DiffData) > 0 && json.Unmarshal(row.DiffData, &rowDiffs) == nil {
+			if snapshotHash(rowDiffs) == wantHash {
+				return true
+			}
 		}
 	}
+	return false
 }
 
 type Node = store.Node

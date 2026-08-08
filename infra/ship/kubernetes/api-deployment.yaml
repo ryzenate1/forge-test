@@ -46,6 +46,13 @@ spec:
                 echo "Waiting for postgres..."
                 sleep 2
               done
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
           env:
             - name: PGPASSWORD
               valueFrom:
@@ -62,6 +69,13 @@ spec:
                 echo "Waiting for redis..."
                 sleep 2
               done
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
       containers:
         - name: api
           image: ghcr.io/anomalyco/gamepanel/forge-api:latest
@@ -69,6 +83,13 @@ spec:
           ports:
             - containerPort: 8080
               name: api
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
           env:
             - name: API_ADDR
               valueFrom:

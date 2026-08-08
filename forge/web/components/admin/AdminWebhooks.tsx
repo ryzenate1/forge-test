@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Globe, Plus, RefreshCw, Send, Trash2 } from "lucide-react";
-import { fetchJSON, postJSON, patchJSON, deleteJSON, fetchWebhookDeliveries, testWebhook, retryWebhookDelivery, type ApiWebhook, type ApiWebhookDelivery } from "@/lib/api";
+import { Globe, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { fetchJSON, postJSON, patchJSON, deleteJSON, fetchWebhookDeliveries, retryWebhookDelivery, type ApiWebhook, type ApiWebhookDelivery } from "@/lib/api";
+import { Input as SharedInput } from "@/components/ui/primitives";
 import { AdminFormSection, AdminSelect, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "./admin-ui";
 import { TableSkeleton } from "@/components/ui/loading-skeleton";
 
@@ -33,8 +34,6 @@ function webhookEvents(events: unknown): string[] {
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim() ? error.message : fallback;
 }
-
-const PAGE_SIZE = 10;
 
 function isValidUrl(str: string): boolean {
   try {
@@ -107,9 +106,8 @@ export function AdminWebhooks() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["webhooks"] }); setDeleteConfirmId(null); },
   });
 
-  const testMut = useMutation({
-    mutationFn: (id: string) => testWebhook(id),
-  });
+  // No "test" endpoint exists in the API (only CRUD + deliveries + retry), so
+  // the Test button was removed; use the Deliveries view to verify delivery.
 
   const openEdit = (wh: Webhook) => {
     setEditId(wh.id);
@@ -184,7 +182,7 @@ export function AdminWebhooks() {
                     <div className="flex items-center gap-1.5">
                       <Btn size="sm" tone="ghost" onClick={() => setHistoryId(wh.id)}>Deliveries</Btn>
                       <Btn size="sm" tone="ghost" onClick={() => openEdit(wh)}>Edit</Btn>
-                      <Btn size="sm" tone="ghost" onClick={() => testMut.mutate(wh.id)} disabled={testMut.isPending}><Send size={12} /></Btn>
+                      {/* No backend test endpoint exists; deliveries verify connectivity. */}
                       <Btn size="sm" tone="danger" onClick={() => setDeleteConfirmId(wh.id)} disabled={deleteMut.isPending}><Trash2 size={12} /></Btn>
                     </div>
                     </td>
@@ -217,12 +215,25 @@ export function AdminWebhooks() {
             <AdminFormSection title="Webhook Details">
               <Input label="Name" value={name} onChange={setName} placeholder="My Webhook" />
               <Input label="Description" value={description} onChange={setDescription} placeholder="Optional description" />
-              <Input label="Payload URL" value={url} onChange={setUrl} placeholder="https://discord.com/api/webhooks/..." />
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-slate-300">Payload URL</label>
+                <SharedInput
+                  className="min-h-9 w-full bg-surface-card-header"
+                  placeholder="https://discord.com/api/webhooks/..."
+                  value={url}
+                  onChange={(event) => setUrl(event.target.value)}
+                  aria-invalid={urlError ? true : undefined}
+                  aria-describedby={urlError ? "webhook-url-error" : undefined}
+                />
+                {urlError ? (
+                  <p id="webhook-url-error" className="ui-field-error mt-1" role="alert">{urlError}</p>
+                ) : null}
+              </div>
               <AdminSelect label="Type" value={webhookType} onChange={(v) => setWebhookType(v as "regular" | "discord")} options={[
                 { value: "regular", label: "Regular" },
                 { value: "discord", label: "Discord Embed" },
               ]} />
-              <Input label="Signing Secret" value={secret} onChange={setSecret} type="password" placeholder={editId ? "Masked; replace to rotate" : "Optional secret"} />
+              <Input label="Signing Secret" value={secret} onChange={setSecret} type="password" placeholder={editId ? "Masked; replace to rotate" : "Optional secret"} autoComplete="off" />
               <p className="-mt-2 text-xs text-slate-500">Secrets are masked after creation. Enter a new value to replace the current secret.</p>
               <label className="flex items-center gap-3 text-sm text-slate-300 cursor-pointer">
                 <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="accent-[#dc2626]" />
@@ -265,8 +276,8 @@ export function AdminWebhooks() {
           {(editId ? updateMut.isError : createMut.isError) ? <p className="mt-4 text-sm text-red-300">{errorMessage(editId ? updateMut.error : createMut.error, `Webhook could not be ${editId ? "updated" : "created"}.`)}</p> : null}
           <ModalFooter
             onCancel={() => { setShowCreate(false); setEditId(null); resetForm(); }}
-            onConfirm={() => editId ? updateMut.mutate() : createMut.mutate()}
-            disabled={name.trim() === "" || url.trim() === "" || (editId ? updateMut.isPending : createMut.isPending)}
+            onConfirm={() => { if (urlError) return; if (editId) updateMut.mutate(); else createMut.mutate(); }}
+            disabled={name.trim() === "" || url.trim() === "" || Boolean(urlError) || (editId ? updateMut.isPending : createMut.isPending)}
             confirmLabel={editId ? "Save" : "Create"}
           />
         </Modal>
@@ -276,17 +287,23 @@ export function AdminWebhooks() {
 }
 
 function WebhookDeliveryModal({ webhookId, onClose }: { webhookId: string; onClose: () => void }) {
+  const qc = useQueryClient();
   const query = useQuery({
     queryKey: ["webhook-deliveries", webhookId],
     queryFn: async () => responseList(await fetchWebhookDeliveries(webhookId) as DeliveryResponse, "webhook deliveries"),
   });
+  const retryMut = useMutation({
+    mutationFn: (deliveryId: string) => retryWebhookDelivery(webhookId, deliveryId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["webhook-deliveries", webhookId] }),
+  });
   const deliveries = query.data ?? [];
 
   return <Modal title="Webhook Delivery History" onClose={onClose} wide>
-    <p className="mb-3 text-xs text-slate-400">Delivery retry is not exposed because no retry API exists. Pending deliveries are retried by the backend dispatcher.</p>
+    <p className="mb-3 text-xs text-slate-400">Failed deliveries can be retried manually. Pending deliveries are also retried by the backend dispatcher.</p>
     {query.isLoading ? <p className="text-sm text-slate-500">Loading delivery history...</p> : null}
     {query.isError ? <p className="text-sm text-red-300">{errorMessage(query.error, "Delivery history could not be loaded.")}</p> : null}
     {!query.isLoading && !query.isError && deliveries.length === 0 ? <EmptyState icon={Globe} message="No deliveries recorded."/> : null}
-    {!query.isLoading && !query.isError && Array.isArray(deliveries) && deliveries.length > 0 ? <div className="max-h-[60vh] overflow-auto"><div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500"><th className="px-3 py-2.5">Created</th><th className="px-3 py-2.5">Event</th><th className="px-3 py-2.5">State</th><th className="hidden sm:table-cell px-3 py-2.5">HTTP</th><th className="px-3 py-2.5">Attempts</th><th className="hidden md:table-cell px-3 py-2.5">Failure</th></tr></thead><tbody>{Array.isArray(deliveries) && deliveries.map((delivery) => <tr className="border-b border-white/[0.04]" key={delivery.id}><td className="px-3 py-2.5 whitespace-nowrap">{new Date(delivery.createdAt).toLocaleString()}</td><td className="px-3 py-2.5 font-mono max-w-[120px] truncate">{delivery.eventName}</td><td className="px-3 py-2.5"><Pill tone={delivery.state === "delivered" ? "green" : delivery.state === "failed" ? "red" : "yellow"}>{delivery.state}</Pill></td><td className="hidden sm:table-cell px-3 py-2.5">{delivery.responseStatus ?? "—"}</td><td className="px-3 py-2.5">{delivery.attempt}</td><td className="hidden md:table-cell px-3 py-2.5 text-red-300 max-w-[160px] truncate">{delivery.lastError ?? delivery.responseBodyExcerpt ?? "—"}</td></tr>)}</tbody></table></div></div> : null}
+    {!query.isLoading && !query.isError && Array.isArray(deliveries) && deliveries.length > 0 ? <div className="max-h-[60vh] overflow-auto"><div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500"><th className="px-3 py-2.5">Created</th><th className="px-3 py-2.5">Event</th><th className="px-3 py-2.5">State</th><th className="hidden sm:table-cell px-3 py-2.5">HTTP</th><th className="px-3 py-2.5">Attempts</th><th className="hidden md:table-cell px-3 py-2.5">Failure</th><th className="px-3 py-2.5" /></tr></thead><tbody>{Array.isArray(deliveries) && deliveries.map((delivery) => <tr className="border-b border-white/[0.04]" key={delivery.id}><td className="px-3 py-2.5 whitespace-nowrap">{new Date(delivery.createdAt).toLocaleString()}</td><td className="px-3 py-2.5 font-mono max-w-[120px] truncate">{delivery.eventName}</td><td className="px-3 py-2.5"><Pill tone={delivery.state === "delivered" ? "green" : delivery.state === "failed" ? "red" : "yellow"}>{delivery.state}</Pill></td><td className="hidden sm:table-cell px-3 py-2.5">{delivery.responseStatus ?? "—"}</td><td className="px-3 py-2.5">{delivery.attempt}</td><td className="hidden md:table-cell px-3 py-2.5 text-red-300 max-w-[160px] truncate">{delivery.lastError ?? delivery.responseBodyExcerpt ?? "—"}</td><td className="px-3 py-2.5">{delivery.state === "failed" ? <Btn size="sm" tone="ghost" disabled={retryMut.isPending} onClick={() => retryMut.mutate(delivery.id)}><RotateCcw size={12} /> Retry</Btn> : null}</td></tr>)}</tbody></table></div></div> : null}
+    {retryMut.isError ? <p className="mt-3 text-sm text-red-300">{errorMessage(retryMut.error, "Delivery could not be retried.")}</p> : null}
   </Modal>;
 }

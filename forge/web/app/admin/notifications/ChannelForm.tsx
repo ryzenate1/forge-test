@@ -242,6 +242,7 @@ export function ChannelForm({ channel, onClose, onSuccess }: ChannelFormProps) {
                     value={value}
                     onChange={setter}
                     placeholder={getPlaceholder(field)}
+                    autoComplete={field === "botToken" ? "off" : undefined}
                   />
                 );
               }

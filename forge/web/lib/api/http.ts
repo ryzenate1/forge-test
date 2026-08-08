@@ -1,7 +1,27 @@
 // HTTP helper functions for API calls
-export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ??
-  '/api/v1';
+
+// Resolution order (all client side, so NEXT_PUBLIC_* are inlined at build time):
+//   1. runtime override injected without a rebuild, e.g. an inline <script>
+//      `window.__FORGE_CONFIG__ = { apiBaseUrl: "https://api.example.com/api/v1" }`
+//      placed before the app bundle by the reverse proxy / deployment layer;
+//   2. NEXT_PUBLIC_API_URL  (existing convention, see .env.example);
+//   3. NEXT_PUBLIC_API_BASE_URL (alias kept for parity with the audit naming);
+//   4. same-origin default "/api/v1" so unconfigured deployments still work.
+// Trailing slashes are stripped so URL joins never produce "//".
+function resolveApiBaseUrl(): string {
+  if (typeof window !== "undefined") {
+    const runtime = (window as unknown as { __FORGE_CONFIG__?: { apiBaseUrl?: string } }).__FORGE_CONFIG__?.apiBaseUrl;
+    if (runtime) {
+      const normalizedRuntime = runtime.replace(/\/+$/, "");
+      if (normalizedRuntime) return normalizedRuntime;
+    }
+  }
+  const envValue = process.env.NEXT_PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api/v1";
+  const normalized = envValue.replace(/\/+$/, "");
+  return normalized || "/api/v1";
+}
+
+export const API_BASE_URL = resolveApiBaseUrl();
 
 export class ApiError extends Error {
   constructor(
@@ -14,6 +34,10 @@ export class ApiError extends Error {
 }
 
 export function getAuthHeaders(): Record<string, string> {
+  // No-op by design: authentication is session-cookie based (HttpOnly cookie),
+  // so there is no client-side token to attach. Cross-origin requests rely on
+  // SameSite=None cookies and CORS credentials; WS streams use short-lived
+  // tickets issued by the API instead of headers.
   return {};
 }
 
@@ -31,6 +55,25 @@ function addCSRFToHeaders(headers: Record<string, string>, method: string): void
   }
 }
 
+let sessionExpiredNotified = false;
+
+/**
+ * Signals a 401 to the session layer (components/providers.tsx), which clears
+ * the react-query cache and redirects to login. Fires at most once per page
+ * load to avoid redirect loops when parallel requests all hit 401.
+ */
+export function notifySessionExpired(): void {
+  if (typeof window === 'undefined' || sessionExpiredNotified) return;
+  const onLoginPage = /^\/$/.test(window.location.pathname) && window.location.search.includes('reason=session-expired');
+  if (onLoginPage) return;
+  sessionExpiredNotified = true;
+  window.dispatchEvent(
+    new CustomEvent('forge:session-expired', {
+      detail: { next: window.location.pathname + window.location.search },
+    }),
+  );
+}
+
 /** Canonical request primitive for every web API client. */
 export async function requestJSON<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = init.method ?? 'GET';
@@ -46,6 +89,7 @@ export async function requestJSON<T>(path: string, init: RequestInit = {}): Prom
       credentials: init.credentials ?? 'include',
     });
     if (!response.ok) {
+      if (response.status === 401) notifySessionExpired();
       const errorMessage = await getErrorMessage(response, `API ${method} ${path} failed with`);
       throw new ApiError(errorMessage, response.status);
     }
@@ -149,6 +193,7 @@ function statusHint(status: number): string {
 }
 
 export async function getErrorMessage(response: Response, prefix: string): Promise<string> {
+  const cloned = response.clone();
   try {
     const error = await response.json();
     const msg = error.message || error.error || "";
@@ -157,7 +202,7 @@ export async function getErrorMessage(response: Response, prefix: string): Promi
   } catch {
     const hint = statusHint(response.status);
     try {
-      const text = await response.clone().text();
+      const text = await cloned.text();
       if (text) return `${prefix} ${response.status}: ${text.slice(0, 300)}${hint ? " — " + hint : ""}`;
     } catch {}
     return `${prefix} ${response.status}${hint ? " — " + hint : ""}`;

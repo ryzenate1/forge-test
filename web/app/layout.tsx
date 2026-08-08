@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Manrope, DM_Mono, Newsreader } from "next/font/google";
+import { Manrope, JetBrains_Mono, Newsreader } from "next/font/google";
 import "./globals.css";
 import "./extra.css";
 
@@ -10,11 +10,11 @@ const manrope = Manrope({
   weight: ["400", "500", "600", "700", "800"]
 });
 
-const dmMono = DM_Mono({
+const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
   display: "swap",
   variable: "--font-dm-mono",
-  weight: ["400", "500"]
+  weight: ["400", "500", "600"]
 });
 
 const newsreader = Newsreader({
@@ -47,7 +47,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${manrope.variable} ${dmMono.variable} ${newsreader.variable}`}>
+    <html lang="en" className={`dark ${manrope.variable} ${jetbrainsMono.variable} ${newsreader.variable}`}>
       <body>
         <a
           href="#main-content"

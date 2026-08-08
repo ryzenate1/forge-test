@@ -181,8 +181,18 @@ export type AppCertificate = {
   autoRenew: boolean;
 };
 
-export function fetchAppCertificates(appId: string): Promise<AppCertificate[]> {
-  return fetchJSON<AppCertificate[]>(`/apps/${encodeURIComponent(appId)}/certificates`);
+export async function fetchAppCertificates(appId: string): Promise<AppCertificate[]> {
+  const domains = await fetchJSON<AppDomain[]>(`/apps/${encodeURIComponent(appId)}/domains`);
+  return domains
+    .filter((domain) => domain.ssl || domain.sslStatus)
+    .map((domain) => ({
+      id: domain.id,
+      domain: domain.domain,
+      status: domain.sslStatus ?? (domain.ssl ? "active" : "none"),
+      issuer: "",
+      autoRenew: false,
+      issuedAt: domain.createdAt,
+    }));
 }
 
 export type GitSource = {
@@ -260,8 +270,15 @@ export function fetchAppLogs(appId: string): Promise<AppLogEntry[]> {
   return fetchJSON<AppLogEntry[]>(`/apps/${encodeURIComponent(appId)}/logs`);
 }
 
-export function fetchAppServiceLogs(appId: string, service: string): Promise<AppLogEntry[]> {
-  return fetchJSON<AppLogEntry[]>(`/apps/${encodeURIComponent(appId)}/compose/services/${encodeURIComponent(service)}/logs`);
+export async function fetchAppServiceLogs(appId: string, service: string): Promise<AppLogEntry[]> {
+  const logs = await fetchJSON<Array<{ stage: string; message: string; createdAt: string }>>(
+    `/apps/${encodeURIComponent(appId)}/logs?service=${encodeURIComponent(service)}`,
+  );
+  return logs.map((entry) => ({
+    timestamp: entry.createdAt,
+    line: `[${entry.stage}] ${entry.message}`,
+    stream: "stdout",
+  }));
 }
 
 export function fetchAppDomains(appId: string): Promise<AppDomain[]> {
@@ -322,11 +339,29 @@ export function fetchAppConsoleWSURL(serverId: string): string {
   return `${wsBase}/servers/${encodeURIComponent(serverId)}/ws/console`;
 }
 
+/**
+ * Opens the app console WebSocket through the short-lived ticket flow so the
+ * connection works across origins (the ticket replaces the session cookie,
+ * which browsers will not attach to cross-origin WebSockets). Falls back to a
+ * bare same-origin URL when no ticket endpoint is reachable is NOT used here:
+ * the ticket call is mandatory because /ws/console requires session auth.
+ */
+export async function connectAppConsoleWebSocket(serverId: string): Promise<WebSocket> {
+  const ticket = await postJSON<{ token: string }>(
+    `/servers/${encodeURIComponent(serverId)}/ws/ticket?stream=console`,
+  );
+  return new WebSocket(`${fetchAppConsoleWSURL(serverId)}?token=${encodeURIComponent(ticket.token)}`);
+}
+
 export async function fetchAppTemplates(): Promise<AppTemplate[]> {
   try {
     return await fetchJSON<AppTemplate[]>("/admin/app-templates");
-  } catch {
-    return getAllTemplates();
+  } catch (error) {
+    if (error instanceof TypeError) {
+      console.warn("API unreachable, using local templates", error);
+      return getAllTemplates();
+    }
+    throw error;
   }
 }
 
@@ -366,4 +401,4 @@ export function deploymentStatusTone(status: DeploymentStatus): "green" | "red" 
   }
 }
 
-export { fetchDnsProviders, fetchDnsProviders as fetchDNSProviders } from "./dns";
+export { fetchDnsProviders } from "./dns";

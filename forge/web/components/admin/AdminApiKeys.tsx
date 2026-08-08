@@ -1,11 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Check, ChevronDown, ChevronUp, Copy, KeyRound, Plus, Shield, Trash2 } from "lucide-react";
-import { createApiKey, deleteApiKey, fetchAdminScopes, fetchApiKeys, verifyBearerToken } from "@/lib/api";
+import { AlertTriangle, Check, ChevronDown, ChevronUp, Copy, Eye, EyeOff, KeyRound, Plus, Shield, Trash2 } from "lucide-react";
+import { createApiKey, deleteApiKey, fetchAdminScopes, fetchApiKeys, verifyBearerToken, type ApiKey } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { copySecret } from "@/lib/clipboard";
 import { AdminFormSection, Btn, Card, CardHeader, EmptyState, Input, SectionHeader } from "./admin-ui";
+import { TableSkeleton } from "@/components/ui/loading-skeleton";
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
@@ -48,7 +51,9 @@ export function AdminApiKeys() {
   const [showScopes, setShowScopes] = useState(false);
   const [newToken, setNewToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [tokenMasked, setTokenMasked] = useState(false);
   const [verification, setVerification] = useState<string>("");
+  const [confirm, renderConfirm] = useConfirm();
 
   const toggleScope = (scope: string) => {
     setSelectedScopes((prev) =>
@@ -107,13 +112,30 @@ export function AdminApiKeys() {
     onError: (error) => toast({ tone: "error", title: "API key could not be revoked", message: errorMessage(error, "Please try again.") }),
   });
 
-  const copyToken = () => {
+  const copyToken = async () => {
     if (!newToken) return;
-    navigator.clipboard.writeText(newToken).then(() => {
+    if (await copySecret(newToken)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    });
+    }
   };
+
+  const requestRevoke = (key: ApiKey) => {
+    void (async () => {
+      if (await confirm({ title: "Revoke API key?", description: `"${key.description || "Unnamed key"}" will stop working immediately. This action cannot be undone.`, danger: true, confirmLabel: "Revoke" })) deleteMut.mutate(key.id);
+    })();
+  };
+
+  useEffect(() => {
+    const hide = () => setTokenMasked(true);
+    const onVisibilityChange = () => { if (document.visibilityState === "hidden") hide(); };
+    window.addEventListener("blur", hide);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("blur", hide);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
 
   return (
     <div>
@@ -204,11 +226,15 @@ export function AdminApiKeys() {
             <div className="mx-4 mb-4 rounded-lg border border-emerald-700/40 bg-emerald-900/20 p-3">
               <p className="text-xs text-emerald-300 font-semibold mb-2 flex items-center gap-1"><Check size={12} /> Key created - copy it now, it won&apos;t be shown again.</p>
               <div className="flex items-center gap-2">
-                <code className="flex-1 rounded bg-[#0f1419] px-2 py-1.5 text-xs text-emerald-200 font-mono break-all">{newToken}</code>
-                <button aria-label="Copy API key" onClick={copyToken} className="shrink-0 text-emerald-400 hover:text-emerald-200 transition" type="button">
+                <code className="flex-1 rounded bg-[#0f1419] px-2 py-1.5 text-xs text-emerald-200 font-mono break-all">{tokenMasked ? "••••••••••••••••••••••••" : newToken}</code>
+                <button aria-label={tokenMasked ? "Reveal API key" : "Hide API key"} onClick={() => setTokenMasked((masked) => !masked)} className="shrink-0 text-emerald-400 hover:text-emerald-200 transition" type="button">
+                  {tokenMasked ? <Eye size={16} /> : <EyeOff size={16} />}
+                </button>
+                <button aria-label="Copy API key" onClick={() => void copyToken()} className="shrink-0 text-emerald-400 hover:text-emerald-200 transition" type="button">
                   {copied ? <Check size={16} /> : <Copy size={16} />}
                 </button>
               </div>
+              <p className="mt-2 text-xs text-slate-400">Copied keys are wiped from the clipboard 15s after copying.</p>
               {verification ? <p className="mt-2 text-xs text-emerald-200">{verification}</p> : <p className="mt-2 text-xs text-emerald-200">Verifying token authentication...</p>}
               <p className="mt-2 text-xs text-slate-400">Scopes are enforced by the API. Use this token as an external Bearer token; routes outside the selected scopes return 403.</p>
             </div>
@@ -219,7 +245,7 @@ export function AdminApiKeys() {
         <Card>
           <CardHeader title="Existing keys" icon={Shield} />
           {isLoading ? (
-            <div className="py-10 text-center text-sm text-slate-500">Loading...</div>
+            <TableSkeleton rows={3} />
           ) : !keys || keys.length === 0 ? (
             <EmptyState icon={KeyRound} message="No API keys yet." />
           ) : (
@@ -241,7 +267,7 @@ export function AdminApiKeys() {
                         </div>
                       )}
                     </div>
-                    <Btn size="sm" tone="danger" onClick={() => deleteMut.mutate(key.id)} disabled={deleteMut.isPending}><Trash2 size={12} /></Btn>
+                    <Btn size="sm" tone="danger" onClick={() => requestRevoke(key)} disabled={deleteMut.isPending}><Trash2 size={12} /></Btn>
                   </div>
                 </li>
               ))}
@@ -249,6 +275,7 @@ export function AdminApiKeys() {
           )}
         </Card>
       </div>
+      {renderConfirm()}
     </div>
   );
 }

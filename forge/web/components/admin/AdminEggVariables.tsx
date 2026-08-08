@@ -7,6 +7,7 @@ import {
   Variable,
 } from "lucide-react";
 import { type ApiEgg, type ApiEggVariable, fetchEggVariables, createEggVariable, updateEggVariable, deleteEggVariable, reorderEggVariables } from "@/lib/api";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, SectionHeader, cn } from "./admin-ui";
 
 function VariableCard({
@@ -99,6 +100,7 @@ function VariableCard({
 
 export function AdminEggVariables({ egg }: { egg: ApiEgg }) {
   const qc = useQueryClient();
+  const [confirm, renderConfirm] = useConfirm();
   const varsQuery = useQuery({
     queryKey: ["egg-variables", egg.id],
     queryFn: () => fetchEggVariables(egg.id),
@@ -283,7 +285,7 @@ export function AdminEggVariables({ egg }: { egg: ApiEgg }) {
                       <td className="px-3 py-3">
                         <div className="flex items-center justify-end gap-1">
                           <Btn size="sm" tone="ghost" onClick={() => openEdit(v)}><Settings size={12} /></Btn>
-                          <Btn size="sm" tone="danger" onClick={() => { if (confirm(`Delete variable ${v.envVariable}?`)) deleteMut.mutate(v.id); }}><Trash2 size={12} /></Btn>
+                          <Btn size="sm" tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Delete variable ${v.envVariable}?`, description: "Servers using this variable will stop receiving its value. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMut.mutate(v.id); })(); }}><Trash2 size={12} /></Btn>
                         </div>
                       </td>
                     </tr>
@@ -300,7 +302,7 @@ export function AdminEggVariables({ egg }: { egg: ApiEgg }) {
                   v={v}
                   isDragging={dragIndex === index}
                   onEdit={() => openEdit(v)}
-                  onDelete={() => { if (confirm(`Delete variable ${v.envVariable}?`)) deleteMut.mutate(v.id); }}
+                  onDelete={() => { void (async () => { if (await confirm({ title: `Delete variable ${v.envVariable}?`, description: "Servers using this variable will stop receiving its value. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMut.mutate(v.id); })(); }}
                   dragHandlers={{
                     onDragStart: () => handleDragStart(index),
                     onDragOver: (e: React.DragEvent) => handleDragOver(e, index),
@@ -364,6 +366,7 @@ export function AdminEggVariables({ egg }: { egg: ApiEgg }) {
           />
         </Modal>
       )}
+      {renderConfirm()}
     </div>
   );
 }

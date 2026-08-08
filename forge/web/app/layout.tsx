@@ -1,25 +1,30 @@
 import type { Metadata, Viewport } from "next";
 import { cookies, headers } from "next/headers";
-import { JetBrains_Mono, Plus_Jakarta_Sans } from "next/font/google";
 import { Providers } from "@/components/providers";
 import { themeScript } from "@/components/theme-provider";
+import { mono, sans } from "./fonts";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: { default: "Forge Control Plane", template: "%s · Forge Control Plane" },
-  description: "Secure game server management control plane",
+  description: "Forge — secure game server management control plane",
   applicationName: "Forge Control Plane",
-  icons: { icon: "/favicon.ico" },
+  icons: { icon: "/favicon.svg", apple: "/favicon.svg" },
+  openGraph: {
+    title: "Forge Control Plane",
+    description: "Forge — secure game server management control plane",
+    type: "website",
+    siteName: "Forge Control Plane",
+    images: [{ url: "/og.svg", width: 1200, height: 630, alt: "Forge Control Plane" }],
+  },
   robots: { index: false, follow: false },
 };
 
 export const viewport: Viewport = {
-  themeColor: "#090d14",
+  themeColor: "#0a0e16",
 };
 
 const rtlLocales = new Set(["ar", "he", "fa", "ur", "yi"]);
-const sans = Plus_Jakarta_Sans({ subsets: ["latin"], variable: "--font-sans" });
-const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono" });
 
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const cookieStore = await cookies();

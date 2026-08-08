@@ -904,6 +904,24 @@ func (s *Store) RevokeAllUserSessionsExceptCurrent(ctx context.Context, userID, 
 	return err
 }
 
+// IsUserSessionRevoked reports whether a JWT session row exists for the given
+// user and session-token hash (SHA-256 hex of the JWT's jti) and is revoked.
+// Missing rows are not treated as revoked: tokens minted outside the login
+// flow (session refresh, migration, social login) never create a row.
+func (s *Store) IsUserSessionRevoked(ctx context.Context, userID, sessionTokenHash string) (bool, error) {
+	if userID == "" || sessionTokenHash == "" {
+		return false, nil
+	}
+	var revoked bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM user_sessions
+			WHERE user_id = $1 AND session_token_hash = $2 AND is_revoked
+		)
+	`, userID, sessionTokenHash).Scan(&revoked)
+	return revoked, err
+}
+
 // Password complexity errors
 var (
 	ErrPasswordTooShort  = errors.New("password must be at least 12 characters")

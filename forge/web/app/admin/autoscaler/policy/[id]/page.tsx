@@ -15,6 +15,7 @@ import {
   Pill,
   SectionHeader,
 } from '@/components/admin/admin-ui';
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type ScalingPolicy = {
   id: string;
@@ -43,6 +44,7 @@ type AutoscalerMetrics = {
 };
 
 export default function AdminPolicyDetailPage() {
+  const [confirm, renderConfirm] = useConfirm();
   const params = useParams();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -118,7 +120,7 @@ export default function AdminPolicyDetailPage() {
                 <Btn
                   tone="danger"
                   onClick={() => {
-                    if (confirm('Delete this policy?')) deleteMutation.mutate();
+                    void (async () => { if (await confirm({ title: "Delete this autoscale policy?", description: "Automatic scaling for this node will stop. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMutation.mutate(); })();
                   }}
                 >
                   <Trash2 size={14} /> Delete
@@ -308,6 +310,8 @@ export default function AdminPolicyDetailPage() {
           />
         </Modal>
       )}
+      {renderConfirm()}
     </div>
   );
 }
+

@@ -369,7 +369,7 @@ func registerAuthRoutes(protected fiber.Router, cfg Config, mutationLimiter fibe
 		}
 		logs, err := cfg.Store.ListUserActivityLogs(ctx, claims.Sub, limit)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(logs)
 	})
@@ -452,7 +452,7 @@ func registerAuthRoutes(protected fiber.Router, cfg Config, mutationLimiter fibe
 		} else {
 			// Revoke all sessions
 			if err := cfg.Store.RevokeAllUserSessionsExceptCurrent(ctx, claims.Sub, "", req.Reason); err != nil {
-				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+				return respondInternalError(c, err)
 			}
 		}
 
@@ -578,7 +578,19 @@ func handlePasswordChange(cfg Config) fiber.Handler {
 			return fiber.NewError(fiber.StatusUnauthorized, "current password is incorrect")
 		}
 		if err := cfg.Store.UpdateUserPassword(ctx, claims.Sub, req.NewPassword); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
+		}
+		if claims.JTI != "" {
+			_ = cfg.Store.RevokeJWT(ctx, claims.JTI, time.Unix(claims.Exp, 0))
+		}
+		user, err := cfg.Store.GetUserByID(ctx, claims.Sub)
+		if err == nil {
+			newToken, tokenErr := issueConfiguredToken(cfg, user)
+			if tokenErr == nil {
+				csrfToken, _ := generateCSRFToken()
+				expires := tokenExpiry(cfg)
+				setSessionCookies(c, newToken, csrfToken, expires)
+			}
 		}
 		_ = cfg.Store.AppendAudit(ctx, &claims.Sub, "account.password.changed", "user", &claims.Sub, "{}")
 		return c.JSON(fiber.Map{"status": "ok"})

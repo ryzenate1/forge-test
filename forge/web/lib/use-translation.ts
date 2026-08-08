@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DEFAULT_I18N_CONFIG, type Locale } from "@forge/shared-types";
+import defaultMessages from "../../../lang/en.json";
 
 type Messages = Record<string, unknown>;
 
@@ -38,6 +39,8 @@ function getInitialLocale(): Locale {
   return DEFAULT_I18N_CONFIG.defaultLocale;
 }
 
+const warnedMissingKeys = new Set<string>();
+
 export function useTranslation() {
   const [locale, setLocale] = useState<Locale>(getInitialLocale);
   const [messages, setMessages] = useState<Messages | null>(null);
@@ -63,17 +66,17 @@ export function useTranslation() {
         translationCache.set(locale, nextMessages);
         setMessages(nextMessages);
       })
-      .catch((err) => {
+      .catch(async (err) => {
         if (err?.name === "AbortError") return;
-        fetch("/api/i18n/en", { signal: controller.signal })
-          .then((res) => res.json())
-          .then((data) => {
-            setMessages(data as Messages);
-          })
-          .catch((fallbackErr) => {
-            if (fallbackErr?.name === "AbortError") return;
-            setMessages((prev) => prev ?? {});
-          });
+        try {
+          const res = await fetch("/api/i18n/en", { signal: controller.signal });
+          if (!res.ok) throw new Error("Fallback fetch failed");
+          const data = await res.json();
+          if (!controller.signal.aborted) setMessages(data as Messages);
+        } catch (fallbackErr) {
+          if ((fallbackErr as Error)?.name === "AbortError") return;
+          if (!controller.signal.aborted) setMessages((prev) => prev ?? {});
+        }
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -83,9 +86,17 @@ export function useTranslation() {
 
   const t = useCallback(
     (key: string, args?: Record<string, string | number> | (string | number)[]): string => {
-      if (!messages) return key;
-      const value = resolveNested(messages, key);
-      if (typeof value !== "string") return key;
+      const localized = resolveNested(messages, key);
+      // Missing keys fall back to English, then to the raw key string so the
+      // UI never renders "undefined".
+      const value = typeof localized === "string" ? localized : resolveNested(defaultMessages, key);
+      if (typeof value !== "string") {
+        if (process.env.NODE_ENV === "development" && !warnedMissingKeys.has(key)) {
+          warnedMissingKeys.add(key);
+          console.warn(`[i18n] Missing translation key in lang/en.json: "${key}"`);
+        }
+        return key;
+      }
       return interpolate(value, args);
     },
     [messages],

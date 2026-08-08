@@ -1,130 +1,108 @@
-# GamePanel SDK
+# @forge/sdk
 
-TypeScript SDK for interacting with the GamePanel API.
+TypeScript SDK for the GamePanel (Forge) API. Generated against the real
+`/api/v1` routes exposed by `forge/api`.
 
-## 📦 Installation
+## Install
 
 ```bash
-npm install @gamepanel/sdk
+npm install @forge/sdk
 ```
 
-## 🚀 Usage
-
-### Basic Usage
+## Usage
 
 ```typescript
-import { GamePanelClient } from '@gamepanel/sdk';
+import { ForgeApiClient, createApiClient } from '@forge/sdk';
 
-// Initialize the client
-const client = new GamePanelClient({
-  baseUrl: 'https://panel.yourdomain.com',
-  apiKey: 'your-api-key-here'
-});
+// baseUrl may include the `/api/v1` suffix or omit it — it is appended when missing.
+const client = createApiClient({ baseUrl: 'https://panel.example.com' });
 
-// List all servers
-const servers = await client.servers.list();
-console.log(servers);
+const servers = await client.listServers();
+const server = await client.getServer('server-uuid');
+```
 
-// Get server details
-const server = await client.servers.get('server-uuid-here');
-console.log(server);
+## Configuration
+
+```typescript
+interface ApiClientConfig {
+  /** Base URL of the API. `/api/v1` is appended when missing. */
+  baseUrl: string;
+  /** Bearer token used for `Authorization: Bearer` (takes precedence over apiKey). */
+  token?: string;
+  /** API key used for `X-API-Key`. */
+  apiKey?: string;
+  /** Custom fetch implementation (defaults to globalThis.fetch). */
+  fetch?: typeof globalThis.fetch;
+  /** Extra headers applied to every request. */
+  headers?: HeadersInit;
+  /** Cookie-session auth: sends credentials and `X-CSRF-Token` on mutations. */
+  useCookies?: boolean;
+  /** Per-request timeout in milliseconds (default: 30000). */
+  timeoutMs?: number;
+}
 ```
 
 ### Authentication
 
-```typescript
-// Using API key
-await client.authenticateWithApiKey('your-api-key');
-
-// Using username/password
-await client.authenticateWithCredentials('username', 'password');
-```
-
-### Server Management
+Auth is cookie-session based on the server. `login()` sets HttpOnly session and
+CSRF cookies, so pass `useCookies: true` (browser) or a cookie jar (server) when
+using session auth:
 
 ```typescript
-// Create a server
-const newServer = await client.servers.create({
-  name: 'My Game Server',
-  eggId: 1,
-  dockerImage: 'ghcr.io/gamepanel/minecraft:latest',
-  environment: {
-    MEMORY: '2048',
-    CPU: '100'
-  },
-  limits: {
-    memory: 2048,
-    cpu: 100,
-    disk: 10240
-  },
-  featureLimits: {
-    databases: 1,
-    backups: 5
-  }
+const client = createApiClient({
+  baseUrl: 'https://panel.example.com',
+  useCookies: true,
 });
-
-// Start a server
-await client.servers.start('server-uuid');
-
-// Stop a server
-await client.servers.stop('server-uuid');
-
-// Delete a server
-await client.servers.delete('server-uuid');
+await client.login({ email: 'admin@example.com', password: 'secret' });
+const me = await client.me();
 ```
 
-### Advanced Features
+Machine access can instead use a bearer token or API key:
 
 ```typescript
-// WebSocket console connection
-const consoleSocket = client.servers.console('server-uuid');
-consoleSocket.on('message', (data) => {
-  console.log(data);
+const client = createApiClient({
+  baseUrl: 'https://panel.example.com',
+  token: 'forge_nt_...',
 });
-consoleSocket.send('command here');
-
-// File management
-const files = await client.servers.listFiles('server-uuid', '/');
-await client.servers.uploadFile('server-uuid', '/path/to/file', fileContent);
-await client.servers.downloadFile('server-uuid', '/path/to/file');
-
-// Backups
-const backups = await client.backups.list('server-uuid');
-await client.backups.create('server-uuid', {name: 'Pre-update backup'});
-await client.backups.restore('server-uuid', 'backup-uuid');
 ```
 
-## 📚 API Reference
-
-See the full API documentation in the [GamePanel API Docs](../../docs/api/).
-
-## 🔧 Configuration
-
-### Client Options
+### Servers
 
 ```typescript
-interface GamePanelClientOptions {
-  baseUrl: string;           // Base URL of the GamePanel instance
-  apiKey?: string;          // API key for authentication
-  timeout?: number;         // Request timeout in milliseconds (default: 30000)
-  retries?: number;         // Number of retries for failed requests (default: 3)
-  debug?: boolean;          // Enable debug logging (default: false)
-}
+const servers = await client.listServers();
+const server = await client.getServer(server.id);
+await client.sendPowerAction(server.id, 'start'); // 'start' | 'stop' | 'restart' | 'kill'
+await client.sendCommand(server.id, 'say hello');
+const stats = await client.getServerStats(server.id);
 ```
 
-## 🐛 Error Handling
+### Nodes
+
+```typescript
+const nodes = await client.listNodes();
+const node = await client.getNode(nodeId);
+const created = await client.createNode({ name: 'edge-1', fqdn: 'node1.example.com' });
+// created.node, created.token
+```
+
+### Errors
+
+Non-2xx responses throw an `ApiError`:
 
 ```typescript
 try {
-  const server = await client.servers.get('invalid-uuid');
-} catch (error) {
-  if (error instanceof GamePanelError) {
-    console.error(`Error ${error.code}: ${error.message}`);
-    console.error('Details:', error.details);
+  await client.getServer('missing');
+} catch (err) {
+  if (err instanceof ApiError) {
+    console.error(err.status, err.statusText, err.data);
   }
 }
 ```
 
-## 📝 License
+## Development
 
-MIT License - See [LICENSE](../../LICENSE) for details.
+```bash
+npm run build       # tsc -p tsconfig.json
+npm run typecheck   # tsc --noEmit
+npm test            # vitest run
+```

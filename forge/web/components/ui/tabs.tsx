@@ -30,8 +30,25 @@ function Tabs({ value, onValueChange, className, children, ...props }: {
 }
 
 function TabsList({ className, children, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const tabs = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    if (tabs.length === 0) return;
+    const currentIndex = tabs.indexOf(document.activeElement as HTMLButtonElement);
+    if (currentIndex === -1) return;
+    let next: number | null = null;
+    if (e.key === "ArrowRight") next = (currentIndex + 1) % tabs.length;
+    else if (e.key === "ArrowLeft") next = (currentIndex - 1 + tabs.length) % tabs.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = tabs.length - 1;
+    if (next === null) return;
+    e.preventDefault();
+    tabs[next].click();
+    tabs[next].focus();
+  };
   return (
     <div
+      role="tablist"
+      onKeyDown={handleKeyDown}
       className={cn(
         "inline-flex h-10 items-center justify-center rounded-lg bg-surface-card p-1 text-slate-400",
         className
@@ -51,6 +68,7 @@ function TabsTrigger({ value, className, children, ...props }: React.HTMLAttribu
       type="button"
       role="tab"
       aria-selected={isActive}
+      tabIndex={isActive ? 0 : -1}
       onClick={() => onValueChange?.(value)}
       className={cn(
         "inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50",
@@ -70,7 +88,7 @@ function TabsContent({ value, className, children, ...props }: React.HTMLAttribu
   const { value: selectedValue } = useTabsContext();
   if (selectedValue !== value) return null;
   return (
-    <div className={cn("mt-2", className)} {...props}>
+    <div role="tabpanel" className={cn("mt-2", className)} {...props}>
       {children}
     </div>
   );

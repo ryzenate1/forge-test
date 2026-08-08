@@ -20,7 +20,7 @@ func registerReconcileRoutes(protected fiber.Router, cfg Config, svc *reconciler
 	rc.Get("/summary", requireRole("admin"), requireAdminScope("reconcile.read"), func(c *fiber.Ctx) error {
 		summary, err := svc.ReconcileSummary(c.Context())
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": summary})
 	})
@@ -30,7 +30,7 @@ func registerReconcileRoutes(protected fiber.Router, cfg Config, svc *reconciler
 		limit := c.QueryInt("limit", 50)
 		rows, total, err := svc.ListReconcilePlans(c.Context(), offset, limit)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		resp := make([]reconcilePlanRowResponse, len(rows))
 		for i, r := range rows {
@@ -112,7 +112,7 @@ func registerReconcileRoutes(protected fiber.Router, cfg Config, svc *reconciler
 		}
 
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": results, "count": len(results)})
 	})
@@ -132,7 +132,7 @@ func registerReconcileRoutes(protected fiber.Router, cfg Config, svc *reconciler
 		}
 		rows, err := svc.ListReconcileEvents(c.Context(), req.ResourceID, req.Limit)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		eventResp := make([]reconcileEventRowResponse, len(rows))
 		for i, r := range rows {

@@ -11,7 +11,7 @@
   "images": {
     "SteamCMD Debian": "ghcr.io/parkervcp/steamcmd:debian"
   },
-  "startup": "./PalServer.sh -port={{PORT}} -players={{MAX_PLAYERS}} -queryport={{QUERY_PORT}} -useperfthreads -NoAsyncLoadingThread -UseMultithreadForDS",
+  "startup": "./PalServer.sh -port={{SERVER_PORT}} -players={{MAX_PLAYERS}} -queryport={{QUERY_PORT}} -useperfthreads -NoAsyncLoadingThread -UseMultithreadForDS",
   "config": {
     "files": {
       "Pal/Saved/Config/LinuxServer/GameUserSettings.ini": {
@@ -88,6 +88,15 @@
       "user_viewable": false,
       "user_editable": true,
       "rules": "nullable|string|max:32"
+    },
+    {
+      "name": "Query Port",
+      "env_variable": "QUERY_PORT",
+      "description": "Steam query port for server browser discovery. Matches the server's allocated Steam query port.",
+      "default_value": "27015",
+      "user_viewable": true,
+      "user_editable": false,
+      "rules": "required|integer|min:1024|max:65535"
     },
     {
       "name": "Admin Password",

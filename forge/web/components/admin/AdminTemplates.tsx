@@ -9,6 +9,7 @@ import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, Sec
 import { EGG_TEMPLATES, type EggTemplateItem } from "@/lib/egg-templates";
 import { useSearchParams } from "next/navigation";
 import { useToast } from "@/components/ui/toast";
+import { TableSkeleton } from "@/components/ui/loading-skeleton";
 
 const emptyForm = {
   name: "",
@@ -202,7 +203,7 @@ export function AdminTemplates() {
       <Card>
         <CardHeader title={`${templates?.length ?? 0} template${templates?.length !== 1 ? "s" : ""}`} icon={Box} />
         {isLoading ? (
-          <div className="py-10 text-center text-sm text-slate-500">Loading...</div>
+          <TableSkeleton rows={4} />
         ) : !templates || templates.length === 0 ? (
           <EmptyState icon={Box} message="No templates configured. Create one to start deploying servers." />
         ) : (

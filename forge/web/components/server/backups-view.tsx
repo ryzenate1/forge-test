@@ -7,7 +7,8 @@ import { createBackup, deleteBackup, fetchBackups, lockBackup as lockBackupApi, 
 import { type ApiBackup, type ApiServer } from "@/lib/api/types";
 import { hasServerPermission, useOptionalServerContext } from "./server-context";
 import { formatDate } from "@/lib/utils";
-import { fetchBackupProviders } from "@/lib/api/database-containers";
+import { useToast } from "@/components/ui/toast";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 export function formatBackupBytes(value: number) {
   if (!Number.isFinite(value) || value < 0) return "Unknown size";
@@ -26,25 +27,19 @@ function errorText(error: unknown, fallback: string) {
 
 export function BackupsView({ server }: { server?: ApiServer }) {
   const context = useOptionalServerContext();
-  const access = context?.access ?? { user: null, permissions: [], isAdmin: true, isOwner: true };
+  const access = context?.access ?? { user: null, permissions: null, isAdmin: false, isOwner: false };
   const canCreate = hasServerPermission(access, "backup.create");
   const canDownload = hasServerPermission(access, "backup.download");
   const canRestore = hasServerPermission(access, "backup.restore");
   const canDelete = hasServerPermission(access, "backup.delete");
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [backupName, setBackupName] = useState("");
   const [ignoredFiles, setIgnoredFiles] = useState("");
   const [lockOnCreate, setLockOnCreate] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [storageProvider, setStorageProvider] = useState("");
-  const [storageConfig, setStorageConfig] = useState<Record<string, string>>({});
-  const providers = useQuery({
-    queryKey: ["backup-providers"],
-    queryFn: fetchBackupProviders,
-		enabled: showAdvanced,
-    staleTime: 60000,
-  });
   const [currentPage, setCurrentPage] = useState(1);
+  const [confirm, renderConfirm] = useConfirm();
   const backups = useQuery({
     queryKey: ["server-backups", server?.id, currentPage],
     queryFn: () => fetchBackups(server?.id ?? "", currentPage, 20),
@@ -80,12 +75,17 @@ export function BackupsView({ server }: { server?: ApiServer }) {
 
   const download = async (backup: ApiBackup) => {
     if (!server?.id || !isUsable(backup)) return;
-    const { url } = await getBackupDownloadURL(server.id, backup.name);
-    window.location.href = url;
+    try {
+      const { url } = await getBackupDownloadURL(server.id, backup.name);
+      window.location.href = url;
+    } catch (error) {
+      toast({ tone: "error", title: "Download failed", message: error instanceof Error ? error.message : "Could not generate a download link for this backup." });
+    }
   };
 
   return (
     <div className="space-y-6">
+      {renderConfirm()}
       <div className="rounded-xl border border-white/[0.08] bg-[#1e2536] px-4 py-4 text-sm font-semibold text-[#94a3b8]">
         {backupsDisabled ? "Backups are disabled for this server." : typeof limit === "number" && limit > 0 ? `${pagination?.total ?? 0} of ${limit} backup slots used.` : `${pagination?.total ?? 0} backups created; no quota was provided by the API.`}
         {limitReached ? <span className="ml-2 text-red-300">Limit reached.</span> : null}
@@ -112,7 +112,7 @@ export function BackupsView({ server }: { server?: ApiServer }) {
                 <p className="mt-1 font-semibold text-slate-300">{formatDate(backup.completedAt, "Not completed")}</p><p className="uppercase text-[#64748b]">Completed</p>
               </div>
               <div className="flex items-center gap-1 sm:justify-self-end">
-                <button aria-label={`Download ${backup.name}`} className="grid h-9 w-9 place-items-center rounded hover:bg-[#4b5563] disabled:opacity-40" disabled={!usable || !canDownload} onClick={() => void download(backup).catch(() => undefined)} title={usable ? "Download" : "Available after completion"} type="button"><Download size={18} /></button>
+                <button aria-label={`Download ${backup.name}`} className="grid h-9 w-9 place-items-center rounded hover:bg-[#4b5563] disabled:opacity-40" disabled={!usable || !canDownload} onClick={() => void download(backup)} title={usable ? "Download" : "Available after completion"} type="button"><Download size={18} /></button>
                 {backup.isLocked ? (
                   <button
                     aria-label={`Unlock ${backup.name}`}
@@ -136,8 +136,8 @@ export function BackupsView({ server }: { server?: ApiServer }) {
                     <Lock size={18} />
                   </button>
                 )}
-                <button aria-label={`Restore ${backup.name}`} className="grid h-9 w-9 place-items-center rounded text-amber-200 hover:bg-[#4b5563] disabled:opacity-40" disabled={!usable || busy || !canRestore} onClick={() => { if (window.confirm(`Restore ${backup.name}? Current files may be overwritten.`)) restoreMutation.mutate(backup); }} title={usable ? "Restore" : "Available after completion"} type="button"><RotateCcw size={18} /></button>
-                <button aria-label={`Delete ${backup.name}`} className="grid h-9 w-9 place-items-center rounded text-red-200 hover:bg-[#4b5563] disabled:opacity-40" disabled={!usable || busy || !canDelete || backup.isLocked} onClick={() => { if (window.confirm(`Delete backup ${backup.name}?`)) deleteMutation.mutate(backup); }} title={usable ? (backup.isLocked ? "Backup is locked" : "Delete") : "Available after completion"} type="button"><Trash2 size={18} /></button>
+                <button aria-label={`Restore ${backup.name}`} className="grid h-9 w-9 place-items-center rounded text-amber-200 hover:bg-[#4b5563] disabled:opacity-40" disabled={!usable || busy || !canRestore} onClick={async () => { if (await confirm({ title: `Restore ${backup.name}?`, description: "Current server files may be overwritten. This cannot be undone.", confirmLabel: "Restore" })) restoreMutation.mutate(backup); }} title={usable ? "Restore" : "Available after completion"} type="button"><RotateCcw size={18} /></button>
+                <button aria-label={`Delete ${backup.name}`} className="grid h-9 w-9 place-items-center rounded text-red-200 hover:bg-[#4b5563] disabled:opacity-40" disabled={!usable || busy || !canDelete || backup.isLocked} onClick={async () => { if (await confirm({ title: `Delete backup ${backup.name}?`, description: "The backup will be permanently removed.", danger: true, confirmLabel: "Delete" })) deleteMutation.mutate(backup); }} title={usable ? (backup.isLocked ? "Backup is locked" : "Delete") : "Available after completion"} type="button"><Trash2 size={18} /></button>
               </div>
             </div>
           );
@@ -202,45 +202,10 @@ export function BackupsView({ server }: { server?: ApiServer }) {
             />
             <p className="text-xs text-[#64748b] mt-1">Use .gitignore-style patterns to exclude files from backup</p>
           </div>
-          <div>
-            <label className="block text-sm font-semibold text-slate-100 mb-1">Storage Destination</label>
-            <select
-              className="w-full rounded-lg bg-[#0f141f] border border-white/[0.1] px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
-              value={storageProvider}
-              onChange={(e) => { setStorageProvider(e.target.value); setStorageConfig({}); }}
-            >
-              <option value="">Default</option>
-              {(providers.data?.providers ?? []).map((p) => (
-                <option key={p} value={p}>{p.toUpperCase()}</option>
-              ))}
-            </select>
+          <div className="rounded-lg border border-white/[0.08] bg-[#0f141f] px-3 py-3">
+            <p className="text-sm font-semibold text-slate-100 mb-1">Storage Destination</p>
+            <p className="text-xs text-[#64748b]">Custom storage destinations (S3, GCS, Azure) are not supported yet. Backups currently use the default node-local storage.</p>
           </div>
-          {storageProvider === "s3" && (
-            <div className="space-y-3 rounded-lg bg-[#0f141f] p-3">
-              <p className="text-xs font-semibold text-slate-400 uppercase">S3 Configuration</p>
-              <input className="w-full rounded-lg bg-[#161b28] border border-white/[0.1] px-3 py-2 text-sm text-slate-100" placeholder="Bucket" value={storageConfig.bucket ?? ""} onChange={(e) => setStorageConfig(c => ({ ...c, bucket: e.target.value }))} />
-              <input className="w-full rounded-lg bg-[#161b28] border border-white/[0.1] px-3 py-2 text-sm text-slate-100" placeholder="Region (e.g. us-east-1)" value={storageConfig.region ?? ""} onChange={(e) => setStorageConfig(c => ({ ...c, region: e.target.value }))} />
-              <input className="w-full rounded-lg bg-[#161b28] border border-white/[0.1] px-3 py-2 text-sm text-slate-100" placeholder="Endpoint (optional)" value={storageConfig.endpoint ?? ""} onChange={(e) => setStorageConfig(c => ({ ...c, endpoint: e.target.value }))} />
-              <input className="w-full rounded-lg bg-[#161b28] border border-white/[0.1] px-3 py-2 text-sm text-slate-100" placeholder="Access Key ID" value={storageConfig.accessKeyId ?? ""} onChange={(e) => setStorageConfig(c => ({ ...c, accessKeyId: e.target.value }))} />
-              <input className="w-full rounded-lg bg-[#161b28] border border-white/[0.1] px-3 py-2 text-sm text-slate-100" placeholder="Secret Access Key" type="password" value={storageConfig.secretAccessKey ?? ""} onChange={(e) => setStorageConfig(c => ({ ...c, secretAccessKey: e.target.value }))} />
-            </div>
-          )}
-          {storageProvider === "gcs" && (
-            <div className="space-y-3 rounded-lg bg-[#0f141f] p-3">
-              <p className="text-xs font-semibold text-slate-400 uppercase">GCS Configuration</p>
-              <input className="w-full rounded-lg bg-[#161b28] border border-white/[0.1] px-3 py-2 text-sm text-slate-100" placeholder="Bucket Name" value={storageConfig.bucketName ?? ""} onChange={(e) => setStorageConfig(c => ({ ...c, bucketName: e.target.value }))} />
-              <input className="w-full rounded-lg bg-[#161b28] border border-white/[0.1] px-3 py-2 text-sm text-slate-100" placeholder="Key File Path (optional)" value={storageConfig.keyFile ?? ""} onChange={(e) => setStorageConfig(c => ({ ...c, keyFile: e.target.value }))} />
-            </div>
-          )}
-          {storageProvider === "azure" && (
-            <div className="space-y-3 rounded-lg bg-[#0f141f] p-3">
-              <p className="text-xs font-semibold text-slate-400 uppercase">Azure Configuration</p>
-              <input className="w-full rounded-lg bg-[#161b28] border border-white/[0.1] px-3 py-2 text-sm text-slate-100" placeholder="Container Name" value={storageConfig.containerName ?? ""} onChange={(e) => setStorageConfig(c => ({ ...c, containerName: e.target.value }))} />
-              <input className="w-full rounded-lg bg-[#161b28] border border-white/[0.1] px-3 py-2 text-sm text-slate-100" placeholder="Connection String" value={storageConfig.connectionString ?? ""} onChange={(e) => setStorageConfig(c => ({ ...c, connectionString: e.target.value }))} />
-            </div>
-          )}
-          {providers.isLoading && <p className="text-xs text-slate-500">Loading providers...</p>}
-          {providers.isError && <p className="text-xs text-red-400">Failed to load providers</p>}
           <div className="flex items-center gap-2">
             <input 
               checked={lockOnCreate}

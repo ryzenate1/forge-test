@@ -88,13 +88,24 @@ func (s *Store) UpdateDeploymentStepStatus(ctx context.Context, stepID string, s
 	return err
 }
 
-func (s *Store) UpdateDeploymentProgress(ctx context.Context, deploymentID string, progressPct int, nextStep int, timeoutAt *time.Time) error {
+func (s *Store) UpdateDeploymentProgressVersioned(ctx context.Context, deploymentID string, version int, progressPct int, nextStep int, timeoutAt *time.Time) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE deployments
-		SET progress_pct = $2, next_step = $3, timeout_at = $4, updated_at = now()
-		WHERE id = $1
-	`, deploymentID, progressPct, nextStep, timeoutAt)
+		SET progress_pct = $2, next_step = $3, timeout_at = $4, version = version + 1, updated_at = now()
+		WHERE id = $1 AND version = $5
+	`, deploymentID, progressPct, nextStep, timeoutAt, version)
 	return err
+}
+
+// UpdateDeploymentProgress is a compatibility shim for callers that do not
+// participate in optimistic-concurrency progress updates. It re-reads the
+// current version and performs a single versioned attempt.
+func (s *Store) UpdateDeploymentProgress(ctx context.Context, deploymentID string, progressPct int, nextStep int, timeoutAt *time.Time) error {
+	var version int
+	if err := s.db.QueryRow(ctx, `SELECT COALESCE(version, 1) FROM deployments WHERE id = $1`, deploymentID).Scan(&version); err != nil {
+		return err
+	}
+	return s.UpdateDeploymentProgressVersioned(ctx, deploymentID, version, progressPct, nextStep, timeoutAt)
 }
 
 func (s *Store) ListInProgressDeployments(ctx context.Context) ([]Deployment, error) {

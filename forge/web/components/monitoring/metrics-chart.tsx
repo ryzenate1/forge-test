@@ -25,6 +25,14 @@ const PERIODS: { value: Period; label: string }[] = [
   { value: "24h", label: "24 hours" },
 ];
 
+/** Map a selected period to the API's limit + since window. */
+function periodWindow(period: Period): { limit: number; since: string } {
+  const minutes: Record<Period, number> = { "5m": 5, "15m": 15, "1h": 60, "6h": 360, "24h": 1440 };
+  const limit: Record<Period, number> = { "5m": 30, "15m": 30, "1h": 60, "6h": 120, "24h": 288 };
+  const since = new Date(Date.now() - minutes[period] * 60 * 1000).toISOString();
+  return { limit: limit[period], since };
+}
+
 function formatValue(key: MetricKey, value: number) {
   if (key === "networkRxBytes") {
     const bytes = value;
@@ -63,7 +71,10 @@ export function MetricsChart() {
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["metrics-chart", selectedPeriod],
-    queryFn: () => getNodeMetrics({ period: selectedPeriod }),
+    queryFn: () => {
+      const window = periodWindow(selectedPeriod);
+      return getNodeMetrics({ period: selectedPeriod, limit: window.limit, since: window.since });
+    },
     refetchInterval: selectedPeriod === "5m" ? 10_000 : 60_000,
   });
 
@@ -104,7 +115,7 @@ export function MetricsChart() {
               className={`rounded px-3 py-1 text-xs font-medium transition ${
                 selectedPeriod === p.value
                   ? "bg-white/10 text-slate-200"
-                  : "text-slate-600 hover:text-slate-400"
+                  : "text-slate-400 hover:text-slate-200"
               }`}
               onClick={() => setSelectedPeriod(p.value)}
               type="button"

@@ -24,6 +24,7 @@ import {
   updateFirewallRule,
 } from "@/lib/api/firewall";
 import { useToast } from "@/components/ui/toast";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { AdminFormSection, AdminSelect, AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, cn } from "./admin-ui";
 
 type FirewallTab = "rules" | "forwards";
@@ -257,6 +258,7 @@ export function AdminFirewall() {
 function RuleRow({ rule, nodeId, onEdit }: { rule: FirewallRule; nodeId: string; onEdit: () => void }) {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const [confirm, renderConfirm] = useConfirm();
   const deleteMut = useMutation({
     mutationFn: () => deleteFirewallRule(rule.id, nodeId),
     onSuccess: () => {
@@ -280,9 +282,10 @@ function RuleRow({ rule, nodeId, onEdit }: { rule: FirewallRule; nodeId: string;
       <td className="px-4 py-3 text-xs text-slate-400">{rule.description ?? "—"}</td>
       <td className="px-4 py-3 text-right space-x-2">
         <Btn size="sm" tone="ghost" onClick={onEdit}>Edit</Btn>
-        <Btn size="sm" tone="danger" disabled={deleteMut.isPending} onClick={() => { if (confirm("Delete this rule?")) deleteMut.mutate(); }}>
+        <Btn size="sm" tone="danger" disabled={deleteMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: "Delete this firewall rule?", description: rule.description ?? `Rule for ${rule.protocol} on port ${rule.port}. This cannot be undone.`, danger: true, confirmLabel: "Delete" })) deleteMut.mutate(); })(); }}>
           {deleteMut.isPending ? "…" : <Trash2 size={14} />}
         </Btn>
+        {renderConfirm()}
       </td>
     </tr>
   );
@@ -291,6 +294,7 @@ function RuleRow({ rule, nodeId, onEdit }: { rule: FirewallRule; nodeId: string;
 function ForwardRow({ forward, nodeId }: { forward: PortForward; nodeId: string }) {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const [confirm, renderConfirm] = useConfirm();
   const deleteMut = useMutation({
     mutationFn: () => deletePortForward(forward.id, nodeId),
     onSuccess: () => {
@@ -307,9 +311,10 @@ function ForwardRow({ forward, nodeId }: { forward: PortForward; nodeId: string 
       <td className="px-4 py-3 text-xs uppercase">{forward.protocol ?? "—"}</td>
       <td className="px-4 py-3 text-xs text-slate-400">{forward.description ?? "—"}</td>
       <td className="px-4 py-3 text-right">
-        <Btn size="sm" tone="danger" disabled={deleteMut.isPending} onClick={() => { if (confirm("Delete this port forward?")) deleteMut.mutate(); }}>
+        <Btn size="sm" tone="danger" disabled={deleteMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: "Delete this port forward?", description: `Forwarding ${forward.fromPort} → ${forward.toIp}:${forward.toPort} will be removed. This cannot be undone.`, danger: true, confirmLabel: "Delete" })) deleteMut.mutate(); })(); }}>
           {deleteMut.isPending ? "…" : <Trash2 size={14} />}
         </Btn>
+        {renderConfirm()}
       </td>
     </tr>
   );

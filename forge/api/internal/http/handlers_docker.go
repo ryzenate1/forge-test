@@ -74,7 +74,7 @@ func resolveDockerNode(cfg Config, c *fiber.Ctx) (*nodeAdminRequest, error) {
 	}
 	targets, err := resolveAdminNodeTargets(cfg)
 	if err != nil {
-		return nil, fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return nil, respondInternalError(c, err)
 	}
 	if len(targets) == 0 {
 		return nil, fiber.NewError(fiber.StatusNotFound, "no available nodes")

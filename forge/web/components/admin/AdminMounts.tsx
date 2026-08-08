@@ -9,6 +9,7 @@ import {
   updateMount, type ApiEgg, type ApiMount, type ApiNode,
 } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { AdminBackButton, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, SectionHeader, AdminTable, AdminTHead, AdminTh, AdminTBody, AdminTr, AdminTd } from "./admin-ui";
 
 type FieldErrors = {
@@ -80,6 +81,7 @@ function MountApplicabilityFields({
 export function AdminMounts() {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const [confirm, renderConfirm] = useConfirm();
   const mountsQuery = useQuery({ queryKey: ["mounts"], queryFn: fetchMounts });
   const mounts = useMemo(() => mountsQuery.data ?? [], [mountsQuery.data]);
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
@@ -293,7 +295,7 @@ export function AdminMounts() {
               </div>
             ) : null}
             <div className="flex justify-between border-t border-white/[0.06] px-6 py-4">
-              <Btn tone="danger" size="sm" onClick={() => { if (confirm("Delete this mount?")) deleteMut.mutate(selected.id); }} disabled={deleteMut.isPending}>
+              <Btn tone="danger" size="sm" onClick={() => { void (async () => { if (await confirm({ title: `Delete mount ${selected.name}?`, description: "The mount definition will be removed from the panel. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMut.mutate(selected.id); })(); }} disabled={deleteMut.isPending}>
                 <Trash2 size={12} /> Delete
               </Btn>
               <Btn onClick={handleUpdate} disabled={updateMut.isPending}>
@@ -572,6 +574,7 @@ export function AdminMounts() {
           />
         </Modal>
       ) : null}
+      {renderConfirm()}
     </div>
   );
 }

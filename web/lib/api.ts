@@ -1,8 +1,7 @@
 // Types only — components use raw fetch via /api/proxy/* routes
 
 export type HealthStatus = 'healthy' | 'unhealthy' | 'unreachable';
-export type BackupStatus = 'completed' | 'pending' | 'failed';
-export type BackupFormat = 'zip' | 'tar.gz';
+export type BackupStatus = 'completed' | 'pending' | 'failed' | 'restoring' | 'restored' | 'restore_failed';
 export type ServerStatus = 'running' | 'stopped' | 'installing';
 
 export type HealthCheck = {
@@ -18,7 +17,7 @@ export type SystemInfo = {
   cpuThreads: number;
   memory: { total: number; used: number; free: number };
   disk: { total: number; used: number; free: number };
-  docker: { running: boolean; version?: string };
+  runtime: { reachable: boolean };
   uptime: number;
   activeSessions: number;
 };
@@ -28,7 +27,6 @@ export type Backup = {
   name: string;
   size?: number;
   checksum?: string;
-  format: BackupFormat;
   status: BackupStatus;
   createdAt: string;
   completedAt?: string;

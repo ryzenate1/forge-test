@@ -172,7 +172,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 			Page: c.QueryInt("page", 1), PerPage: c.QueryInt("perPage", 200),
 		})
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(configs)
 	})
@@ -240,7 +240,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 			Page: c.QueryInt("page", 1), PerPage: c.QueryInt("perPage", 200),
 		})
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(jobs)
 	})
@@ -262,7 +262,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		}
 		completed, err := adminSvc.GetBackupJob(c.UserContext(), job.ID)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(completed)
 	})
@@ -292,7 +292,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 			Page: c.QueryInt("page", 1), PerPage: c.QueryInt("perPage", 200),
 		})
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(artifacts)
 	})
@@ -353,7 +353,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 			Page: c.QueryInt("page", 1), PerPage: c.QueryInt("perPage", 200),
 		})
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(restores)
 	})
@@ -375,7 +375,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		}
 		completed, err := adminSvc.GetRestore(c.UserContext(), restore.ID)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(completed)
 	})
@@ -396,7 +396,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		}
 		providers, err := cfg.Store.ListBackupStorageProviders(c.UserContext())
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		if len(providers) == 0 {
 			for _, name := range backup.RegisteredProviders() {
@@ -414,7 +414,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		artifacts, _, artifactErr := adminSvc.ListBackupArtifacts(c.UserContext(), backup.ArtifactFilter{PerPage: 200})
 		restores, _, restoreErr := adminSvc.ListRestores(c.UserContext(), backup.RestoreFilter{PerPage: 200})
 		if err := firstBackupError(configErr, jobErr, artifactErr, restoreErr); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		status := backupStatusResponse(configs, jobs, artifacts, restores)
 		return c.JSON(status)

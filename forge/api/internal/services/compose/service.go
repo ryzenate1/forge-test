@@ -10,6 +10,8 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+const MaxComposeYAMLBytes = 1 * 1024 * 1024 // 1 MB
+
 type GitStackConfig struct {
 	SourceID         string `json:"sourceId,omitempty"`
 	RepositoryURL    string `json:"repositoryUrl,omitempty"`
@@ -140,6 +142,9 @@ func (s *Service) Validate(content []byte, workingDir string) *ValidateResult {
 }
 
 func (s *Service) ParseComposeYAML(content []byte, workingDir string, envVars map[string]string) (*ParsedCompose, error) {
+	if len(content) > MaxComposeYAMLBytes {
+		return nil, fmt.Errorf("compose YAML exceeds maximum size of %d bytes", MaxComposeYAMLBytes)
+	}
 	var err error
 	content, err = interpolateEnv(content, envVars)
 	if err != nil {

@@ -249,6 +249,55 @@ func registerRemoteExtras(remote fiber.Router, cfg Config) {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 
+	// POST /api/remote/servers/:id/backups/restore-status
+	// Beacon reports the result of a restore operation against the server
+	// scoped route (contract: beacon/internal/remote/client.go SendRestoreStatus).
+	remote.Post("/servers/:id/backups/restore-status", func(c *fiber.Ctx) error {
+		node, ok := c.Locals("remoteNode").(store.Node)
+		if !ok {
+			return fiber.NewError(fiber.StatusUnauthorized, "missing node")
+		}
+		if cfg.Store == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+		}
+		var body struct {
+			BackupUUID string `json:"backup_uuid"`
+			ServerUUID string `json:"server_uuid"`
+			Successful bool   `json:"successful"`
+			Error      string `json:"error"`
+		}
+		if err := c.BodyParser(&body); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		}
+		serverID := strings.TrimSpace(c.Params("id"))
+		if serverID == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "server id required")
+		}
+		ctx, cancel := requestContext()
+		defer cancel()
+		belongs, err := cfg.Store.ServerBelongsToNode(ctx, serverID, node.ID)
+		if err != nil || !belongs {
+			return fiber.NewError(fiber.StatusForbidden, "backup does not belong to this node")
+		}
+		backup, err := cfg.Store.GetBackupByUUID(ctx, strings.TrimSpace(body.BackupUUID))
+		if err != nil {
+			return fiber.NewError(fiber.StatusNotFound, "backup not found")
+		}
+		if backup.ServerID != serverID {
+			return fiber.NewError(fiber.StatusForbidden, "backup does not belong to this server")
+		}
+		actorID := node.ID
+		status := "restored"
+		if !body.Successful {
+			status = "restore_failed"
+		}
+		if err := cfg.Store.MarkBackupStatus(ctx, serverID, backup.Name, status, &actorID); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		_ = cfg.Store.AppendAudit(ctx, &node.ID, "server.backup.restore", "server", &serverID, body.Error)
+		return c.SendStatus(fiber.StatusNoContent)
+	})
+
 	// POST /api/remote/servers/:id/archive
 	// Legacy archive/transfer endpoint.
 	// Delegates to the active migration if one exists.

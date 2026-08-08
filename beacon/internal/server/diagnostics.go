@@ -3,6 +3,9 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -28,95 +31,197 @@ type ConnectivityDiagnostics struct {
 	EdgeState         string `json:"edgeState,omitempty"`
 }
 
+// RunConnectivityDiagnostics probes only the configured panel endpoint. The
+// supplied URL must pass the same HTTPS-or-loopback policy as the panel client,
+// and dialing is pinned to a validated DNS result to prevent rebinding.
 func (s *Server) RunConnectivityDiagnostics(ctx context.Context, panelURL string) ConnectivityDiagnostics {
-	d := ConnectivityDiagnostics{
-		UptimeSeconds: int64(time.Since(s.started).Seconds()),
-	}
-
-	if panelURL == "" {
+	d := ConnectivityDiagnostics{UptimeSeconds: int64(time.Since(s.started).Seconds())}
+	base, err := diagnosticPanelURL(panelURL)
+	if err != nil {
+		d.AuthenticationMsg = "invalid panel endpoint"
 		return d
 	}
 
-	parsed, err := url.Parse(panelURL)
+	dnsStart := time.Now()
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", base.Hostname())
+	d.DNSResolutionMs = time.Since(dnsStart).Milliseconds()
+	if err != nil || len(ips) == 0 {
+		return d
+	}
+	allowLoopback := diagnosticLoopbackHost(base.Hostname())
+	validated := make([]net.IP, 0, len(ips))
+	for _, ip := range ips {
+		if allowLoopback && ip.IsLoopback() || !restrictedDiagnosticIP(ip) {
+			validated = append(validated, ip)
+		}
+	}
+	if len(validated) == 0 {
+		d.AuthenticationMsg = "panel endpoint resolves to a restricted address"
+		return d
+	}
+	d.DNSResolution = true
+
+	port := base.Port()
+	if port == "" {
+		port = map[bool]string{true: "443", false: "80"}[base.Scheme == "https"]
+	}
+	pinnedAddress := net.JoinHostPort(validated[0].String(), port)
+	dialer, client := pinnedDiagnosticClient(pinnedAddress)
+	defer client.CloseIdleConnections()
+	tcpStart := time.Now()
+	conn, err := dialer.DialContext(ctx, "tcp", pinnedAddress)
+	d.TCPConnectivityMs = time.Since(tcpStart).Milliseconds()
 	if err != nil {
 		return d
 	}
+	d.TCPConnectivity = true
+	_ = conn.Close()
 
-	host := parsed.Host
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
+	if base.Scheme == "https" {
+		tlsStart := time.Now()
+		tlsConn, tlsErr := tls.DialWithDialer(dialer, "tcp", pinnedAddress, &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			ServerName: base.Hostname(),
+		})
+		d.TLSHandshakeMs = time.Since(tlsStart).Milliseconds()
+		if tlsErr != nil {
+			return d
+		}
+		d.TLSHandshake = true
+		_ = tlsConn.Close()
+	} else {
+		d.TLSHandshake = true
 	}
 
-	var dnsStart time.Time
-	dnsStart = time.Now()
-	addrs, err := net.DefaultResolver.LookupHost(ctx, host)
-	d.DNSResolutionMs = time.Since(dnsStart).Milliseconds()
-	d.DNSResolution = err == nil && len(addrs) > 0
-
-	if d.DNSResolution && len(addrs) > 0 {
-		port := parsed.Port()
-		if port == "" {
-			if parsed.Scheme == "https" {
-				port = "443"
-			} else {
-				port = "80"
-			}
-		}
-		addr := net.JoinHostPort(addrs[0], port)
-		tcpStart := time.Now()
-		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-		d.TCPConnectivityMs = time.Since(tcpStart).Milliseconds()
-		if err == nil {
-			d.TCPConnectivity = true
-			conn.Close()
-
-			if parsed.Scheme == "https" {
-				tlsStart := time.Now()
-				tlsConn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", addr, &tls.Config{
-					ServerName: host,
-				})
-				d.TLSHandshakeMs = time.Since(tlsStart).Milliseconds()
-				if err == nil {
-					d.TLSHandshake = true
-					tlsConn.Close()
-				}
-			} else {
-				d.TLSHandshake = true
-			}
-		}
+	healthURL := *base
+	healthURL.Path = "/api/v1/health"
+	healthURL.RawQuery = ""
+	if resp, requestErr := diagnosticGET(ctx, client, healthURL.String()); requestErr == nil {
+		d.PanelReachable = resp.StatusCode >= 200 && resp.StatusCode < 500
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
 	}
 
-	if d.DNSResolution && d.TCPConnectivity {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(panelURL, "/")+"/health", nil)
-		if err == nil {
-			client := &http.Client{Timeout: 5 * time.Second}
-			resp, err := client.Do(req)
-			if err == nil {
-				d.PanelReachable = true
-				resp.Body.Close()
-			}
+	if s.panelClient != nil && s.token != "" {
+		_, requestErr := s.panelClient.GetServers(ctx, 1)
+		if requestErr != nil {
+			d.AuthenticationMsg = "panel authentication probe failed"
+			return d
 		}
+		d.Authentication = true
+		d.AuthenticationMsg = http.StatusText(http.StatusOK)
+		d.APIVersionMatch = true
 	}
-
-	if s.panelClient != nil {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(panelURL, "/")+"/api/remote/servers?per_page=1", nil)
-		if err == nil {
-			req.Header.Set("Authorization", "Bearer "+s.token)
-			req.Header.Set("Accept", "application/vnd.forge.v1+json")
-			client := &http.Client{Timeout: 5 * time.Second}
-			resp, err := client.Do(req)
-			if err == nil {
-				d.Authentication = resp.StatusCode < 400
-				d.AuthenticationMsg = http.StatusText(resp.StatusCode)
-				if resp.StatusCode == 200 {
-					d.APIVersionMatch = true
-				}
-				resp.Body.Close()
-			} else {
-				d.AuthenticationMsg = err.Error()
-			}
-		}
-	}
-
 	return d
+}
+
+func diagnosticPanelURL(raw string) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, errors.New("panel URL is empty")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Hostname() == "" || parsed.User != nil {
+		return nil, errors.New("panel URL must include a host and no credentials")
+	}
+	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && diagnosticLoopbackHost(parsed.Hostname())) {
+		return nil, errors.New("panel URL must use HTTPS except on loopback")
+	}
+	parsed.Path = strings.TrimSuffix(strings.TrimSuffix(strings.TrimRight(parsed.Path, "/"), "/api/v1"), "/api/remote")
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed, nil
+}
+
+func diagnosticLoopbackHost(host string) bool {
+	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func restrictedDiagnosticIP(ip net.IP) bool {
+	if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+		return true
+	}
+	_, cgnat, _ := net.ParseCIDR("100.64.0.0/10")
+	return cgnat.Contains(ip)
+}
+
+func diagnosticGET(ctx context.Context, client *http.Client, endpoint string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create diagnostic request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.forge.v1+json")
+	return client.Do(req)
+}
+
+// pinnedDiagnosticClient returns a dialer and an HTTP client whose dialing is
+// pinned to address, which must already have passed restricted-address
+// validation. Every phase is capped at five seconds, redirects are never
+// followed, and no proxy configuration is honored.
+func pinnedDiagnosticClient(address string) (*net.Dialer, *http.Client) {
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	transport := &http.Transport{
+		Proxy:               nil,
+		TLSHandshakeTimeout: 5 * time.Second,
+		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, address)
+		},
+	}
+	return dialer, &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+// ProbePanelHealth performs a single credential-free probe of the configured
+// panel health endpoint, applying the same HTTPS-or-loopback policy, restricted
+// address rejection, dial pinning, timeouts, and response-size limits as the
+// diagnostics API. It returns the HTTP status code of the probe, or 0 and an
+// error when the endpoint is invalid, restricted, or unreachable.
+func ProbePanelHealth(ctx context.Context, panelURL string) (int, error) {
+	base, err := diagnosticPanelURL(panelURL)
+	if err != nil {
+		return 0, err
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", base.Hostname())
+	if err != nil || len(ips) == 0 {
+		return 0, fmt.Errorf("resolve panel host: %w", err)
+	}
+	allowLoopback := diagnosticLoopbackHost(base.Hostname())
+	var pinned net.IP
+	for _, ip := range ips {
+		if allowLoopback && ip.IsLoopback() || !restrictedDiagnosticIP(ip) {
+			pinned = ip
+			break
+		}
+	}
+	if pinned == nil {
+		return 0, errors.New("panel endpoint resolves only to restricted addresses")
+	}
+	port := base.Port()
+	if port == "" {
+		port = map[bool]string{true: "443", false: "80"}[base.Scheme == "https"]
+	}
+	_, client := pinnedDiagnosticClient(net.JoinHostPort(pinned.String(), port))
+	defer client.CloseIdleConnections()
+
+	healthURL := *base
+	healthURL.Path = "/api/v1/health"
+	healthURL.RawQuery = ""
+	resp, err := diagnosticGET(ctx, client, healthURL.String())
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	return resp.StatusCode, nil
 }

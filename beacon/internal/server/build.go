@@ -445,17 +445,34 @@ func (j *buildJob) isTerminal() bool {
 func (m *buildManager) reapAbandoned() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	cutoff := time.Now()
 	for id, job := range m.active {
-		if job.status == "running" && time.Since(job.startedAt) > 12*time.Hour {
-			job.mu.Lock()
-			job.status = "abandoned"
-			job.exitCode = -1
-			job.mu.Unlock()
-			job.cancel()
+		job.mu.RLock()
+		status := job.status
+		startedAt := job.startedAt
+		job.mu.RUnlock()
+		if status == "running" {
+			if cutoff.Sub(startedAt) > 12*time.Hour {
+				job.mu.Lock()
+				job.status = "abandoned"
+				job.exitCode = -1
+				job.mu.Unlock()
+				job.cancel()
+				delete(m.active, id)
+			}
+			continue
+		}
+		// Terminal jobs (succeeded/failed/canceled/abandoned) are retained for
+		// a bounded window so clients can poll their status, then evicted so
+		// the daemon does not accumulate log buffers (up to 100MB each)
+		// indefinitely.
+		if cutoff.Sub(startedAt) > maxCompletedRetention {
 			delete(m.active, id)
 		}
 	}
 }
+
+const maxCompletedRetention = time.Hour
 
 func (s *Server) startBuildReaper(ctx context.Context) {
 	go func() {

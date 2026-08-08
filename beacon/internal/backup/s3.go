@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,13 +50,14 @@ type s3Uploader interface {
 }
 
 type S3Backup struct {
-	config    *S3Config
-	client    s3API
-	uploader  s3Uploader
-	local     *LocalBackup
-	retryBase time.Duration
-	mu        sync.Mutex
-	progress  ProgressFunc
+	config     *S3Config
+	client     s3API
+	uploader   s3Uploader
+	local      *LocalBackup
+	retryBase  time.Duration
+	mu         sync.Mutex
+	progress   ProgressFunc
+	diskFreeFn func(dir string) (int64, error)
 }
 
 func (s *S3Backup) SetWriteLimit(bytesPerSec int64) {
@@ -73,6 +76,9 @@ func NewS3Backup(config *S3Config) (*S3Backup, error) {
 	if strings.TrimSpace(config.AccessKeyID) == "" || strings.TrimSpace(config.SecretAccessKey) == "" {
 		return nil, errors.New("S3 access key and secret key are required")
 	}
+	if err := validateS3Endpoint(config.Endpoint); err != nil {
+		return nil, err
+	}
 	local, err := NewLocalBackup(config.BackupRoot)
 	if err != nil {
 		return nil, err
@@ -89,6 +95,25 @@ func NewS3Backup(config *S3Config) (*S3Backup, error) {
 		configureS3Options(options, config)
 	})
 	return &S3Backup{config: config, client: client, uploader: manager.NewUploader(client), local: local, retryBase: time.Second}, nil
+}
+
+func validateS3Endpoint(raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	endpoint, err := url.Parse(raw)
+	if err != nil || endpoint.Hostname() == "" || endpoint.User != nil {
+		return errors.New("S3 endpoint must be an absolute URL without credentials")
+	}
+	if endpoint.Scheme == "https" {
+		return nil
+	}
+	host := strings.TrimSuffix(strings.ToLower(endpoint.Hostname()), ".")
+	ip := net.ParseIP(host)
+	if endpoint.Scheme == "http" && (host == "localhost" || ip != nil && ip.IsLoopback()) {
+		return nil
+	}
+	return errors.New("S3 endpoint must use HTTPS except on loopback")
 }
 
 func (s *S3Backup) Type() AdapterType { return S3Adapter }
@@ -217,13 +242,13 @@ func (s *S3Backup) Delete(namespace, name string) error {
 	return nil
 }
 
-func (s *S3Backup) Restore(ctx context.Context, namespace, name, serverRoot string, truncate bool) error {
+func (s *S3Backup) Restore(ctx context.Context, namespace, name, serverRoot string, truncate bool, paths []string) error {
 	stagedName, cleanup, err := s.downloadToStaging(ctx, namespace, name)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-	if err := s.local.Restore(ctx, namespace, stagedName, serverRoot, truncate); err != nil {
+	if err := s.local.Restore(ctx, namespace, stagedName, serverRoot, truncate, paths); err != nil {
 		return fmt.Errorf("restore downloaded S3 backup: %w", err)
 	}
 	return nil
@@ -300,6 +325,15 @@ func (s *S3Backup) downloadToStaging(ctx context.Context, namespace, name string
 		_ = result.Body.Close()
 		cleanup()
 		return "", func() {}, errors.New("S3 backup has an invalid SHA-256 checksum")
+	}
+	requiredSpace := maxS3DownloadBytes
+	if result.ContentLength != nil && *result.ContentLength > 0 {
+		requiredSpace = *result.ContentLength
+	}
+	if err := s.ensureStagingDiskSpace(dir, requiredSpace); err != nil {
+		_ = result.Body.Close()
+		cleanup()
+		return "", func() {}, err
 	}
 	written, copyErr := copyWithContext(ctx, temp, io.LimitReader(result.Body, maxS3DownloadBytes+1))
 	bodyCloseErr := result.Body.Close()

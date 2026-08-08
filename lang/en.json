@@ -4,6 +4,19 @@
     "tagline": "Game Server Management Panel",
     "footer": "Powered by GamePanel"
   },
+  "organizations": {
+    "title": "Organizations",
+    "ownerLabel": "Owned by {name}",
+    "create": {
+      "title": "Create an organization",
+      "namePlaceholder": "Organization name",
+      "slugPlaceholder": "Slug",
+      "creating": "Creating..."
+    },
+    "list": {
+      "emptyState": "No organizations yet. Create one to get started."
+    }
+  },
   "auth": {
     "login": "Sign In",
     "logout": "Sign Out",
@@ -103,6 +116,55 @@
       "installing": "Installing",
       "suspended": "Suspended",
       "error": "Error"
+    }
+  },
+  "servers": {
+    "title": "Servers",
+    "allServers": "All Servers",
+    "myServers": "My Servers",
+    "manageAndMonitor": "Manage and monitor your game servers",
+    "showingOthers": "Showing all servers",
+    "showingYours": "Showing your servers",
+    "searchServers": "Search servers",
+    "searchPlaceholder": "Search by name, description, node, or address",
+    "loadingServers": "Loading servers...",
+    "failedToLoad": "Failed to load servers.",
+    "noMatching": "No servers match your search",
+    "tryDifferentSearch": "Try a different search term.",
+    "empty": {
+      "title": "No servers yet",
+      "description": "When a server is assigned to you, it will appear here."
+    },
+    "nodeLabel": "Node",
+    "addressLabel": "Address",
+    "running": "Running",
+    "transferring": "Transferring",
+    "verifyingSession": "Verifying session...",
+    "sessionVerificationUnavailable": "Session verification is unavailable",
+    "retryOnceReachable": "Retrying once the panel is reachable.",
+    "paginationLabel": "Server list pagination"
+  },
+  "account": {
+    "title": "Account"
+  },
+  "pages": {
+    "notFound": {
+      "badge": "404 · Not found",
+      "title": "That page isn't here",
+      "description": "The address may be incorrect, or the page may have moved.",
+      "returnHome": "Return home"
+    },
+    "error": {
+      "badge": "Unexpected error",
+      "title": "This page couldn't be loaded",
+      "description": "Your data was not changed. Try rendering the page again, or return home if the problem continues.",
+      "reference": "Reference: {digest}",
+      "tryAgain": "Try again",
+      "returnHome": "Return home"
+    },
+    "loading": {
+      "label": "Loading page",
+      "status": "Loading…"
     }
   },
   "admin": {
@@ -236,6 +298,7 @@
     "confirm": "Confirm",
     "back": "Back",
     "next": "Next",
+    "continue": "Continue",
     "close": "Close",
     "yes": "Yes",
     "no": "No",
@@ -432,14 +495,146 @@
     "resettingFor": "Resetting password for"
   },
   "setupWizard": {
+    "eyebrow": "Panel setup",
+    "checkingReadiness": "Checking readiness",
+    "checkingReadinessDesc": "Verifying the panel can be configured.",
+    "verifyingEnvironment": "Verifying environment...",
+    "readinessFailed": "Readiness check failed",
+    "readinessFailedDesc": "The setup API could not be reached.",
     "unableToVerify": "Unable to verify setup status",
     "noStateAssumed": "Could not reach the setup API. Assuming no initial state and retrying.",
     "alreadyComplete": "Setup already complete",
     "alreadyCompleteDesc": "An administrator account already exists.",
     "returningToSignIn": "Returning to sign in...",
+    "genericError": "Something went wrong during setup. Please try again.",
+    "progressLabel": "Setup progress",
+    "steps": {
+      "readiness": "Readiness",
+      "administrator": "Administrator",
+      "organization": "Organization",
+      "node": "Node",
+      "smtp": "Email (SMTP)",
+      "backup": "Backups",
+      "domain": "Domain & TLS"
+    },
+    "step1": {
+      "title": "Readiness check",
+      "description": "Confirm the panel API is ready before continuing.",
+      "apiReady": "API is ready",
+      "apiReadyDesc": "The setup endpoint is reachable and the panel is ready to be configured.",
+      "version": "API version",
+      "notReported": "Not reported",
+      "administrator": "Administrator account",
+      "present": "Created",
+      "notCreated": "Not created",
+      "infoNote": "Setup will create your administrator account, organization, and first node."
+    },
     "step2": {
+      "title": "Create the administrator",
+      "description": "This account will have full control over the panel.",
+      "emailLabel": "Administrator email",
+      "emailPlaceholder": "admin@example.com",
+      "passwordHint": "At least 12 characters, different from your email.",
+      "confirmLabel": "Confirm password",
       "hidePasswords": "Hide passwords",
-      "showPasswords": "Show passwords"
+      "showPasswords": "Show passwords",
+      "errors": {
+        "invalidEmail": "Please enter a valid email address.",
+        "tooShort": "Password must be at least 12 characters.",
+        "sameAsEmail": "Password must be different from your email.",
+        "mismatch": "Passwords do not match."
+      }
+    },
+    "step3": {
+      "title": "Create your organization",
+      "description": "Name the company or team this panel serves.",
+      "heading": "Organization",
+      "subheading": "Servers are grouped under one organization during setup.",
+      "orgLabel": "Organization name",
+      "orgHint": "Shown in the header and invoices. You can rename it later.",
+      "placeholder": "My Game Host"
+    },
+    "step4": {
+      "title": "Configure your first node",
+      "description": "The node is the machine that runs your servers.",
+      "heading": "Node configuration",
+      "subheading": "This machine will be registered as the first node on the panel.",
+      "nameLabel": "Node name",
+      "nameHint": "A short label identifying this machine.",
+      "placeholderName": "Primary Node",
+      "fqdnLabel": "Fully qualified domain name (FQDN)",
+      "fqdnHint": "The hostname the panel and wings use to reach this node.",
+      "placeholderFqdn": "node1.example.com"
+    },
+    "step5": {
+      "title": "Configure email delivery",
+      "description": "SMTP is optional and can be configured later.",
+      "heading": "SMTP settings",
+      "subheading": "Used for password resets and account notifications.",
+      "hostLabel": "SMTP host",
+      "hostHint": "Leave empty to skip email setup for now.",
+      "placeholderHost": "smtp.example.com",
+      "portLabel": "Port",
+      "placeholderPort": "587",
+      "encryptionLabel": "Encryption",
+      "starttls": "STARTTLS",
+      "ssl": "SSL/TLS",
+      "none": "None",
+      "userLabel": "Username",
+      "placeholderUser": "user@example.com",
+      "passLabel": "Password",
+      "fromLabel": "From address",
+      "placeholderFrom": "noreply@example.com"
+    },
+    "step6": {
+      "title": "Choose a backup destination",
+      "description": "Backups keep your servers safe.",
+      "heading": "Backup destination",
+      "subheading": "Backups are stored locally unless you select S3.",
+      "driverLabel": "Storage driver",
+      "local": "Local disk",
+      "s3": "S3-compatible storage",
+      "bucketLabel": "Bucket name",
+      "placeholderBucket": "my-backup-bucket",
+      "regionLabel": "Region",
+      "placeholderRegion": "us-east-1",
+      "endpointLabel": "Endpoint URL",
+      "placeholderEndpoint": "https://s3.amazonaws.com"
+    },
+    "step7": {
+      "title": "Set up the panel domain",
+      "description": "This domain serves the panel and its certificates.",
+      "heading": "Domain and TLS",
+      "subheading": "A valid domain is required to issue TLS certificates.",
+      "domainLabel": "Panel domain",
+      "domainHint": "Point a DNS record at this machine before continuing.",
+      "placeholderDomain": "panel.example.com",
+      "tlsEmailLabel": "Certificate contact email",
+      "tlsEmailHint": "Used for Let's Encrypt expiry notices.",
+      "placeholderTlsEmail": "admin@example.com",
+      "tlsInfo": "A Let's Encrypt certificate will be issued automatically after setup.",
+      "completeSetup": "Complete setup"
+    },
+    "step8": {
+      "title": "Setup complete",
+      "description": "The panel is ready to use.",
+      "readyIntro": "Your administrator account",
+      "readyOutro": "is ready. Sign in to manage servers, nodes, and teams.",
+      "whatConfigured": "What was configured",
+      "adminCreated": "Administrator account created",
+      "organizationLine": "Organization \"{name}\" created",
+      "nodeLine": "Node \"{name}\" registered",
+      "smtpLine": "SMTP configured for {host}",
+      "smtpNotConfigured": "SMTP will be configured later",
+      "backupLine": "Backups stored on {driver}",
+      "domainLine": "TLS certificates for {domain}",
+      "continueToSignIn": "Continue to sign in"
+    },
+    "errors": {
+      "invalidFqdn": "Enter a valid hostname, e.g. node1.example.com.",
+      "invalidDomain": "Enter a valid domain, e.g. panel.example.com.",
+      "invalidPort": "Enter a valid port between 1 and 65535.",
+      "smtpIncomplete": "Enter the SMTP host or leave the email fields blank."
     }
   },
   "setup": {

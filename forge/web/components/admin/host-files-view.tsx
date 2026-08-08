@@ -12,6 +12,7 @@ import {
 } from "@/lib/api/host-files";
 import { NodeSelect } from "./node-select";
 import { AdminToolbar } from "./admin-ui";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 const btn = cn(
   "inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10",
@@ -56,6 +57,7 @@ function Breadcrumbs({ directory, onOpen }: { directory: string; onOpen: (path: 
 
 export function HostFilesView() {
   const queryClient = useQueryClient();
+  const [confirm, renderConfirm] = useConfirm();
   const [directory, setDirectory] = useState("/");
   const [editing, setEditing] = useState<string | null>(null);
   const [content, setContent] = useState("");
@@ -181,8 +183,14 @@ export function HostFilesView() {
     });
   };
 
-  const handleDelete = (entry: FileEntry) => {
-    if (!window.confirm(`Permanently delete ${entry.isDir ? "directory" : "file"} "${entry.name}"?`)) return;
+  const handleDelete = async (entry: FileEntry) => {
+    const confirmed = await confirm({
+      title: `Permanently delete ${entry.isDir ? "directory" : "file"} "${entry.name}"?`,
+      description: `This ${entry.isDir ? "directory and everything inside it" : "file"} will be removed from the host node. This cannot be undone.`,
+      danger: true,
+      confirmLabel: "Delete",
+    });
+    if (!confirmed) return;
     void run("Deleting", async () => {
       await deleteFile(entry.path, nodeId || undefined);
       await refresh();
@@ -279,6 +287,7 @@ export function HostFilesView() {
 
   return (
     <div className="space-y-4">
+      {renderConfirm()}
       <AdminToolbar className="items-center">
         <Breadcrumbs directory={directory} onOpen={setDirectory} />
         <div className="flex flex-wrap items-center gap-2">

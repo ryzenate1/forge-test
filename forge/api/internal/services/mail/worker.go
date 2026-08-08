@@ -80,9 +80,13 @@ func (w *Worker) processOne(ctx context.Context) bool {
 	settings, err := w.store.GetPanelMailSettings(settingsCtx)
 	settingsCancel()
 	if err == nil {
-		sendCtx, sendCancel := context.WithTimeout(ctx, 20*time.Second)
-		err = w.sender.Send(sendCtx, settings, item.Recipient, item.Subject, item.TextBody, item.HTMLBody)
-		sendCancel()
+		if settings.Driver == "log" {
+			log.Printf("mail (log driver): to=%s subject=%q\n%s", item.Recipient, item.Subject, item.TextBody)
+		} else {
+			sendCtx, sendCancel := context.WithTimeout(ctx, 20*time.Second)
+			err = w.sender.Send(sendCtx, settings, item.Recipient, item.Subject, item.TextBody, item.HTMLBody)
+			sendCancel()
+		}
 	}
 	finishCtx, finishCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer finishCancel()

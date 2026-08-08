@@ -10,10 +10,12 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["Plus Jakarta Sans", "IBM Plex Sans", "system-ui", "sans-serif"],
+        sans: ["Manrope", "IBM Plex Sans", "system-ui", "sans-serif"],
         mono: ["JetBrains Mono", "Fira Code", "Cascadia Code", "monospace"],
       },
       colors: {
+        canvas: "var(--canvas)",
+        raised: "var(--surface-raised)",
         surface: {
           base: "var(--canvas)",
           secondary: "var(--surface)",
@@ -27,7 +29,7 @@ const config: Config = {
         },
         brand: {
           DEFAULT: "#dc2626",
-          hover: "#b91c1c",
+          hover: "#ef4444",
           dark: "#991b1b",
           darker: "#7f1d1d",
           light: "#ef4444",

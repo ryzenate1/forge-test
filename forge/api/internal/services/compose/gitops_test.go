@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"gamepanel/forge/internal/daemon"
 	"gamepanel/forge/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,7 +19,8 @@ import (
 
 // TestGitOps_DeployFromGitValidation validates the deploy request.
 func TestGitOps_DeployFromGitValidation(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	ctx := context.Background()
 
 	_, err := svc.DeployFromGit(ctx, GitDeployFromGitRequest{})
@@ -34,7 +36,8 @@ func TestGitOps_DeployFromGitValidation(t *testing.T) {
 
 // TestGitOps_NonGitBackedErrors checks that non-git stacks return ErrStackNotGitBacked.
 func TestGitOps_NonGitBackedErrors(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	ctx := context.Background()
 
 	_, err := svc.CheckForUpdates(ctx, "nonexistent")
@@ -69,7 +72,8 @@ func TestGitOps_NonGitBackedErrors(t *testing.T) {
 // TestGitOps_StackNotGitBacked checks operations on non-git stacks.
 func TestGitOps_StackNotGitBacked(t *testing.T) {
 	st := &Service{store: nil}
-	svc := NewGitOpsService(nil, st, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, st, nil, nil, nil, dc)
 	ctx := context.Background()
 
 	gitBackedOps := []func() error{
@@ -89,7 +93,8 @@ func TestGitOps_StackNotGitBacked(t *testing.T) {
 
 // TestGitOps_WebhookHMACSignature verifies signature verification.
 func TestGitOps_WebhookHMACSignature(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	store := &mockStore{stacks: map[string]*store.ComposeStack{}}
 	svc.store = store
 	ctx := context.Background()
@@ -123,7 +128,8 @@ func TestGitOps_WebhookHMACSignature(t *testing.T) {
 
 // TestGitOps_WebhookBadSignature rejects bad signatures.
 func TestGitOps_WebhookBadSignature(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	store := &mockStore{stacks: map[string]*store.ComposeStack{}}
 	svc.store = store
 	ctx := context.Background()
@@ -151,7 +157,8 @@ func TestGitOps_WebhookBadSignature(t *testing.T) {
 
 // TestGitOps_WebhookStaleRejection rejects old/stale webhooks.
 func TestGitOps_WebhookStaleRejection(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	store := &mockStore{stacks: map[string]*store.ComposeStack{}}
 	svc.store = store
 	ctx := context.Background()
@@ -186,7 +193,8 @@ func TestGitOps_WebhookStaleRejection(t *testing.T) {
 
 // TestGitOps_WebhookWrongBranch ignores webhook for wrong branch.
 func TestGitOps_WebhookWrongBranch(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	store := &mockStore{stacks: map[string]*store.ComposeStack{}}
 	svc.store = store
 	ctx := context.Background()
@@ -220,7 +228,8 @@ func TestGitOps_WebhookWrongBranch(t *testing.T) {
 
 // TestGitOps_SetBranch updates branch and resets commit tracking.
 func TestGitOps_SetBranch(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	store := &mockStore{stacks: map[string]*store.ComposeStack{}}
 	svc.store = store
 	ctx := context.Background()
@@ -246,7 +255,8 @@ func TestGitOps_SetBranch(t *testing.T) {
 
 // TestGitOps_SetBranchInvalid rejects invalid branch names.
 func TestGitOps_SetBranchInvalid(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	ctx := context.Background()
 	_, err := svc.SetBranch(ctx, "any", "../evil")
 	require.Error(t, err)
@@ -254,7 +264,8 @@ func TestGitOps_SetBranchInvalid(t *testing.T) {
 
 // TestGitOps_RollbackToPreviousNoDeployment returns error when no previous.
 func TestGitOps_RollbackToPreviousNoDeployment(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	store := &mockStore{stacks: map[string]*store.ComposeStack{}}
 	svc.store = store
 	ctx := context.Background()
@@ -288,7 +299,8 @@ func TestGitOps_ComputeHash(t *testing.T) {
 
 // TestGitOps_GetGitStatus returns status for non-git stacks.
 func TestGitOps_GetGitStatus(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	store := &mockStore{stacks: map[string]*store.ComposeStack{}}
 	svc.store = store
 	ctx := context.Background()
@@ -318,7 +330,8 @@ func TestGitOps_GetGitStatus(t *testing.T) {
 
 // TestGitOps_SetAutoUpdate toggles polling.
 func TestGitOps_SetAutoUpdate(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	store := &mockStore{stacks: map[string]*store.ComposeStack{}}
 	svc.store = store
 	ctx := context.Background()
@@ -344,7 +357,8 @@ func TestGitOps_SetAutoUpdate(t *testing.T) {
 
 // TestGitOps_DetectDrift on non-git stack returns error.
 func TestGitOps_DetectDriftNonGit(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	store := &mockStore{stacks: map[string]*store.ComposeStack{}}
 	svc.store = store
 	ctx := context.Background()
@@ -383,7 +397,8 @@ services:
 
 // TestGitOps_WebhookNoSignature returns error on missing signature.
 func TestGitOps_WebhookNoSignature(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	store := &mockStore{stacks: map[string]*store.ComposeStack{}}
 	svc.store = store
 	ctx := context.Background()
@@ -408,7 +423,8 @@ func TestGitOps_WebhookNoSignature(t *testing.T) {
 
 // TestGitOps_WebhookNoSecret returns error when no secret.
 func TestGitOps_WebhookNoSecret(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	store := &mockStore{stacks: map[string]*store.ComposeStack{}}
 	svc.store = store
 	ctx := context.Background()
@@ -428,7 +444,8 @@ func TestGitOps_WebhookNoSecret(t *testing.T) {
 
 // TestGitOps_GetLastWebhookAt returns nil for no webhook.
 func TestGitOps_GetLastWebhookAt(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	store := &mockStore{stacks: map[string]*store.ComposeStack{}}
 	svc.store = store
 	ctx := context.Background()
@@ -456,7 +473,8 @@ func TestGitOps_GetLastWebhookAt(t *testing.T) {
 
 // TestGitOps_WebhookDuplicateIgnore ignores duplicate commits.
 func TestGitOps_WebhookDuplicateCommit(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	store := &mockStore{stacks: map[string]*store.ComposeStack{}}
 	svc.store = store
 	ctx := context.Background()
@@ -489,7 +507,8 @@ func TestGitOps_WebhookDuplicateCommit(t *testing.T) {
 
 // TestGitOps_SetWebhookSecret stores secret and ID.
 func TestGitOps_SetWebhookSecret(t *testing.T) {
-	svc := NewGitOpsService(nil, nil, nil, nil, nil)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewGitOpsService(nil, nil, nil, nil, nil, dc)
 	store := &mockStore{stacks: map[string]*store.ComposeStack{}}
 	svc.store = store
 	ctx := context.Background()

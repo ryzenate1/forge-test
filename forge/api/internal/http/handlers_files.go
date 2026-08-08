@@ -38,7 +38,7 @@ func resolveNode(cfg Config, c *fiber.Ctx) (*nodeTarget, error) {
 	if nodeID == "" {
 		nodes, err := cfg.Store.ListNodes(ctx)
 		if err != nil {
-			return nil, fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return nil, respondInternalError(c, err)
 		}
 		for _, n := range nodes {
 			if n.Status == "active" {
@@ -371,14 +371,14 @@ func hostFilesUpload(cfg Config) fiber.Handler {
 		rawBody := c.Request().Body()
 		req, err := http.NewRequestWithContext(c.Context(), http.MethodPost, targetURL, bytes.NewReader(rawBody))
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		req.Header.Set("Content-Type", string(c.Request().Header.ContentType()))
 		req.ContentLength = int64(len(rawBody))
 
 		headers, err := cfg.Daemon.SignedHeaders(target.NodeToken, http.MethodPost, req.URL.RequestURI(), rawBody)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		for k, vals := range headers {
 			for _, v := range vals {

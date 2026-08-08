@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { fetchJSON, postJSON, patchJSON, deleteJSON } from "@/lib/api";
 import { AdminPageLayout, AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type RouteRule = {
   id: string;
@@ -46,6 +47,7 @@ const defaultPolicyForm = {
 };
 
 export default function AdminTrafficPage() {
+  const [confirm, renderConfirm] = useConfirm();
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<Tab>("routes");
   const [search, setSearch] = useState("");
@@ -190,7 +192,7 @@ export default function AdminTrafficPage() {
                       <td className="px-4 py-3">
                         <div className="flex gap-1">
                           <Btn size="sm" tone="ghost" onClick={() => { setEditingRoute(rule); setRouteForm({ ...rule, methods: (rule.methods ?? ["ALL"]).join(", ") }); }}>Edit</Btn>
-                          <Btn size="sm" tone="danger" onClick={() => { if (confirm("Delete route?")) deleteRouteMutation.mutate(rule.id); }}>
+                          <Btn size="sm" tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Delete route "${rule.path || rule.id.slice(0, 8)}"?`, description: `Traffic matching ${rule.path || "this route"} will stop being forwarded to ${rule.targetGroup}. This cannot be undone.`, danger: true, confirmLabel: "Delete" })) deleteRouteMutation.mutate(rule.id); })(); }}>
                             <Trash2 size={12} />
                           </Btn>
                         </div>
@@ -245,7 +247,7 @@ export default function AdminTrafficPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     <Pill tone={p.enabled ? "green" : "neutral"}>{p.enabled ? "Enabled" : "Disabled"}</Pill>
-                    <Btn size="sm" tone="danger" onClick={() => { if (confirm("Delete policy?")) deletePolicyMutation.mutate(p.id); }}>
+                    <Btn size="sm" tone="danger" onClick={() => { void (async () => { if (await confirm({ title: "Delete this traffic policy?", description: "The policy will be removed. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deletePolicyMutation.mutate(p.id); })(); }}>
                       <Trash2 size={12} />
                     </Btn>
                   </div>
@@ -310,9 +312,11 @@ export default function AdminTrafficPage() {
           />
         </Modal>
       )}
+      {renderConfirm()}
     </AdminPageLayout>
   );
 }
+
 
 function RouteFormModal({
   title, form, onChange, onSave, onClose, saving,

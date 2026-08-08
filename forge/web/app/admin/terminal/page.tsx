@@ -32,6 +32,8 @@ const TERMINAL_THEME = {
   brightWhite: "#f8fafc",
 };
 
+const TERMINAL_MAX_RETRIES = 15;
+
 function useFit(terminal: XTerm | null, fitAddon: FitAddon | null) {
   useEffect(() => {
     if (!terminal || !fitAddon) return;
@@ -128,6 +130,8 @@ export default function AdminTerminalPage() {
 
     let aborted = false;
 
+    // /host/terminal/ws is a session-cookie-protected route with no ticket
+    // flow, so it only works same-origin (cookies are not sent cross-origin).
     const wsUrl = API_BASE_URL.replace(/^http/, "ws") + "/host/terminal/ws"
       + (nodeId ? `?nodeId=${encodeURIComponent(nodeId)}` : "");
 
@@ -177,6 +181,11 @@ export default function AdminTerminalPage() {
       if (aborted) return;
       setConnected(false);
       terminal.writeln("\x1b[1;31mDisconnected\x1b[0m");
+      if (reconnectAttempt.current >= TERMINAL_MAX_RETRIES) {
+        setError(`Connection dropped after ${TERMINAL_MAX_RETRIES} retries — use Reconnect to try again`);
+        terminal.writeln("\x1b[1;31mAuto-reconnect exhausted; press Reconnect to retry\x1b[0m");
+        return;
+      }
       const delay = Math.min(1000 * Math.pow(2, reconnectAttempt.current), 30000);
       reconnectAttempt.current += 1;
       reconnectTimer.current = setTimeout(() => {

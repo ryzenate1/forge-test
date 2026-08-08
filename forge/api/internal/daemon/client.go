@@ -64,11 +64,10 @@ func jitter(d time.Duration) time.Duration {
 }
 
 type Client struct {
-	httpClient               *http.Client
-	developmentFallbackToken string
-	defaultBaseURL           string
-	defaultNodeToken         string
-	allowInsecureHTTP        bool
+	httpClient       *http.Client
+	defaultBaseURL   string
+	defaultNodeToken string
+	loopback         bool
 }
 
 func (c *Client) SetDefaultNode(baseURL, nodeToken string) {
@@ -126,12 +125,13 @@ func (c *Client) Post(ctx context.Context, endpoint string, body, dest interface
 	return nil
 }
 
-func newRetryRoundTripper(base http.RoundTripper) http.RoundTripper {
-	return &retryRoundTripper{base: base}
+func newRetryRoundTripper(base http.RoundTripper, resign func(*http.Request, []byte) error) http.RoundTripper {
+	return &retryRoundTripper{base: base, resign: resign}
 }
 
 type retryRoundTripper struct {
-	base http.RoundTripper
+	base   http.RoundTripper
+	resign func(*http.Request, []byte) error
 }
 
 func (r *retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -162,6 +162,14 @@ func (r *retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 			if bodyBytes != nil {
 				req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			}
+			// A signed request that reached the daemon has already had its
+			// nonce consumed, so replaying the same signature would be
+			// rejected. Re-sign with a fresh timestamp and nonce instead.
+			if r.resign != nil {
+				if err := r.resign(req, bodyBytes); err != nil {
+					return nil, err
+				}
+			}
 		}
 		resp, err = r.base.RoundTrip(req)
 		if err != nil {
@@ -180,24 +188,58 @@ func (r *retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 	return nil, fmt.Errorf("request failed after %d retries, last status: %d", maxRetries+1, lastStatus)
 }
 
-func NewClient() *Client {
-	return &Client{httpClient: &http.Client{
+func NewClient(baseURL, nodeToken string) (*Client, error) {
+	nodeToken = strings.TrimSpace(nodeToken)
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" && nodeToken == "" {
+		client := &Client{}
+		client.httpClient = &http.Client{
+			Timeout:   15 * time.Minute,
+			Transport: newRetryRoundTripper(http.DefaultTransport, client.resignRequest),
+		}
+		return client, nil
+	}
+	if nodeToken == "" {
+		return nil, ErrMissingNodeToken
+	}
+	lb := isLoopback(baseURL)
+	if !lb {
+		u, err := url.Parse(baseURL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid base URL: %w", err)
+		}
+		u.Scheme = "https"
+		baseURL = u.String()
+	}
+	var transport *http.Transport
+	if lb {
+		transport = http.DefaultTransport.(*http.Transport).Clone()
+	} else {
+		transport = daemonTransport()
+	}
+	client := &Client{
+		defaultBaseURL:   strings.TrimRight(baseURL, "/"),
+		defaultNodeToken: nodeToken,
+		loopback:         lb,
+	}
+	client.httpClient = &http.Client{
 		Timeout:   15 * time.Minute,
-		Transport: newRetryRoundTripper(daemonTransport()),
-	}}
+		Transport: newRetryRoundTripper(transport, client.resignRequest),
+	}
+	return client, nil
 }
 
-// NewClientWithDevelopmentFallback preserves local Phase 0 operation for
-// targets created without a stored credential. Production must use NewClient.
-func NewClientWithDevelopmentFallback(nodeToken string) *Client {
-	return &Client{
-		httpClient: &http.Client{
-			Timeout:   15 * time.Minute,
-			Transport: newRetryRoundTripper(daemonTransport()),
-		},
-		developmentFallbackToken: strings.TrimSpace(nodeToken),
-		allowInsecureHTTP:        true,
+func isLoopback(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
 	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func daemonTransport() *http.Transport {
@@ -278,6 +320,8 @@ type ServerConfiguration struct {
 	Config      map[string]any    `json:"config"`
 	Mounts      []Mount           `json:"mounts"`
 	Provider    string            `json:"provider,omitempty"`
+	UID         int               `json:"uid"`
+	GID         int               `json:"gid"`
 }
 
 type Mount struct {
@@ -469,16 +513,15 @@ type ResponseError struct {
 }
 
 func (e *ResponseError) Error() string {
-	message := fmt.Sprintf("daemon %s failed with status %d", e.Operation, e.StatusCode)
-	if e.Details != "" {
-		message += ": " + e.Details
-	}
-	return message
+	// Details may contain workload paths or daemon internals. Keep them on the
+	// typed error for trusted logging, but never include them in user-facing
+	// err.Error() strings returned by API handlers.
+	return fmt.Sprintf("daemon %s failed with status %d", e.Operation, e.StatusCode)
 }
 
 func daemonResponseError(operation string, response *http.Response) error {
 	details := ""
-	if body, err := io.ReadAll(io.LimitReader(response.Body, 16*1024)); err == nil {
+	if body, err := io.ReadAll(io.LimitReader(response.Body, 4*1024)); err == nil {
 		details = strings.TrimSpace(string(body))
 	}
 	return &ResponseError{Operation: operation, StatusCode: response.StatusCode, Details: details}
@@ -1128,22 +1171,63 @@ func (c *Client) WebSocketURL(baseURL, serverID, stream string) (string, string)
 	return "wss://" + endpoint, path
 }
 
+// requestSigningKey carries the credential used to sign a request so that
+// retries can re-sign with a fresh nonce instead of replaying a consumed one.
+type requestSigningKey struct{}
+
+type requestSigning struct {
+	nodeToken string
+	signBody  bool
+}
+
 func (c *Client) SignedHeaders(nodeToken, method, requestURI string, body []byte) (http.Header, error) {
 	nodeToken, err := c.resolveNodeToken(nodeToken)
 	if err != nil {
 		return nil, err
 	}
-	timestamp := time.Now().UTC().Format(time.RFC3339)
+	timestamp, nonce, err := newSignatureParts()
+	if err != nil {
+		return nil, err
+	}
+	return signedHeaders(nodeToken, method, requestURI, timestamp, nonce, body), nil
+}
+
+// resignRequest replaces the HMAC headers on a request that is being retried.
+// The previous nonce was already consumed (or lost), so a fresh timestamp and
+// nonce are required for the retry to authenticate.
+func (c *Client) resignRequest(req *http.Request, body []byte) error {
+	signing, ok := req.Context().Value(requestSigningKey{}).(requestSigning)
+	if !ok {
+		return nil
+	}
+	timestamp, nonce, err := newSignatureParts()
+	if err != nil {
+		return err
+	}
+	if !signing.signBody {
+		body = nil
+	}
+	headers := signedHeaders(signing.nodeToken, req.Method, req.URL.RequestURI(), timestamp, nonce, body)
+	for key, values := range headers {
+		req.Header[key] = values
+	}
+	return nil
+}
+
+func newSignatureParts() (string, string, error) {
 	nonceBytes := make([]byte, 16)
 	if _, err := rand.Read(nonceBytes); err != nil {
-		return nil, fmt.Errorf("generate request nonce: %w", err)
+		return "", "", fmt.Errorf("generate request nonce: %w", err)
 	}
-	nonce := hex.EncodeToString(nonceBytes)
+	return time.Now().UTC().Format(time.RFC3339), hex.EncodeToString(nonceBytes), nil
+}
+
+func signedHeaders(nodeToken, method, requestURI, timestamp, nonce string, body []byte) http.Header {
 	headers := http.Header{}
 	headers.Set("X-Panel-Timestamp", timestamp)
 	headers.Set("X-Panel-Nonce", nonce)
 	headers.Set("X-Panel-Signature", sign(nodeToken, method, requestURI, timestamp, body, nonce))
-	return headers, nil
+	return headers
 }
 
 // HTTPClient returns the underlying HTTP client for direct request forwarding.
@@ -1237,7 +1321,12 @@ func (c *Client) HostFilesUpload(ctx context.Context, baseURL, nodeToken, path s
 	if err != nil {
 		return err
 	}
+	nodeToken, err = c.resolveNodeToken(nodeToken)
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", contentType)
+	req = req.WithContext(context.WithValue(req.Context(), requestSigningKey{}, requestSigning{nodeToken: nodeToken, signBody: false}))
 	headers, err := c.SignedHeaders(nodeToken, req.Method, req.URL.RequestURI(), nil)
 	if err != nil {
 		return err
@@ -1340,10 +1429,15 @@ func (c *Client) newRequest(ctx context.Context, nodeToken, method, url string, 
 	if err := c.validateNodeURL(req.URL); err != nil {
 		return nil, err
 	}
+	nodeToken, err = c.resolveNodeToken(nodeToken)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	req = req.WithContext(context.WithValue(req.Context(), requestSigningKey{}, requestSigning{nodeToken: nodeToken, signBody: true}))
 	headers, err := c.SignedHeaders(nodeToken, method, req.URL.RequestURI(), body)
 	if err != nil {
 		return nil, err
@@ -1360,7 +1454,12 @@ func (c *Client) newStreamRequest(ctx context.Context, nodeToken, method, url st
 	if err := c.validateNodeURL(req.URL); err != nil {
 		return nil, err
 	}
+	nodeToken, err = c.resolveNodeToken(nodeToken)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("Accept", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), requestSigningKey{}, requestSigning{nodeToken: nodeToken, signBody: false}))
 	headers, err := c.SignedHeaders(nodeToken, method, req.URL.RequestURI(), nil)
 	if err != nil {
 		return nil, err
@@ -1376,12 +1475,10 @@ func (c *Client) validateNodeURL(parsed *url.URL) error {
 	if parsed.User != nil {
 		return errors.New("Beacon node URL must not contain credentials")
 	}
-	if parsed.Scheme == "https" || (c != nil && c.allowInsecureHTTP) {
+	if parsed.Scheme == "https" {
 		return nil
 	}
-	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
-	ip := net.ParseIP(host)
-	if host == "localhost" || (ip != nil && ip.IsLoopback()) {
+	if c != nil && c.loopback {
 		return nil
 	}
 	return errors.New("Beacon node URL must use HTTPS")
@@ -1390,9 +1487,6 @@ func (c *Client) validateNodeURL(parsed *url.URL) error {
 func (c *Client) resolveNodeToken(nodeToken string) (string, error) {
 	if nodeToken = strings.TrimSpace(nodeToken); nodeToken != "" {
 		return nodeToken, nil
-	}
-	if c != nil && c.developmentFallbackToken != "" {
-		return c.developmentFallbackToken, nil
 	}
 	return "", ErrMissingNodeToken
 }

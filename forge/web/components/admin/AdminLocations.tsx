@@ -4,12 +4,13 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, MapPin, Plus, Trash2 } from "lucide-react";
 import { type ApiLocation, createLocation, deleteLocation, fetchLocations, updateLocation } from "@/lib/api";
-import { useToast } from "@/components/ui/toast";
+import { toast } from "@/components/ui/sonner";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { AdminFormSection, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "./admin-ui";
 
 export function AdminLocations() {
-  const { toast } = useToast();
   const qc = useQueryClient();
+  const [confirm, renderConfirm] = useConfirm();
   const locationsQuery = useQuery({ queryKey: ["locations"], queryFn: fetchLocations });
   const locations = useMemo(() => Array.isArray(locationsQuery.data) ? locationsQuery.data : [], [locationsQuery.data]);
 
@@ -32,8 +33,8 @@ export function AdminLocations() {
 
   const deleteMut = useMutation({
   mutationFn: deleteLocation,
-  onSuccess: () => qc.invalidateQueries({ queryKey: ["locations"] }),
-  onError: (e: Error) => toast({ tone: "error", title: "Failed to delete location", message: e.message }),
+  onSuccess: () => { qc.invalidateQueries({ queryKey: ["locations"] }); toast.success("Location deleted"); },
+  onError: (e: Error) => toast.error(e.message || "Failed to delete location"),
  });
 
  const openEdit = (loc: ApiLocation) => {
@@ -88,7 +89,7 @@ export function AdminLocations() {
  <td className="px-4 py-3">
  <div className="flex items-center justify-end gap-1">
  <Btn size="sm" tone="ghost" onClick={() => openEdit(loc)}>Edit</Btn>
- <Btn size="sm" tone="danger" onClick={() => deleteMut.mutate(loc.id)} disabled={deleteMut.isPending}><Trash2 size={12} /></Btn>
+  <Btn size="sm" tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Delete location "${loc.short}"?`, description: loc.long ? `"${loc.long}" and its placement metadata will be removed. This cannot be undone.` : "This placement will be removed. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMut.mutate(loc.id); })(); }} disabled={deleteMut.isPending}><Trash2 size={12} /></Btn>
  </div>
  </td>
  </tr>
@@ -121,7 +122,8 @@ export function AdminLocations() {
  confirmLabel={modal === "create" ? "Create" : "Save"}
  />
  </Modal>
- ) : null}
- </div>
- );
+  ) : null}
+  {renderConfirm()}
+  </div>
+  );
 }

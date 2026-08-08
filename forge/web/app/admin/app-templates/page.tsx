@@ -8,6 +8,7 @@ import {
 import { Btn, Card, CardHeader, Input, SectionHeader, Pill, cn, Modal } from "@/components/admin/admin-ui";
 import { type AppType, type AppTemplate, type AppPort } from "@/lib/api/apps";
 import { DEFAULT_APP_TEMPLATES, loadUserTemplates, saveUserTemplates, getAllTemplates } from "@/lib/app-templates-data";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type FormData = {
   name: string;
@@ -89,6 +90,7 @@ function typeLabel(t: AppType): string {
 
 export default function AppTemplatesPage() {
   const router = useRouter();
+  const [confirm, renderConfirm] = useConfirm();
   const [templates, setTemplates] = useState<AppTemplate[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -130,8 +132,9 @@ export default function AppTemplatesPage() {
     refresh();
   };
 
-  const remove = (id: string) => {
-    if (!confirm("Delete this template?")) return;
+  const remove = async (id: string) => {
+    const confirmed = await confirm({ title: "Delete this template?", description: "The template will be removed from this browser's saved templates. This cannot be undone.", danger: true, confirmLabel: "Delete" });
+    if (!confirmed) return;
     const users = loadUserTemplates().filter((t) => t.id !== id);
     saveUserTemplates(users);
     refresh();
@@ -282,6 +285,7 @@ export default function AppTemplatesPage() {
           </div>
         </Modal>
       )}
+      {renderConfirm()}
     </div>
   );
 }

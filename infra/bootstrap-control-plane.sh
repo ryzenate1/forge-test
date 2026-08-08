@@ -14,6 +14,11 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
+set -a
+# shellcheck disable=SC1091
+. ./.env
+set +a
+
 mkdir -p "${GAME_SERVERS_HOST_DIR:-/srv/game-panel/servers}"
 
 compose=(docker compose -f compose.yml -f compose.production.yml --env-file .env)

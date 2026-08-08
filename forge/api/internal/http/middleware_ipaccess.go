@@ -43,21 +43,7 @@ func IPAccessControl(cfg IPAccessConfig) fiber.Handler {
 // getClientIP gets the client IP address, optionally trusting proxy headers
 func getClientIP(c *fiber.Ctx, trustProxy bool) string {
 	if trustProxy {
-		// Check X-Forwarded-For header (may contain multiple IPs)
-		xff := c.Get("X-Forwarded-For")
-		if xff != "" {
-			// Get the first IP in the chain (original client)
-			ips := strings.Split(xff, ",")
-			if len(ips) > 0 {
-				return strings.TrimSpace(ips[0])
-			}
-		}
-
-		// Check X-Real-IP header
-		xri := c.Get("X-Real-IP")
-		if xri != "" {
-			return xri
-		}
+		return ExtractClientIP(c)
 	}
 
 	// Fall back to direct connection IP

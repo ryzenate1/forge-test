@@ -3,7 +3,7 @@
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePathname, useRouter } from "next/navigation";
 import { type ReactNode, useEffect, useState } from "react";
-import { fetchCurrentUser, refreshSession } from "@/lib/api";
+import { fetchCurrentUser, refreshSession, ApiError } from "@/lib/api";
 import { useServerStore } from "@/stores/use-server-store";
 import { TenancyHydrator } from "@/lib/api/tenancy-hydrate";
 import { BrandingProvider } from "@/components/branding";
@@ -37,11 +37,43 @@ function SessionLoader({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!currentUser) return;
-    const interval = setInterval(() => {
-      void refreshSession().catch(() => undefined);
-    }, SESSION_KEEPALIVE_MS);
-    return () => clearInterval(interval);
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      if (interval !== null) return;
+      interval = setInterval(() => {
+        void refreshSession().catch(() => undefined);
+      }, SESSION_KEEPALIVE_MS);
+    };
+    const stop = () => {
+      if (interval !== null) {
+        clearInterval(interval);
+        interval = null;
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") start();
+      else stop();
+    };
+    start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [currentUser]);
+
+  useEffect(() => {
+    const onSessionExpired = () => {
+      setCurrentUser(null);
+      queryClient.removeQueries();
+      if (requiresSession(pathname)) {
+        toast({ tone: "error", title: "Session expired", message: "Sign in again to continue." });
+        router.replace(`/?reason=session-expired&next=${encodeURIComponent(pathname)}`);
+      }
+    };
+    window.addEventListener("forge:session-expired", onSessionExpired);
+    return () => window.removeEventListener("forge:session-expired", onSessionExpired);
+  }, [pathname, queryClient, router, setCurrentUser, toast]);
 
   useEffect(() => {
     if (sessionQuery.data === null) {
@@ -65,6 +97,6 @@ function SessionLoader({ children }: { children: ReactNode }) {
 }
 
 export function Providers({ children }: { children: ReactNode }) {
-  const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, gcTime: 5 * 60_000, refetchOnWindowFocus: false, retry: 1 }, mutations: { retry: false } } }));
+  const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, gcTime: 5 * 60_000, refetchOnWindowFocus: false, retry: (failureCount, error) => { if (error instanceof ApiError && error.status >= 400 && error.status < 500) return false; return failureCount < 1; } }, mutations: { retry: false } } }));
   return <ThemeProvider><QueryClientProvider client={queryClient}><ToastProvider><BrandingProvider><ErrorBoundary><TranslationProvider><SessionLoader>{children}</SessionLoader></TranslationProvider></ErrorBoundary></BrandingProvider></ToastProvider></QueryClientProvider></ThemeProvider>;
 }

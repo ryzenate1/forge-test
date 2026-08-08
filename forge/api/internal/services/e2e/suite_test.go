@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
+	"gamepanel/forge/internal/daemon"
 	"gamepanel/forge/internal/events"
 	"gamepanel/forge/internal/placement"
 	"gamepanel/forge/internal/services/heartbeatmonitor"
@@ -37,6 +38,7 @@ type TestSuite struct {
 	Schema           string
 	LocationID       string
 	Cleanup          func()
+	DaemonClient     *daemon.Client
 }
 
 // mockPublisher implements events.Publisher for testing
@@ -167,6 +169,12 @@ func SetupTestSuite(t *testing.T) *TestSuite {
 	hmConfig.OfflineThreshold = 10 * time.Second
 	heartbeatMonitor := heartbeatmonitor.NewWithConfig(s, publisher, hmConfig)
 
+	daemonClient, err := daemon.NewClient("http://127.0.0.1:9090", "test-daemon-token")
+	if err != nil {
+		cleanup()
+		t.Fatal(err)
+	}
+
 	return &TestSuite{
 		DB:               raw,
 		Store:            s,
@@ -179,6 +187,7 @@ func SetupTestSuite(t *testing.T) *TestSuite {
 		Schema:           schema,
 		LocationID:       loc.ID,
 		Cleanup:          cleanup,
+		DaemonClient:     daemonClient,
 	}
 }
 

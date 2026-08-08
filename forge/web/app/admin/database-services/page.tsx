@@ -23,6 +23,7 @@ import {
   getServiceLogs,
   getDatabaseService,
 } from "@/lib/api/database-services";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type Tab = "services" | "templates";
 
@@ -88,6 +89,7 @@ function ServicesTab({
   detailId: string | null;
   onCloseDetail: () => void;
 }) {
+  const [confirm, renderConfirm] = useConfirm();
   const qc = useQueryClient();
   const { toast } = useToast();
 
@@ -156,7 +158,7 @@ function ServicesTab({
                     <div className="flex items-center justify-end gap-1">
                       <Btn size="sm" tone="ghost" onClick={() => onDetail(svc.id)}><Eye size={13} /></Btn>
                       <Btn size="sm" tone="warning" onClick={() => restartMut.mutate(svc.id)} disabled={restartMut.isPending}><RotateCcw size={13} /></Btn>
-                      <Btn size="sm" tone="danger" onClick={() => { if (window.confirm(`Delete service ${svc.name || svc.id.slice(0, 8)}?`)) deleteMut.mutate(svc.id); }} disabled={deleteMut.isPending}><Trash2 size={13} /></Btn>
+                      <Btn size="sm" tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Delete database service ${svc.name || svc.id.slice(0, 8)}?`, description: "The managed database service will be removed. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMut.mutate(svc.id); })(); }} disabled={deleteMut.isPending}><Trash2 size={13} /></Btn>
                     </div>
                   </td>
                 </tr>
@@ -168,6 +170,7 @@ function ServicesTab({
 
       {showProvision && <ProvisionModal onClose={onCloseProvision} onCreated={invalidate} />}
       {detailId && <DetailModal serviceId={detailId} onClose={onCloseDetail} />}
+      {renderConfirm()}
     </div>
   );
 }
@@ -239,6 +242,7 @@ function ProvisionModal({ onClose, onCreated }: { onClose: () => void; onCreated
 }
 
 function DetailModal({ serviceId, onClose }: { serviceId: string; onClose: () => void; }) {
+  const [confirm, renderConfirm] = useConfirm();
   const qc = useQueryClient();
   const { toast } = useToast();
 
@@ -354,7 +358,7 @@ function DetailModal({ serviceId, onClose }: { serviceId: string; onClose: () =>
                       <td className="px-3 py-2 text-slate-400">{new Date(b.createdAt).toLocaleString()}</td>
                       <td className="px-3 py-2">
                         {b.status === "completed" && (
-                          <Btn size="sm" tone="ghost" disabled={restoreMut.isPending} onClick={() => { if (window.confirm("Restore this backup?")) restoreMut.mutate(b.id); }}>Restore</Btn>
+                          <Btn size="sm" tone="ghost" disabled={restoreMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: `Restore backup from ${new Date(b.createdAt).toLocaleString()}?`, description: "The database will be restored to this backup, overwriting current data.", confirmLabel: "Restore" })) restoreMut.mutate(b.id); })(); }}>Restore</Btn>
                         )}
                       </td>
                     </tr>
@@ -412,7 +416,7 @@ function DetailModal({ serviceId, onClose }: { serviceId: string; onClose: () =>
             <AdminFormSection title="Credential Details">
               <div className="grid gap-3 md:grid-cols-2">
                 <Input label="Username" value={newUser} onChange={setNewUser} placeholder="db_user" />
-                <Input label="Password" value={newPass} onChange={setNewPass} type="password" placeholder="password" />
+                <Input label="Password" value={newPass} onChange={setNewPass} type="password" placeholder="password" autoComplete="new-password" />
                 <AdminSelect
                   label="Permissions"
                   value={newPerms}
@@ -446,6 +450,7 @@ function DetailModal({ serviceId, onClose }: { serviceId: string; onClose: () =>
           )}
         </div>
       </div>
+      {renderConfirm()}
     </Modal>
   );
 }

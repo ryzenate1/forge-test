@@ -224,7 +224,11 @@ func ContextWithSession(ctx context.Context, sess *Session) context.Context {
 
 const sessionFiberLocalsKey = "auth_session"
 
-func SessionMiddleware(store SessionStore) fiber.Handler {
+// SessionMiddleware performs opaque-session validation for the session cookie.
+// Requests carrying a token that the caller-supplied skip function recognizes
+// (e.g. a panel JWT signed with the API secret) are passed through untouched,
+// so the JWT-based session model and the opaque-session model can coexist.
+func SessionMiddleware(store SessionStore, skip func(token string) bool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		token := c.Cookies(SessionCookieName)
 		if token == "" {
@@ -235,6 +239,10 @@ func SessionMiddleware(store SessionStore) fiber.Handler {
 		}
 
 		if token == "" {
+			return c.Next()
+		}
+
+		if skip != nil && skip(token) {
 			return c.Next()
 		}
 

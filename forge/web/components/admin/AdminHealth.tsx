@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   AlertTriangle,
@@ -162,12 +162,29 @@ export function AdminHealth({ initialSection = "infrastructure", overview = fals
   const [selected, setSelected] = useState<MonitorSection>(initialSection);
   const lastRefreshedRef = useRef<Date | null>(null);
 
-  const healthQuery = useQuery({ queryKey: ["health"], queryFn: fetchHealthStatus, refetchInterval: 30_000 });
-  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes, refetchInterval: 30_000 });
-  const serversQuery = useQuery({ queryKey: ["servers"], queryFn: fetchServers, refetchInterval: 30_000 });
-  const reservationsQuery = useQuery({ queryKey: ["reservations"], queryFn: fetchReservations, retry: false, refetchInterval: 30_000 });
-  const recoveryQuery = useQuery({ queryKey: ["recovery"], queryFn: fetchRecoveryPlans, retry: false, refetchInterval: 30_000 });
-  const activityQuery = useQuery({ queryKey: ["admin-activity", "monitoring"], queryFn: () => fetchAdminActivity({ limit: 1 }), retry: false, refetchInterval: 30_000 });
+  const poll = { refetchInterval: 30_000, refetchIntervalInBackground: false } as const;
+  const healthQuery = useQuery({ queryKey: ["health"], queryFn: fetchHealthStatus, ...poll });
+  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes, ...poll });
+  const serversQuery = useQuery({ queryKey: ["servers"], queryFn: fetchServers, ...poll });
+  const reservationsQuery = useQuery({ queryKey: ["reservations"], queryFn: fetchReservations, retry: false, ...poll });
+  const recoveryQuery = useQuery({ queryKey: ["recovery"], queryFn: fetchRecoveryPlans, retry: false, ...poll });
+  const activityQuery = useQuery({ queryKey: ["admin-activity", "monitoring"], queryFn: () => fetchAdminActivity({ limit: 1 }), retry: false, ...poll });
+
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible") {
+        void queryClient.invalidateQueries({ queryKey: ["health"] });
+        void queryClient.invalidateQueries({ queryKey: ["nodes"] });
+        void queryClient.invalidateQueries({ queryKey: ["servers"] });
+        void queryClient.invalidateQueries({ queryKey: ["reservations"] });
+        void queryClient.invalidateQueries({ queryKey: ["recovery"] });
+        void queryClient.invalidateQueries({ queryKey: ["admin-activity"] });
+      }
+    };
+    document.addEventListener("visibilitychange", refresh);
+    return () => document.removeEventListener("visibilitychange", refresh);
+  }, [queryClient]);
 
   const checks = useMemo(() => healthQuery.data?.checks ?? [], [healthQuery.data?.checks]);
   const nodes = useMemo(() => nodesQuery.data ?? [], [nodesQuery.data]);

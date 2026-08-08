@@ -16,6 +16,7 @@ type Worker struct {
 	store  *store.Store
 	svc    *Service
 	daemon *daemon.Client
+	jobSvc *JobService
 
 	mu       sync.RWMutex
 	running  bool
@@ -27,6 +28,12 @@ type Worker struct {
 
 func NewWorker(store *store.Store, svc *Service, daemon *daemon.Client) *Worker {
 	return &Worker{store: store, svc: svc, daemon: daemon, stopCh: make(chan struct{})}
+}
+
+// SetJobService enables the worker to pick up pending/failed backup jobs and
+// re-execute them with backoff.
+func (w *Worker) SetJobService(jobSvc *JobService) {
+	w.jobSvc = jobSvc
 }
 
 func (w *Worker) Stop() {
@@ -120,20 +127,75 @@ func (w *Worker) tick(ctx context.Context) {
 			continue
 		}
 
-		nextRun, err := w.svc.NextCronRun(policy, now)
-		if err != nil {
-			w.svc.log("invalid cron for backup policy", "policyId", policy.ID, "serverId", policy.ServerID, "interval", policy.Interval, "error", err)
+		if !policyDue(policy, now) {
 			continue
 		}
 
-		if nextRun.Before(now) || nextRun.Equal(now) {
-			if err := w.executePolicy(ctx, policy); err != nil {
-				w.recordError(fmt.Errorf("policy %s server %s: %w", policy.ID, policy.ServerID, err))
-			}
+		if err := w.executePolicy(ctx, policy); err != nil {
+			w.recordError(fmt.Errorf("policy %s server %s: %w", policy.ID, policy.ServerID, err))
+		}
+
+		if err := w.persistNextRun(ctx, policy, now); err != nil {
+			w.svc.log("persist next run for backup policy", "policyId", policy.ID, "serverId", policy.ServerID, "error", err)
 		}
 	}
 
+	w.pickupBackupJobs(ctx)
+
 	w.recordError(nil)
+}
+
+// policyDue reports whether a backup policy is due to run at the given time.
+// The policy's persisted NextRunAt (set by persistNextRun) is the source of
+// truth; robfig/cron Schedule.Next always returns a strictly-greater time, so
+// the naive "nextRun <= now" comparison can never fire.
+func policyDue(policy store.BackupPolicy, now time.Time) bool {
+	if policy.Interval == "" {
+		return false
+	}
+	if policy.NextRunAt == nil {
+		// First tick for this policy: let persistNextRun initialize the
+		// schedule without executing immediately.
+		return false
+	}
+	return !policy.NextRunAt.After(now)
+}
+
+// persistNextRun computes the next cron occurrence after now (or after the
+// policy's current next run when it is still in the future) and stores it.
+func (w *Worker) persistNextRun(ctx context.Context, policy store.BackupPolicy, now time.Time) error {
+	from := now
+	if policy.NextRunAt != nil && policy.NextRunAt.After(now) {
+		from = *policy.NextRunAt
+	}
+	nextRun, err := w.svc.NextCronRun(policy, from)
+	if err != nil {
+		return err
+	}
+	return w.store.UpdateBackupPolicyNextRun(ctx, policy.ID, &nextRun)
+}
+
+// pickupBackupJobs re-executes backup jobs that are pending or failed with
+// retries remaining, honoring a per-attempt backoff. Execution is guarded by
+// an atomic status transition in the store, so concurrent workers cannot run
+// the same job twice.
+func (w *Worker) pickupBackupJobs(ctx context.Context) {
+	if w.jobSvc == nil || w.store == nil {
+		return
+	}
+	jobs, err := w.store.ListRetryableBackupJobs(ctx, 5)
+	if err != nil {
+		w.svc.log("list retryable backup jobs", "error", err)
+		return
+	}
+	for _, job := range jobs {
+		runCtx, cancel := context.WithTimeout(ctx, 20*time.Minute)
+		err := w.jobSvc.Execute(runCtx, job.ID, "scheduler")
+		cancel()
+		if err != nil {
+			w.svc.log("re-execute backup job", "jobId", job.ID, "error", err)
+		}
+	}
 }
 
 func (w *Worker) executePolicy(ctx context.Context, policy store.BackupPolicy) error {

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { CheckCircle2, Eye, EyeOff } from "lucide-react";
 import { resetPassword } from "@/lib/api";
 import { AuthShell } from "@/components/ui/auth-shell";
@@ -12,8 +12,21 @@ import { useT } from "@/components/TranslationProvider";
 function ResetForm() {
   const t = useT();
   const params = useSearchParams();
-  const token = params.get("token")?.trim() || "";
-  const email = params.get("email")?.trim() || "";
+  const [token, setToken] = useState(params.get("token")?.trim() || "");
+  const [email, setEmail] = useState(params.get("email")?.trim() || "");
+
+  // The backend mailer links to /reset-password#token=...&email=... (URL
+  // fragment), while some integrations build a plain query string. Read both.
+  useEffect(() => {
+    if (token && email) return;
+    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const hashToken = hash.get("token")?.trim() || "";
+    const hashEmail = hash.get("email")?.trim() || "";
+    if (hashToken && hashEmail) {
+      setToken(hashToken);
+      setEmail(hashEmail);
+    }
+  }, [token, email]);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [show, setShow] = useState(false);

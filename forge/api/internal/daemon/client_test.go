@@ -24,7 +24,10 @@ func TestClientSignsRequestsWithIndependentNodeCredentials(t *testing.T) {
 	serverB := newSigningTestServer(&tokenB)
 	defer serverB.Close()
 
-	client := NewClient()
+	client, err := NewClient("http://localhost", "test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 
 	errCh := make(chan error, 2)
@@ -65,7 +68,10 @@ func TestReinstallServerUsesBeaconReinstallContractAndNodeCredential(t *testing.
 	}))
 	defer server.Close()
 
-	client := NewClientWithDevelopmentFallback("fallback.token")
+	client, err := NewClient(server.URL, "fallback.token")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := client.ReinstallServer(context.Background(), server.URL, "node-id.node-secret", "server-a", InstallRequest{ServerID: "server-a"}); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +108,11 @@ func TestPullRemoteFileUsesBeaconHardenedPullContract(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := NewClient().PullRemoteFile(context.Background(), server.URL, token, "server-a", "https://downloads.example/game.bin", "mods", "game.bin"); err != nil {
+	client, err := NewClient(server.URL, "test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.PullRemoteFile(context.Background(), server.URL, token, "server-a", "https://downloads.example/game.bin", "mods", "game.bin"); err != nil {
 		t.Fatal(err)
 	}
 	if !received {
@@ -118,7 +128,11 @@ func TestPullRemoteFileRejectsPrivateSourceBeforeDaemonRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := NewClient().PullRemoteFile(context.Background(), server.URL, "node.secret", "server-a", "http://127.0.0.1/secret", "", "secret")
+	client, err := NewClient(server.URL, "test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.PullRemoteFile(context.Background(), server.URL, "node.secret", "server-a", "http://127.0.0.1/secret", "", "secret")
 	if err == nil || !strings.Contains(err.Error(), "HTTPS") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -135,7 +149,11 @@ func TestClientFailsClosedWithoutNodeCredential(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := NewClient().Stats(context.Background(), server.URL, "", "server-a")
+	client, err := NewClient(server.URL, "dummy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Stats(context.Background(), server.URL, "", "server-a")
 	if !errors.Is(err, ErrMissingNodeToken) {
 		t.Fatalf("Stats() error = %v, want %v", err, ErrMissingNodeToken)
 	}
@@ -177,7 +195,10 @@ func TestTransferCredentialRegistrationUsesNodeAuthAndScopedCallsUseOnlyTransfer
 		}
 	}))
 	defer server.Close()
-	client := NewClient()
+	client, err := NewClient(server.URL, "test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
 	claims := TransferCredentialClaims{Version: TransferProtocolVersion, MigrationID: "migration-1", ServerID: "server-1", SourceNodeID: "source-1", TargetNodeID: "target-1", Direction: TransferDirectionSourceControl, ExpiresAt: time.Now().Add(time.Minute)}
 	if err := client.RegisterTransferCredential(context.Background(), server.URL, nodeToken, TransferCredentialRegistration{Claims: claims, CredentialHash: strings.Repeat("a", 64)}); err != nil {
 		t.Fatal(err)

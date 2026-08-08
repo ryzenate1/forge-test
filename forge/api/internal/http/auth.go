@@ -64,6 +64,8 @@ func issueTokenWithTTL(secret string, user store.User, ttl time.Duration) (strin
 		"ver":   claims.SessionVersion,
 		"iat":   claims.Iat,
 		"exp":   claims.Exp,
+		"iss":   "forge-panel",
+		"aud":   "forge-api",
 	})
 	return token.SignedString([]byte(secret))
 }
@@ -73,6 +75,8 @@ func parseToken(secret, token string) (tokenClaims, error) {
 		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
 		jwt.WithExpirationRequired(),
 		jwt.WithIssuedAt(),
+		jwt.WithIssuer("forge-panel"),
+		jwt.WithAudience("forge-api"),
 		jwt.WithLeeway(30*time.Second),
 	)
 	parsed, err := parser.Parse(token, func(parsedToken *jwt.Token) (any, error) {
@@ -269,6 +273,10 @@ func authMiddlewareWithStore(secret string, st authenticationStore, verifyOAuth 
 		if secret == "" {
 			return fiber.NewError(fiber.StatusInternalServerError, "auth secret is not configured")
 		}
+		// Expose the concrete store to role-rule enforcement (requireRole).
+		if concrete, ok := st.(*store.Store); ok {
+			c.Locals("authStore", concrete)
+		}
 		// Try session cookie first (browser clients)
 		if sessionToken, ok := getSessionCookie(c); ok {
 			if st == nil {
@@ -388,6 +396,19 @@ func validateCurrentSession(ctx context.Context, st authenticationStore, claims 
 	if revoked {
 		return tokenClaims{}, errors.New("token revoked")
 	}
+	// Sessions revoked from /account/sessions (or the revoke-all endpoint)
+	// mark the user_sessions row for the jti-hash as revoked. A token whose
+	// recorded row was revoked must not remain usable. Rows are only created
+	// for login-issued tokens, so tokens without a row are unaffected.
+	if concrete, ok := st.(*store.Store); ok && concrete != nil {
+		rowRevoked, err := concrete.IsUserSessionRevoked(ctx, claims.Sub, sha256Hex(claims.JTI))
+		if err != nil {
+			return tokenClaims{}, fmt.Errorf("check session row revocation: %w", err)
+		}
+		if rowRevoked {
+			return tokenClaims{}, errors.New("token revoked")
+		}
+	}
 	user, err := st.GetUserByID(ctx, claims.Sub)
 	if err != nil || user.Disabled {
 		return tokenClaims{}, errors.New("user not found or disabled")
@@ -411,8 +432,86 @@ func requireRole(roles ...string) fiber.Handler {
 		if _, ok := allowed[claims.Role]; !ok {
 			return fiber.NewError(fiber.StatusForbidden, "insufficient role")
 		}
+		if claims.Role == RoleAdmin {
+			// Scoped credentials (API keys, OAuth tokens) must carry at least
+			// one panel-administration scope before they may touch admin-only
+			// routes. Otherwise a key scoped purely to e.g. "servers.read"
+			// would unlock every requireRole("admin") endpoint.
+			if scoped, _ := c.Locals("scopedAuth").(bool); scoped {
+				scopes, _ := c.Locals("apiScopes").([]string)
+				if !hasAnyAdminScope(scopes) {
+					return fiber.NewError(fiber.StatusForbidden, "admin scope is required")
+				}
+			}
+		}
+		// role_rules enforcement for custom roles: deny rules block matching
+		// routes; when allow rules exist for the role, at least one must match
+		// (allow-list semantics). Built-in admin/user roles are unaffected.
+		if claims.Role != RoleAdmin && claims.Role != RoleUser {
+			if st, ok := c.Locals("authStore").(*store.Store); ok && st != nil {
+				if err := enforceRoleRulesForRequest(c, st, claims.Role); err != nil {
+					return err
+				}
+			}
+		}
 		return c.Next()
 	}
+}
+
+// enforceRoleRulesForRequest applies role_rules to the current request for a
+// custom role. rule_key values are matched against the request path (with or
+// without the /api/v1 prefix).
+func enforceRoleRulesForRequest(c *fiber.Ctx, st *store.Store, roleKey string) error {
+	ctx, cancel := requestContext()
+	defer cancel()
+	rules, err := st.ListRoleRulesByRoleKey(ctx, roleKey)
+	if err != nil || len(rules) == 0 {
+		return nil
+	}
+	path := c.Path()
+	trimmed := strings.TrimPrefix(path, "/api/v1")
+	matches := func(ruleKey string) bool {
+		if ruleKey == "" {
+			return false
+		}
+		if ruleKey == path || ruleKey == trimmed {
+			return true
+		}
+		prefix := strings.TrimSuffix(ruleKey, "/")
+		return strings.HasPrefix(trimmed, prefix+"/") || strings.HasPrefix(path, prefix+"/")
+	}
+	hasAllow := false
+	for _, rule := range rules {
+		switch rule.Effect {
+		case "deny":
+			if matches(rule.RuleKey) {
+				return fiber.NewError(fiber.StatusForbidden, "role rule denies access to this route")
+			}
+		case "allow":
+			hasAllow = true
+			if matches(rule.RuleKey) {
+				return nil
+			}
+		}
+	}
+	if hasAllow {
+		return fiber.NewError(fiber.StatusForbidden, "role rules do not allow access to this route")
+	}
+	return nil
+}
+
+// hasAnyAdminScope reports whether the given scope list contains "*" or at
+// least one scope registered in store.AdminScopes.
+func hasAnyAdminScope(scopes []string) bool {
+	for _, scope := range scopes {
+		if scope == "*" {
+			return true
+		}
+		if _, ok := store.AdminScopes[scope]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func requireAdminScope(scope string) fiber.Handler {
@@ -505,50 +604,74 @@ func tokenFromRequest(ctx context.Context, secret string, st *store.Store, heade
 type confirmationClaims struct {
 	Sub  string `json:"sub"`
 	Type string `json:"type"`
+	JTI  string `json:"jti"`
+	IP   string `json:"ip,omitempty"`
+	UA   string `json:"ua,omitempty"`
+	Iat  int64  `json:"iat"`
 	Exp  int64  `json:"exp"`
 }
 
-func issue2FAConfirmationToken(secret string, userID string) (string, error) {
+// issue2FAConfirmationToken mints a short-lived, single-use 2FA checkpoint
+// token bound to the requesting client's IP and user agent.
+func issue2FAConfirmationToken(secret, userID, ip, userAgent string) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub":  userID,
 		"type": "2fa_confirmation",
+		"jti":  uuid.NewString(),
+		"ip":   ip,
+		"ua":   truncateUserAgent(userAgent),
 		"iat":  time.Now().Unix(),
 		"exp":  time.Now().Add(5 * time.Minute).Unix(),
 	})
 	return token.SignedString([]byte(secret))
 }
 
-func parse2FAConfirmationToken(secret string, token string) (string, error) {
+func truncateUserAgent(ua string) string {
+	if len(ua) > 256 {
+		return ua[:256]
+	}
+	return ua
+}
+
+// parse2FAConfirmationToken validates a confirmation token and returns its
+// claims. The token is bound to an IP and user agent captured at issuance.
+func parse2FAConfirmationToken(secret string, token string) (confirmationClaims, error) {
 	parser := jwt.NewParser(jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired(), jwt.WithLeeway(30*time.Second))
 	parsed, err := parser.Parse(token, func(_ *jwt.Token) (any, error) { return []byte(secret), nil })
 	if err != nil || !parsed.Valid {
-		return "", errors.New("invalid confirmation token")
+		return confirmationClaims{}, errors.New("invalid confirmation token")
 	}
 	values, ok := parsed.Claims.(jwt.MapClaims)
 	if !ok || stringFromClaim(values["type"]) != "2fa_confirmation" {
-		return "", errors.New("invalid token type")
+		return confirmationClaims{}, errors.New("invalid token type")
 	}
-	subject := stringFromClaim(values["sub"])
-	if subject == "" {
-		return "", errors.New("invalid confirmation token subject")
+	claims := confirmationClaims{
+		Sub:  stringFromClaim(values["sub"]),
+		Type: stringFromClaim(values["type"]),
+		JTI:  stringFromClaim(values["jti"]),
+		IP:   stringFromClaim(values["ip"]),
+		UA:   stringFromClaim(values["ua"]),
+		Iat:  int64FromClaim(values["iat"]),
+		Exp:  int64FromClaim(values["exp"]),
 	}
-	return subject, nil
+	if claims.Sub == "" || claims.JTI == "" || claims.Exp == 0 {
+		return confirmationClaims{}, errors.New("invalid confirmation token subject")
+	}
+	return claims, nil
 }
 
-// Routes excluded from 2FA enforcement so users can set up 2FA
-var twoFactorExemptPaths = []string{
-	"/account/two-factor",
-	"/auth/2fa/confirm",
+// Routes excluded from 2FA enforcement so users can set up 2FA. Exact path
+// matches only — prefix matching would over-exempt routes sharing a prefix.
+var twoFactorExemptPaths = map[string]bool{
+	"/account/two-factor":            true,
+	"/auth/2fa/confirm":              true,
+	"/auth/webauthn/register/begin":  true,
+	"/auth/webauthn/register/finish": true,
 }
 
 func isTwoFactorExempt(c *fiber.Ctx) bool {
 	path := strings.TrimPrefix(c.Path(), "/api/v1")
-	for _, exempt := range twoFactorExemptPaths {
-		if strings.HasPrefix(path, exempt) {
-			return true
-		}
-	}
-	return false
+	return twoFactorExemptPaths[path]
 }
 
 func userHasTwoFactor(user store.User) bool {

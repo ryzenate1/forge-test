@@ -123,7 +123,7 @@ func registerDatabaseServiceRoutes(protected fiber.Router, cfg Config, mutationL
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
 		if err := ds.StartService(ctx, c.Params("id")); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"ok": true})
 	})
@@ -202,7 +202,7 @@ func registerDatabaseServiceRoutes(protected fiber.Router, cfg Config, mutationL
 		}
 		if req.Database != "" {
 			if err := ds.GrantPermissions(ctx, c.Params("id"), req.Username, req.Database, perms); err != nil {
-				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+				return respondInternalError(c, err)
 			}
 		}
 		return c.Status(fiber.StatusCreated).JSON(cred)
@@ -296,7 +296,7 @@ func registerDatabaseServiceRoutes(protected fiber.Router, cfg Config, mutationL
 			MinMemoryMB: req.MinMemoryMB,
 		})
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(tpl)
 	})
@@ -329,7 +329,7 @@ func registerDatabaseServiceRoutes(protected fiber.Router, cfg Config, mutationL
 			MinMemoryMB: req.MinMemoryMB,
 		})
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(tpl)
 	})

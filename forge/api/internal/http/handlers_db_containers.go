@@ -79,7 +79,7 @@ func registerDBContainerRoutes(protected fiber.Router, cfg Config, mutationLimit
 			dbs, err = cfg.Store.ListAllDBContainers(ctx)
 		}
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(dbs)
 	})

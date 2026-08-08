@@ -12,6 +12,10 @@ import { useT } from "@/components/TranslationProvider";
 
 type SetupStep = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
+const EMAIL_RE = /^\S+@\S+\.\S+$/;
+const FQDN_RE = /^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+const URL_RE = /^https?:\/\/\S+$/i;
+
 export default function SetupPage() {
   const t = useT();
   const router = useRouter();
@@ -20,6 +24,7 @@ export default function SetupPage() {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [showSmtpPass, setShowSmtpPass] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [setupData, setSetupData] = useState({
     orgName: "",
@@ -40,6 +45,75 @@ export default function SetupPage() {
   });
 
   const statusQuery = useQuery({ queryKey: ["setup-status"], queryFn: fetchSetupStatus, retry: false });
+
+  function setFieldError(key: string, message: string | undefined) {
+    setErrors((prev) => {
+      const next = { ...prev };
+      if (message) next[key] = message;
+      else delete next[key];
+      return next;
+    });
+  }
+
+  function validateStep3(): Record<string, string> {
+    const next: Record<string, string> = {};
+    const name = setupData.orgName.trim();
+    if (!name) next.orgName = t("validation.required");
+    else if (name.length < 2) next.orgName = t("validation.minLength", [2]);
+    return next;
+  }
+
+  function validateStep4(): Record<string, string> {
+    const next: Record<string, string> = {};
+    const name = setupData.nodeName.trim();
+    if (!name) next.nodeName = t("validation.required");
+    else if (name.length < 2) next.nodeName = t("validation.minLength", [2]);
+    const fqdn = setupData.nodeFqdn.trim();
+    if (!fqdn) next.nodeFqdn = t("validation.required");
+    else if (!FQDN_RE.test(fqdn)) next.nodeFqdn = t("setupWizard.errors.invalidFqdn");
+    return next;
+  }
+
+  function validateStep5(): Record<string, string> {
+    const next: Record<string, string> = {};
+    const { smtpHost, smtpPort, smtpUser, smtpPass, smtpFrom } = setupData;
+    const anyOther = smtpPort || smtpUser || smtpPass || smtpFrom;
+    if (anyOther && !smtpHost.trim()) next.smtpHost = t("setupWizard.errors.smtpIncomplete");
+    if (smtpHost.trim()) {
+      const port = Number(smtpPort);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) next.smtpPort = t("setupWizard.errors.invalidPort");
+    }
+    if (smtpFrom.trim() && !EMAIL_RE.test(smtpFrom.trim())) next.smtpFrom = t("validation.email");
+    return next;
+  }
+
+  function validateStep6(): Record<string, string> {
+    const next: Record<string, string> = {};
+    if (setupData.backupDriver !== "s3") return next;
+    if (!setupData.s3Bucket.trim()) next.s3Bucket = t("validation.required");
+    if (!setupData.s3Region.trim()) next.s3Region = t("validation.required");
+    const endpoint = setupData.s3Endpoint.trim();
+    if (!endpoint) next.s3Endpoint = t("validation.required");
+    else if (!URL_RE.test(endpoint)) next.s3Endpoint = t("validation.invalidUrl");
+    return next;
+  }
+
+  function validateStep7(): Record<string, string> {
+    const next: Record<string, string> = {};
+    const domain = setupData.domainName.trim();
+    if (!domain) next.domainName = t("validation.required");
+    else if (!FQDN_RE.test(domain)) next.domainName = t("setupWizard.errors.invalidDomain");
+    const tlsEmail = setupData.tlsEmail.trim();
+    if (!tlsEmail) next.tlsEmail = t("validation.required");
+    else if (!EMAIL_RE.test(tlsEmail)) next.tlsEmail = t("validation.email");
+    return next;
+  }
+
+  function submitStep(validate: () => Record<string, string>, nextStep: SetupStep) {
+    const next = validate();
+    setErrors(next);
+    if (Object.keys(next).length === 0) setStep(nextStep);
+  }
 
   useEffect(() => {
     if (statusQuery.data && !statusQuery.data.required && step !== 8) {
@@ -157,9 +231,11 @@ export default function SetupPage() {
           <li
             aria-current={step === item.n ? "step" : undefined}
             className={`flex items-center gap-2 rounded-lg border px-3 py-2 ${
-              step >= item.n
-                ? "border-red-500/30 bg-red-500/10 text-red-200"
-                : "border-white/10 text-slate-500"
+              step === item.n
+                ? "border-l-2 border-l-red-400 border-red-500/30 bg-red-500/10 text-red-200"
+                : step > item.n
+                  ? "border-red-500/30 bg-red-500/10 text-red-200"
+                  : "border-white/10 text-slate-500"
             }`}
             key={item.n}
           >
@@ -227,7 +303,7 @@ export default function SetupPage() {
               id="setup-email"
               invalid={Boolean(errors.email)}
               onChange={(event) => setEmail(event.target.value)}
-              placeholder="admin@example.com"
+              placeholder={t("setupWizard.step2.emailPlaceholder")}
               type="email"
               value={email}
             />
@@ -286,7 +362,7 @@ export default function SetupPage() {
           noValidate
           onSubmit={(event) => {
             event.preventDefault();
-            setStep(4);
+            submitStep(validateStep3, 4);
           }}
         >
           <div className="flex items-start gap-4">
@@ -300,12 +376,22 @@ export default function SetupPage() {
               </p>
             </div>
           </div>
-          <Field hint={t("setupWizard.step3.orgHint")} id="setup-org" label={t("setupWizard.step3.orgLabel")}>
+          <Field
+            error={errors.orgName}
+            hint={t("setupWizard.step3.orgHint")}
+            id="setup-org"
+            label={t("setupWizard.step3.orgLabel")}
+          >
             <Input
               autoFocus
               id="setup-org"
-              onChange={(event) => setSetupData({ ...setupData, orgName: event.target.value })}
-              placeholder="My Game Host"
+              invalid={Boolean(errors.orgName)}
+              onBlur={() => setFieldError("orgName", validateStep3().orgName)}
+              onChange={(event) => {
+                setSetupData({ ...setupData, orgName: event.target.value });
+                if (errors.orgName) setFieldError("orgName", undefined);
+              }}
+              placeholder={t("setupWizard.step3.placeholder")}
               value={setupData.orgName}
             />
           </Field>
@@ -326,7 +412,7 @@ export default function SetupPage() {
           noValidate
           onSubmit={(event) => {
             event.preventDefault();
-            setStep(5);
+            submitStep(validateStep4, 5);
           }}
         >
           <div className="flex items-start gap-4">
@@ -340,20 +426,41 @@ export default function SetupPage() {
               </p>
             </div>
           </div>
-          <Field hint={t("setupWizard.step4.nameHint")} id="setup-node-name" label={t("setupWizard.step4.nameLabel")}>
+          <Field
+            error={errors.nodeName}
+            hint={t("setupWizard.step4.nameHint")}
+            id="setup-node-name"
+            label={t("setupWizard.step4.nameLabel")}
+          >
             <Input
               autoFocus
               id="setup-node-name"
-              onChange={(event) => setSetupData({ ...setupData, nodeName: event.target.value })}
-              placeholder="Primary Node"
+              invalid={Boolean(errors.nodeName)}
+              onBlur={() => setFieldError("nodeName", validateStep4().nodeName)}
+              onChange={(event) => {
+                setSetupData({ ...setupData, nodeName: event.target.value });
+                if (errors.nodeName) setFieldError("nodeName", undefined);
+              }}
+              placeholder={t("setupWizard.step4.placeholderName")}
               value={setupData.nodeName}
             />
           </Field>
-          <Field hint={t("setupWizard.step4.fqdnHint")} id="setup-node-fqdn" label={t("setupWizard.step4.fqdnLabel")}>
+          <Field
+            error={errors.nodeFqdn}
+            hint={t("setupWizard.step4.fqdnHint")}
+            id="setup-node-fqdn"
+            label={t("setupWizard.step4.fqdnLabel")}
+          >
             <Input
+              autoComplete="url"
               id="setup-node-fqdn"
-              onChange={(event) => setSetupData({ ...setupData, nodeFqdn: event.target.value })}
-              placeholder="node1.example.com"
+              invalid={Boolean(errors.nodeFqdn)}
+              onBlur={() => setFieldError("nodeFqdn", validateStep4().nodeFqdn)}
+              onChange={(event) => {
+                setSetupData({ ...setupData, nodeFqdn: event.target.value });
+                if (errors.nodeFqdn) setFieldError("nodeFqdn", undefined);
+              }}
+              placeholder={t("setupWizard.step4.placeholderFqdn")}
               value={setupData.nodeFqdn}
             />
           </Field>
@@ -374,7 +481,7 @@ export default function SetupPage() {
           noValidate
           onSubmit={(event) => {
             event.preventDefault();
-            setStep(6);
+            submitStep(validateStep5, 6);
           }}
         >
           <div className="flex items-start gap-4">
@@ -388,21 +495,37 @@ export default function SetupPage() {
               </p>
             </div>
           </div>
-          <Field hint={t("setupWizard.step5.hostHint")} id="setup-smtp-host" label={t("setupWizard.step5.hostLabel")}>
+          <Field
+            error={errors.smtpHost}
+            hint={t("setupWizard.step5.hostHint")}
+            id="setup-smtp-host"
+            label={t("setupWizard.step5.hostLabel")}
+          >
             <Input
               autoFocus
               id="setup-smtp-host"
-              onChange={(event) => setSetupData({ ...setupData, smtpHost: event.target.value })}
-              placeholder="smtp.example.com"
+              invalid={Boolean(errors.smtpHost)}
+              onBlur={() => setFieldError("smtpHost", validateStep5().smtpHost)}
+              onChange={(event) => {
+                setSetupData({ ...setupData, smtpHost: event.target.value });
+                if (errors.smtpHost) setFieldError("smtpHost", undefined);
+              }}
+              placeholder={t("setupWizard.step5.placeholderHost")}
               value={setupData.smtpHost}
             />
           </Field>
           <div className="grid grid-cols-2 gap-4">
-            <Field id="setup-smtp-port" label={t("setupWizard.step5.portLabel")}>
+            <Field error={errors.smtpPort} id="setup-smtp-port" label={t("setupWizard.step5.portLabel")}>
               <Input
                 id="setup-smtp-port"
-                onChange={(event) => setSetupData({ ...setupData, smtpPort: event.target.value })}
-                placeholder="587"
+                invalid={Boolean(errors.smtpPort)}
+                inputMode="numeric"
+                onBlur={() => setFieldError("smtpPort", validateStep5().smtpPort)}
+                onChange={(event) => {
+                  setSetupData({ ...setupData, smtpPort: event.target.value });
+                  if (errors.smtpPort) setFieldError("smtpPort", undefined);
+                }}
+                placeholder={t("setupWizard.step5.placeholderPort")}
                 value={setupData.smtpPort}
               />
             </Field>
@@ -420,25 +543,44 @@ export default function SetupPage() {
           </div>
           <Field id="setup-smtp-user" label={t("setupWizard.step5.userLabel")}>
             <Input
+              autoComplete="username"
               id="setup-smtp-user"
               onChange={(event) => setSetupData({ ...setupData, smtpUser: event.target.value })}
-              placeholder="user@example.com"
+              placeholder={t("setupWizard.step5.placeholderUser")}
               value={setupData.smtpUser}
             />
           </Field>
           <Field id="setup-smtp-pass" label={t("setupWizard.step5.passLabel")}>
-            <Input
-              id="setup-smtp-pass"
-              onChange={(event) => setSetupData({ ...setupData, smtpPass: event.target.value })}
-              type="password"
-              value={setupData.smtpPass}
-            />
+            <div className="relative">
+              <Input
+                autoComplete="current-password"
+                className="pr-11"
+                id="setup-smtp-pass"
+                onChange={(event) => setSetupData({ ...setupData, smtpPass: event.target.value })}
+                type={showSmtpPass ? "text" : "password"}
+                value={setupData.smtpPass}
+              />
+              <button
+                aria-label={showSmtpPass ? t("setupWizard.step2.hidePasswords") : t("setupWizard.step2.showPasswords")}
+                className="ui-icon-button absolute right-1 top-1"
+                onClick={() => setShowSmtpPass((value) => !value)}
+                type="button"
+              >
+                {showSmtpPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
           </Field>
-          <Field id="setup-smtp-from" label={t("setupWizard.step5.fromLabel")}>
+          <Field error={errors.smtpFrom} id="setup-smtp-from" label={t("setupWizard.step5.fromLabel")}>
             <Input
+              autoComplete="email"
               id="setup-smtp-from"
-              onChange={(event) => setSetupData({ ...setupData, smtpFrom: event.target.value })}
-              placeholder="noreply@example.com"
+              invalid={Boolean(errors.smtpFrom)}
+              onBlur={() => setFieldError("smtpFrom", validateStep5().smtpFrom)}
+              onChange={(event) => {
+                setSetupData({ ...setupData, smtpFrom: event.target.value });
+                if (errors.smtpFrom) setFieldError("smtpFrom", undefined);
+              }}
+              placeholder={t("setupWizard.step5.placeholderFrom")}
               value={setupData.smtpFrom}
             />
           </Field>
@@ -459,7 +601,7 @@ export default function SetupPage() {
           noValidate
           onSubmit={(event) => {
             event.preventDefault();
-            setStep(7);
+            submitStep(validateStep6, 7);
           }}
         >
           <div className="flex items-start gap-4">
@@ -485,27 +627,43 @@ export default function SetupPage() {
           </Field>
           {setupData.backupDriver === "s3" ? (
             <>
-              <Field id="setup-s3-bucket" label={t("setupWizard.step6.bucketLabel")}>
+              <Field error={errors.s3Bucket} id="setup-s3-bucket" label={t("setupWizard.step6.bucketLabel")}>
                 <Input
                   id="setup-s3-bucket"
-                  onChange={(event) => setSetupData({ ...setupData, s3Bucket: event.target.value })}
-                  placeholder="my-backup-bucket"
+                  invalid={Boolean(errors.s3Bucket)}
+                  onBlur={() => setFieldError("s3Bucket", validateStep6().s3Bucket)}
+                  onChange={(event) => {
+                    setSetupData({ ...setupData, s3Bucket: event.target.value });
+                    if (errors.s3Bucket) setFieldError("s3Bucket", undefined);
+                  }}
+                  placeholder={t("setupWizard.step6.placeholderBucket")}
                   value={setupData.s3Bucket}
                 />
               </Field>
-              <Field id="setup-s3-region" label={t("setupWizard.step6.regionLabel")}>
+              <Field error={errors.s3Region} id="setup-s3-region" label={t("setupWizard.step6.regionLabel")}>
                 <Input
                   id="setup-s3-region"
-                  onChange={(event) => setSetupData({ ...setupData, s3Region: event.target.value })}
-                  placeholder="us-east-1"
+                  invalid={Boolean(errors.s3Region)}
+                  onBlur={() => setFieldError("s3Region", validateStep6().s3Region)}
+                  onChange={(event) => {
+                    setSetupData({ ...setupData, s3Region: event.target.value });
+                    if (errors.s3Region) setFieldError("s3Region", undefined);
+                  }}
+                  placeholder={t("setupWizard.step6.placeholderRegion")}
                   value={setupData.s3Region}
                 />
               </Field>
-              <Field id="setup-s3-endpoint" label={t("setupWizard.step6.endpointLabel")}>
+              <Field error={errors.s3Endpoint} id="setup-s3-endpoint" label={t("setupWizard.step6.endpointLabel")}>
                 <Input
+                  autoComplete="url"
                   id="setup-s3-endpoint"
-                  onChange={(event) => setSetupData({ ...setupData, s3Endpoint: event.target.value })}
-                  placeholder="https://s3.amazonaws.com"
+                  invalid={Boolean(errors.s3Endpoint)}
+                  onBlur={() => setFieldError("s3Endpoint", validateStep6().s3Endpoint)}
+                  onChange={(event) => {
+                    setSetupData({ ...setupData, s3Endpoint: event.target.value });
+                    if (errors.s3Endpoint) setFieldError("s3Endpoint", undefined);
+                  }}
+                  placeholder={t("setupWizard.step6.placeholderEndpoint")}
                   value={setupData.s3Endpoint}
                 />
               </Field>
@@ -528,7 +686,9 @@ export default function SetupPage() {
           noValidate
           onSubmit={(event) => {
             event.preventDefault();
-            setupMutation.mutate();
+            const next = validateStep7();
+            setErrors(next);
+            if (Object.keys(next).length === 0) setupMutation.mutate();
           }}
         >
           <div className="flex items-start gap-4">
@@ -542,24 +702,43 @@ export default function SetupPage() {
               </p>
             </div>
           </div>
-          <Field hint={t("setupWizard.step7.domainHint")} id="setup-domain" label={t("setupWizard.step7.domainLabel")}>
+          <Field
+            error={errors.domainName}
+            hint={t("setupWizard.step7.domainHint")}
+            id="setup-domain"
+            label={t("setupWizard.step7.domainLabel")}
+          >
             <Input
+              autoComplete="url"
               autoFocus
               id="setup-domain"
-              onChange={(event) => setSetupData({ ...setupData, domainName: event.target.value })}
-              placeholder="panel.example.com"
+              invalid={Boolean(errors.domainName)}
+              onBlur={() => setFieldError("domainName", validateStep7().domainName)}
+              onChange={(event) => {
+                setSetupData({ ...setupData, domainName: event.target.value });
+                if (errors.domainName) setFieldError("domainName", undefined);
+              }}
+              placeholder={t("setupWizard.step7.placeholderDomain")}
               value={setupData.domainName}
             />
           </Field>
           <Field
+            error={errors.tlsEmail}
             hint={t("setupWizard.step7.tlsEmailHint")}
             id="setup-tls-email"
             label={t("setupWizard.step7.tlsEmailLabel")}
           >
             <Input
+              autoComplete="email"
               id="setup-tls-email"
-              onChange={(event) => setSetupData({ ...setupData, tlsEmail: event.target.value })}
-              placeholder="admin@example.com"
+              invalid={Boolean(errors.tlsEmail)}
+              onBlur={() => setFieldError("tlsEmail", validateStep7().tlsEmail)}
+              onChange={(event) => {
+                setSetupData({ ...setupData, tlsEmail: event.target.value });
+                if (errors.tlsEmail) setFieldError("tlsEmail", undefined);
+              }}
+              placeholder={t("setupWizard.step7.placeholderTlsEmail")}
+              type="email"
               value={setupData.tlsEmail}
             />
           </Field>

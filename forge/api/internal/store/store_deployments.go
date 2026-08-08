@@ -6,7 +6,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+var ErrDeploymentInProgress = errors.New("deployment already in progress for this server")
 
 type Deployment struct {
 	ID                      string     `json:"id"`
@@ -55,7 +58,14 @@ func (s *Store) CreateDeployment(ctx context.Context, d *Deployment) error {
 		d.TimeoutSeconds, d.HealthGateEnabled, d.HealthGateThreshold, d.HealthGateIntervalMs,
 		d.AutoRollbackEnabled, d.RollbackOnHealthFailure, d.CleanupOnFailure, d.TargetReplicas,
 		d.ProgressPct, d.NextStep, d.TimeoutAt, 1, d.CreatedAt, d.UpdatedAt, d.CompletedAt)
-	return err
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_unique_active_deployment_per_server" {
+			return ErrDeploymentInProgress
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Store) GetDeployment(ctx context.Context, id string) (Deployment, error) {
@@ -296,6 +306,7 @@ func (s *Store) ClaimExecutionLease(ctx context.Context, deploymentID string, ex
 			updated_at = now()
 		WHERE id = $1
 		  AND (execution_lease_until IS NULL OR execution_lease_until < now())
+		  AND status NOT IN ('completed', 'failed', 'cancelled', 'rolled_back')
 		RETURNING true
 	`, deploymentID, executorID, leaseDuration.Seconds()).Scan(&claimed)
 	if err != nil {
@@ -305,6 +316,38 @@ func (s *Store) ClaimExecutionLease(ctx context.Context, deploymentID string, ex
 		return false, err
 	}
 	return claimed, nil
+}
+
+// RenewExecutionLease extends the lease for the owning executor so long
+// executions never have their lease lapse mid-run.
+func (s *Store) RenewExecutionLease(ctx context.Context, deploymentID, executorID string, leaseDuration time.Duration) (bool, error) {
+	var renewed bool
+	err := s.db.QueryRow(ctx, `
+		UPDATE deployments
+		SET execution_lease_until = now() + make_interval(secs => $3),
+			updated_at = now()
+		WHERE id = $1
+		  AND executor_id = $2
+		RETURNING true
+	`, deploymentID, executorID, leaseDuration.Seconds()).Scan(&renewed)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return renewed, nil
+}
+
+// ReleaseExecutionLeaseIfOwner clears the lease only when it belongs to the
+// given executor, so a stale executor cannot release another worker's lease.
+func (s *Store) ReleaseExecutionLeaseIfOwner(ctx context.Context, deploymentID, executorID string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE deployments
+		SET executor_id = NULL, execution_lease_until = NULL, updated_at = now()
+		WHERE id = $1 AND (executor_id = $2 OR $2 = '')
+	`, deploymentID, executorID)
+	return err
 }
 
 func (s *Store) ReleaseExecutionLease(ctx context.Context, deploymentID string) error {

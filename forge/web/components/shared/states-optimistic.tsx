@@ -17,21 +17,27 @@ export function useOptimisticUpdate<T>(
   const [pending, setPending] = useState(false);
   const [rollbackError, setRollbackError] = useState<string | null>(null);
   const previousRef = useRef<T>(initial);
+  const valueRef = useRef<T>(initial);
+  valueRef.current = value;
 
   const update = useCallback(
     async (next: T) => {
-      const prev = value;
+      const prev = valueRef.current;
       previousRef.current = prev;
       const optimistic = options.onMutate(prev);
       setValue(optimistic);
+      valueRef.current = optimistic;
       setPending(true);
       setRollbackError(null);
 
       try {
         const result = await mutationFn(next);
-        setValue(result ?? options.onMutate(prev));
+        const resolved = result ?? options.onMutate(prev);
+        setValue(resolved);
+        valueRef.current = resolved;
       } catch (error) {
         setValue(prev);
+        valueRef.current = prev;
         const message = error instanceof Error ? error.message : "Update failed";
         setRollbackError(message);
         options.onError?.(error instanceof Error ? error : new Error(message), prev);
@@ -40,7 +46,7 @@ export function useOptimisticUpdate<T>(
         options.onSettled?.();
       }
     },
-    [value, mutationFn, options],
+    [mutationFn, options],
   );
 
   return { value, pending, rollbackError, update, setValue };

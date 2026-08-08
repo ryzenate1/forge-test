@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { AdminPageHeader, AdminPageLayout, Btn, Card, CardHeader, Pill } from "@/components/admin/admin-ui";
 import { getComposeStackStatus, getComposeStackLogs, stopComposeStack, startComposeStack, deployComposeStack, deleteComposeStack } from "@/lib/api/compose";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 function getServiceStatusColor(state: string, status: string): string {
   const s = (state || status || "").toLowerCase();
@@ -21,6 +22,7 @@ function getServiceStatusColor(state: string, status: string): string {
 }
 
 export default function ComposeStackDetailPage() {
+  const [confirm, renderConfirm] = useConfirm();
   const params = useParams();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -137,7 +139,7 @@ export default function ComposeStackDetailPage() {
             <Btn size="sm" tone="primary" onClick={() => redeployMutation.mutate()}>
               <RotateCcw className="h-4 w-4" /> Redeploy
             </Btn>
-            <Btn size="sm" tone="danger" onClick={() => { if (confirm("Delete this stack?")) deleteMutation.mutate(); }}>
+            <Btn size="sm" tone="danger" onClick={() => { void (async () => { if (await confirm({ title: "Delete this compose stack?", description: "The stack and its resources will be removed. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMutation.mutate(); })(); }}>
               <Trash2 className="h-4 w-4" /> Delete
             </Btn>
           </div>
@@ -285,6 +287,8 @@ export default function ComposeStackDetailPage() {
           </pre>
         </div>
       </Card>
+      {renderConfirm()}
     </AdminPageLayout>
   );
 }
+

@@ -6,6 +6,8 @@ import { Database, Plus, RotateCcw, Archive, Eye } from "lucide-react";
 import { Btn, Card, CardHeader, EmptyState, Pill } from "@/components/admin/admin-ui";
 import { ServerConsoleLayout } from "@/components/server/server-console-layout";
 import { useToast } from "@/components/ui/toast";
+import { ConfirmDialog } from "@/components/ui/primitives";
+import { CardSkeleton } from "@/components/ui/loading-skeleton";
 import {
   listServerDatabaseServices,
   createServiceBackup,
@@ -56,6 +58,7 @@ function ServerDatabaseView({ serverId }: { serverId: string }) {
 
   const [showLink, setShowLink] = useState(false);
   const [showDetail, setShowDetail] = useState<string | null>(null);
+  const [unlinkTarget, setUnlinkTarget] = useState<{ id: string; name: string } | null>(null);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["server-database-services", serverId] });
@@ -91,7 +94,7 @@ function ServerDatabaseView({ serverId }: { serverId: string }) {
       <Card>
         <CardHeader title="Database Services" icon={Database} />
         {svcsQuery.isLoading ? (
-          <div className="py-10 text-center text-sm text-slate-500">Loading</div>
+          <CardSkeleton />
         ) : svcs.length === 0 ? (
           <EmptyState icon={Database} message="No database services linked to this server." />
         ) : (
@@ -112,7 +115,7 @@ function ServerDatabaseView({ serverId }: { serverId: string }) {
                   <td className="px-4 py-3 font-medium text-slate-200">{svc.name || svc.id.slice(0, 8)}</td>
                   <td className="px-4 py-3"><Pill tone="blue">{engineLabels[svc.type] || svc.type} {svc.version}</Pill></td>
                   <td className="px-4 py-3"><Pill tone={statusTone[svc.status] || "neutral"}>{svc.status}</Pill></td>
-                  <td className="px-4 py-3 text-xs text-slate-400">{svc.memoryMb}MB</td>
+                  <td className="px-4 py-3 font-mono text-xs text-slate-400">{svc.memoryMb}MB</td>
                   <td className="px-4 py-3">
                     {svc.connectionString ? (
                       <Btn size="sm" tone="ghost" onClick={() => setShowDetail(svc.id)}><Eye size={13} /> View</Btn>
@@ -134,7 +137,7 @@ function ServerDatabaseView({ serverId }: { serverId: string }) {
                       <button
                         className="grid h-8 w-8 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-red-200 disabled:opacity-40"
                         disabled={unlinkMut.isPending}
-                        onClick={() => { if (window.confirm("Unlink this database service?")) unlinkMut.mutate(svc.id); }}
+                        onClick={() => setUnlinkTarget({ id: svc.id, name: svc.name || svc.id.slice(0, 8) })}
                         title="Unlink"
                         type="button"
                       >
@@ -164,6 +167,17 @@ function ServerDatabaseView({ serverId }: { serverId: string }) {
           onClose={() => setShowDetail(null)}
         />
       )}
+
+      <ConfirmDialog
+        confirmAction={() => { if (unlinkTarget) unlinkMut.mutate(unlinkTarget.id); }}
+        confirmLabel={unlinkTarget ? `Unlink database ${unlinkTarget.name}` : "Unlink database"}
+        description={`Unlinking ${unlinkTarget?.name ?? "this database"} removes it from this server. The managed service itself is not deleted, but this server loses its connection credentials.`}
+        destructive
+        loading={unlinkMut.isPending}
+        closeAction={() => { if (!unlinkMut.isPending) setUnlinkTarget(null); }}
+        open={Boolean(unlinkTarget)}
+        title={unlinkTarget ? `Unlink database ${unlinkTarget.name}?` : ""}
+      />
     </div>
   );
 }
@@ -191,26 +205,26 @@ function LinkServiceModal({ serverId, linkedIds, onClose, onLinked }: {
   });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
-      <div className="w-full max-w-md rounded-xl bg-[#1e2536] p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <h2 className="mb-4 text-lg font-semibold text-slate-100">Link Database Service</h2>
+    <div className="ui-dialog-layer" onClick={onClose}>
+      <div className="ui-dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+        <h2 className="mb-4 text-lg font-semibold text-slate-100">Link database service</h2>
         {available.length === 0 ? (
-          <p className="text-sm text-slate-400">No unlinked database services available.</p>
+          <p className="text-sm text-slate-400">No unlinked database services available. Create one first, then reload this panel.</p>
         ) : (
           <div className="space-y-2">
             {available.map((s) => (
-              <label key={s.id} className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 text-sm transition-colors ${selectedId === s.id ? "border-blue-500/50 bg-blue-900/20" : "border-white/10 bg-[#161b28] hover:bg-white/[0.04]"}`}>
+              <label key={s.id} className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 text-sm transition-colors ${selectedId === s.id ? "border-red-500/50 bg-red-500/10" : "border-white/10 bg-white/[0.02] hover:bg-white/[0.04]"}`}>
                 <input
                   type="radio"
                   name="service"
                   value={s.id}
                   checked={selectedId === s.id}
                   onChange={() => setSelectedId(s.id)}
-                  className="accent-blue-500"
+                  className="accent-red-600"
                 />
                 <div>
                   <span className="text-slate-200">{s.name || s.id.slice(0, 8)}</span>
-                  <span className="ml-2 text-xs text-slate-500">{engineLabels[s.type] || s.type} {s.version}</span>
+                  <span className="ml-2 font-mono text-xs text-slate-500">{engineLabels[s.type] || s.type} {s.version}</span>
                 </div>
               </label>
             ))}
@@ -219,7 +233,7 @@ function LinkServiceModal({ serverId, linkedIds, onClose, onLinked }: {
         <div className="mt-4 flex justify-end gap-2">
           <Btn size="sm" tone="ghost" onClick={onClose}>Cancel</Btn>
           <Btn size="sm" disabled={!selectedId || linkMut.isPending} onClick={() => linkMut.mutate()}>
-            {linkMut.isPending ? "Linking..." : "Link"}
+            {linkMut.isPending ? "Linking..." : "Link service"}
           </Btn>
         </div>
       </div>
@@ -239,16 +253,16 @@ function ConnectionDetailModal({ serviceId, onClose }: { serviceId: string; onCl
   const svc = svcQuery.data;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
-      <div className="w-full max-w-lg rounded-xl bg-[#1e2536] p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <h2 className="mb-4 text-lg font-semibold text-slate-100">Connection Details</h2>
+    <div className="ui-dialog-layer" onClick={onClose}>
+      <div className="ui-dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+        <h2 className="mb-4 text-lg font-semibold text-slate-100">Connection details</h2>
         {!svc ? (
           <p className="text-sm text-slate-400">Loading...</p>
         ) : (
           <div className="space-y-3 text-sm">
             <div>
               <span className="text-slate-500">Connection String:</span>
-              <pre className="mt-1 rounded bg-black/40 p-3 font-mono text-xs text-emerald-300 break-all select-all">{svc.connectionString}</pre>
+              <pre className="mt-1 select-all break-all rounded bg-black/40 p-3 font-mono text-xs text-emerald-300">{svc.connectionString}</pre>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div><span className="text-slate-500">Host:</span><br /><span className="font-mono text-xs text-slate-200">{svc.host}:{svc.port}</span></div>

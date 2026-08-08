@@ -70,7 +70,7 @@ func registerProxyDomainRoutes(protected fiber.Router, cfg Config, adminIPAccess
 
 		result, err := cfg.Store.CreateProxyDomain(c.Context(), domain)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(201).JSON(fiber.Map{"data": result})
 	})
@@ -91,7 +91,7 @@ func registerProxyDomainRoutes(protected fiber.Router, cfg Config, adminIPAccess
 
 		results, err := cfg.Store.ListProxyDomains(c.Context(), filter)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": results})
 	})
@@ -99,7 +99,7 @@ func registerProxyDomainRoutes(protected fiber.Router, cfg Config, adminIPAccess
 	domains.Get("/:id", requireRole("admin"), requireAdminScope("domains.read"), func(c *fiber.Ctx) error {
 		d, err := cfg.Store.GetProxyDomain(c.Context(), c.Params("id"))
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		if d == nil {
 			return c.Status(404).JSON(fiber.Map{"error": "domain not found"})
@@ -110,7 +110,7 @@ func registerProxyDomainRoutes(protected fiber.Router, cfg Config, adminIPAccess
 	domains.Put("/:id", mutationLimiter, requireRole("admin"), requireAdminScope("domains.write"), func(c *fiber.Ctx) error {
 		existing, err := cfg.Store.GetProxyDomain(c.Context(), c.Params("id"))
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		if existing == nil {
 			return c.Status(404).JSON(fiber.Map{"error": "domain not found"})
@@ -184,14 +184,14 @@ func registerProxyDomainRoutes(protected fiber.Router, cfg Config, adminIPAccess
 		}
 
 		if err := cfg.Store.UpdateProxyDomain(c.Context(), *existing); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": existing})
 	})
 
 	domains.Delete("/:id", mutationLimiter, requireRole("admin"), requireAdminScope("domains.write"), func(c *fiber.Ctx) error {
 		if err := cfg.Store.DeleteProxyDomain(c.Context(), c.Params("id")); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.SendStatus(204)
 	})
@@ -199,7 +199,7 @@ func registerProxyDomainRoutes(protected fiber.Router, cfg Config, adminIPAccess
 	domains.Post("/:id/verify", mutationLimiter, requireRole("admin"), requireAdminScope("domains.write"), func(c *fiber.Ctx) error {
 		d, err := cfg.Store.GetProxyDomain(c.Context(), c.Params("id"))
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		if d == nil {
 			return c.Status(404).JSON(fiber.Map{"error": "domain not found"})
@@ -255,7 +255,7 @@ func registerProxyCertificateRoutes(protected fiber.Router, cfg Config, adminIPA
 
 		cert, err := cfg.Store.CreateCertificate(c.Context(), createReq)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(201).JSON(fiber.Map{"data": cert})
 	})
@@ -270,7 +270,7 @@ func registerProxyCertificateRoutes(protected fiber.Router, cfg Config, adminIPA
 
 		results, err := cfg.Store.ListCertificates(c.Context(), filter)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": results})
 	})
@@ -285,7 +285,7 @@ func registerProxyCertificateRoutes(protected fiber.Router, cfg Config, adminIPA
 
 	certs.Delete("/:id", mutationLimiter, requireRole("admin"), requireAdminScope("certificates.write"), func(c *fiber.Ctx) error {
 		if err := cfg.Store.DeleteCertificate(c.Context(), c.Params("id")); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.SendStatus(204)
 	})
@@ -296,7 +296,7 @@ func registerProxyCertificateRoutes(protected fiber.Router, cfg Config, adminIPA
 		}
 		cert, err := cfg.AcmeService.RenewCertificate(c.Context(), c.Params("id"))
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": cert})
 	})
@@ -312,7 +312,7 @@ func registerSecurityHeadersRoutes(protected fiber.Router, cfg Config, adminIPAc
 	headers.Get("/", requireRole("admin"), requireAdminScope("domains.read"), func(c *fiber.Ctx) error {
 		h, err := cfg.Store.GetSecurityHeadersByDomain(c.Context(), c.Params("domainId"))
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": h})
 	})
@@ -326,7 +326,7 @@ func registerSecurityHeadersRoutes(protected fiber.Router, cfg Config, adminIPAc
 
 		result, err := cfg.Store.CreateSecurityHeaders(c.Context(), h)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(201).JSON(fiber.Map{"data": result})
 	})
@@ -339,14 +339,14 @@ func registerSecurityHeadersRoutes(protected fiber.Router, cfg Config, adminIPAc
 		h.ID = c.Params("id")
 
 		if err := cfg.Store.UpdateSecurityHeaders(c.Context(), h); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": h})
 	})
 
 	headers.Delete("/:id", mutationLimiter, requireRole("admin"), requireAdminScope("domains.write"), func(c *fiber.Ctx) error {
 		if err := cfg.Store.DeleteSecurityHeaders(c.Context(), c.Params("id")); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.SendStatus(204)
 	})
@@ -364,7 +364,7 @@ func registerRedirectRulesRoutes(protected fiber.Router, cfg Config, adminIPAcce
 		filter := store.RedirectRuleFilter{DomainID: &domainID}
 		rules, err := cfg.Store.ListRedirectRules(c.Context(), filter)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": rules})
 	})
@@ -378,7 +378,7 @@ func registerRedirectRulesRoutes(protected fiber.Router, cfg Config, adminIPAcce
 
 		result, err := cfg.Store.CreateRedirectRule(c.Context(), rule)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(201).JSON(fiber.Map{"data": result})
 	})
@@ -391,14 +391,14 @@ func registerRedirectRulesRoutes(protected fiber.Router, cfg Config, adminIPAcce
 		rule.ID = c.Params("id")
 
 		if err := cfg.Store.UpdateRedirectRule(c.Context(), rule); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": rule})
 	})
 
 	redirects.Delete("/:id", mutationLimiter, requireRole("admin"), requireAdminScope("domains.write"), func(c *fiber.Ctx) error {
 		if err := cfg.Store.DeleteRedirectRule(c.Context(), c.Params("id")); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.SendStatus(204)
 	})

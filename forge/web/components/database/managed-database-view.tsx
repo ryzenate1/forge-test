@@ -14,7 +14,7 @@ import {
   deleteManagedDatabase,
   listManagedDatabaseBackups,
 } from "@/lib/api/database-containers";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, SectionHeader, Pill } from "@/components/admin/admin-ui";
+import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, SectionHeader, Pill, AdminConfirmDialog } from "@/components/admin/admin-ui";
 import { useToast } from "@/components/ui/toast";
 
 const selectStyle = "h-10 w-full rounded-lg border border-white/10 bg-surface-card-header px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15";
@@ -31,6 +31,7 @@ export function ManagedDatabaseView() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const [selected, setSelected] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
 
   const dbsQuery = useQuery({
@@ -79,6 +80,15 @@ export function ManagedDatabaseView() {
         sub="One-click database containers with backup and restore"
         action={<Btn onClick={() => setShowCreate(true)}><Plus size={14} /> Create Database</Btn>}
       />
+      <AdminConfirmDialog
+        destructive
+        loading={deleteMut.isPending}
+        onCancel={() => setConfirmDeleteId(null)}
+        onConfirm={() => { if (confirmDeleteId) deleteMut.mutate(confirmDeleteId); setConfirmDeleteId(null); }}
+        open={Boolean(confirmDeleteId)}
+        title={`Delete managed database ${dbs.find((db) => db.id === confirmDeleteId)?.name ?? ""}?`}
+        description="The database and all of its data will be permanently removed. This cannot be undone."
+      />
 
       <Card className="overflow-hidden">
         <CardHeader title="Databases" icon={Database} />
@@ -117,7 +127,7 @@ export function ManagedDatabaseView() {
                     onBackup={(id) => backupMut.mutate(id)}
                     onRestore={(id, backupId) => restoreMut.mutate({ dbId: id, backupId })}
                     onRotate={(id) => rotateMut.mutate(id)}
-                    onDelete={(id) => deleteMut.mutate(id)}
+                    onDelete={(id) => setConfirmDeleteId(id)}
                     backups={selected === db.id ? backups : []}
                     isPending={backupMut.isPending || restoreMut.isPending}
                   />
@@ -202,7 +212,7 @@ function ManagedDBRow({
             <button
               className="grid h-8 w-8 place-items-center rounded text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-red-200 disabled:opacity-40"
               disabled={isPending}
-              onClick={() => { if (window.confirm(`Delete managed database ${db.name}?`)) onDelete(db.id); }}
+              onClick={() => onDelete(db.id)}
               title="Delete"
               type="button"
             >

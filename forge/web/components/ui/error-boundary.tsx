@@ -30,7 +30,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     if (this.state.hasError) {
       if (this.props.fallback) return this.props.fallback;
       return (
-        <div className="rounded-xl border border-red-500/20 bg-red-950/30 p-6 text-center">
+        <div className="rounded-xl border border-red-500/20 bg-red-950/30 p-6 text-center" role="alert">
           <h3 className="text-lg font-semibold text-red-200">Something went wrong</h3>
           <p className="mt-2 text-sm text-red-300/70">{this.state.error?.message ?? "An unexpected error occurred."}</p>
           <button

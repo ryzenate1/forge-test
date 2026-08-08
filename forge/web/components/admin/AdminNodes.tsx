@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity, AlertCircle, ChevronRight, Cpu, Database, Eye, EyeOff, Globe, KeyRound, Lock, Mail,
@@ -14,6 +14,8 @@ import {
   type CreateNodeInput, type UpdateNodeInput,
 } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { copySecret } from "@/lib/clipboard";
 import { AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, SectionHeader, Textarea, cn } from "./admin-ui";
 
 type Tab = "about" | "settings" | "configuration" | "allocation" | "servers";
@@ -216,11 +218,17 @@ function NodeDetailView({ nodeId, onClose }: { nodeId: string; onClose: () => vo
   const [tab, setTab] = useState<Tab>("about");
   const qc = useQueryClient();
   const { toast } = useToast();
+  const [confirm, renderConfirm] = useConfirm();
   const deleteMut = useMutation({
     mutationFn: () => deleteNode(nodeId),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["nodes"] }); onClose(); },
     onError: (e: Error) => toast({ tone: "error", title: "Failed to delete node", message: e.message }),
   });
+  const requestDelete = () => {
+    void (async () => {
+      if (await confirm({ title: `Delete ${node?.name ?? "this node"}?`, description: "This is only allowed after its servers and allocations are removed. This action cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMut.mutate();
+    })();
+  };
 
   if (isLoading) {
     return <Modal title="Node" onClose={onClose}><div className="p-8 text-center text-sm text-slate-500">Loading…</div></Modal>;
@@ -241,7 +249,7 @@ function NodeDetailView({ nodeId, onClose }: { nodeId: string; onClose: () => vo
   return (
     <Modal title={node.name} onClose={onClose} wide>
       <div className="space-y-6">
-        <div className="flex justify-end"><Btn tone="danger" size="sm" type="button" disabled={deleteMut.isPending} onClick={() => { if (confirm(`Delete ${node.name}? This is only allowed after its servers and allocations are removed.`)) deleteMut.mutate(); }}><Trash2 size={14} /> {deleteMut.isPending ? "Deleting…" : "Delete Node"}</Btn></div>
+        <div className="flex justify-end"><Btn tone="danger" size="sm" type="button" disabled={deleteMut.isPending} onClick={requestDelete}><Trash2 size={14} /> {deleteMut.isPending ? "Deleting…" : "Delete Node"}</Btn></div>
         <AdminTabs tabs={ADMIN_TABS} active={tab} onChange={(id) => setTab(id as Tab)} label="Node sections" />
         {tab === "about" && <NodeAboutTab nodeId={nodeId} />}
         {tab === "settings" && <NodeSettingsTab node={node} />}
@@ -249,6 +257,7 @@ function NodeDetailView({ nodeId, onClose }: { nodeId: string; onClose: () => vo
         {tab === "allocation" && <NodeAllocationTab node={node} allocations={allocations} />}
         {tab === "servers" && <NodeServersTab nodeId={nodeId} />}
       </div>
+      {renderConfirm()}
     </Modal>
   );
 }
@@ -447,6 +456,19 @@ function NodeSettingsTab({ node }: { node: ApiNode }) {
   const [behindProxy, setBehindProxy] = useState(node.behindProxy ?? false);
   const [desiredState, setDesiredState] = useState(node.desiredState ?? (node.draining ? "draining" : node.maintenanceMode ? "maintenance" : "active"));
   const [rotatedToken, setRotatedToken] = useState<string | null>(null);
+  const [credentialCopied, setCredentialCopied] = useState(false);
+  const [credentialMasked, setCredentialMasked] = useState(false);
+  const [confirm, renderConfirm] = useConfirm();
+  useEffect(() => {
+    const hide = () => setCredentialMasked(true);
+    const onVisibilityChange = () => { if (document.visibilityState === "hidden") hide(); };
+    window.addEventListener("blur", hide);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("blur", hide);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
   const [memoryMb, setMemoryMb] = useState(String(node.memoryMb));
   const [diskMb, setDiskMb] = useState(String(node.diskMb));
   const [daemonListen, setDaemonListen] = useState(String(node.daemonListen ?? 9090));
@@ -531,7 +553,7 @@ function NodeSettingsTab({ node }: { node: ApiNode }) {
           </label>
           <label className="block text-sm">
             <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">Lifecycle state</span>
-            <select className="h-10 w-full rounded-lg border border-white/10 bg-[#141824] px-3 text-slate-100" value={desiredState} onChange={(e) => setDesiredState(e.target.value)}>
+            <select className="h-10 w-full rounded-lg border border-white/10 bg-[#141824] px-3 text-slate-100" value={desiredState} onChange={(e) => setDesiredState(e.target.value as "active" | "draining" | "maintenance")}>
               <option value="active">Active — eligible when healthy</option>
               <option value="draining">Draining — exclude from placement</option>
               <option value="maintenance">Maintenance — exclude from placement</option>
@@ -564,7 +586,7 @@ function NodeSettingsTab({ node }: { node: ApiNode }) {
           </div>
         </Card>
         <div className="flex justify-between">
-          <Btn tone="ghost" onClick={() => { if (confirm("Rotate the node token? The current daemon credential will stop working.")) rotateMut.mutate(); }} type="button">
+          <Btn tone="ghost" onClick={() => { void (async () => { if (await confirm({ title: "Rotate node token?", description: "The current daemon credential will stop working immediately. This action cannot be undone.", danger: true, confirmLabel: "Rotate" })) rotateMut.mutate(); })(); }} type="button">
             <KeyRound size={14} /> Rotate Token
           </Btn>
           <Btn tone="primary" type="submit" disabled={saveMut.isPending || !locationId || locationsQuery.isPending || locationsQuery.isError}>
@@ -572,7 +594,8 @@ function NodeSettingsTab({ node }: { node: ApiNode }) {
           </Btn>
         </div>
       </div>
-      {rotatedToken ? <div className="md:col-span-2 rounded-lg border border-amber-500/30 bg-amber-950/20 p-4"><p className="text-sm font-semibold text-amber-200">New complete credential — shown once</p><pre className="mt-2 overflow-auto rounded bg-black/30 p-3 text-xs text-emerald-300">{rotatedToken}</pre><div className="mt-3 flex gap-2"><Btn size="sm" tone="ghost" type="button" onClick={() => { void navigator.clipboard?.writeText(rotatedToken); toast({ tone: "success", title: "Credential copied" }); }}>Copy credential</Btn><Btn size="sm" tone="ghost" type="button" onClick={() => setRotatedToken(null)}>I stored it</Btn></div></div> : null}
+      {rotatedToken ? <div className="md:col-span-2 rounded-lg border border-amber-500/30 bg-amber-950/20 p-4"><p className="text-sm font-semibold text-amber-200">New complete credential — shown once</p><pre className="mt-2 overflow-auto rounded bg-black/30 p-3 text-xs text-emerald-300">{credentialMasked ? "••••••••••••••••••••••••" : rotatedToken}</pre><div className="mt-3 flex gap-2"><Btn size="sm" tone="ghost" type="button" onClick={() => setCredentialMasked((masked) => !masked)}>{credentialMasked ? <><Eye size={14} /> Reveal credential</> : <><EyeOff size={14} /> Hide credential</>}</Btn><Btn size="sm" tone="ghost" type="button" onClick={async () => { if (await copySecret(rotatedToken)) { setCredentialCopied(true); setTimeout(() => setCredentialCopied(false), 2000); } }}>{credentialCopied ? "Credential copied" : "Copy credential"}</Btn><Btn size="sm" tone="ghost" type="button" onClick={() => setRotatedToken(null)}>I stored it</Btn></div><p className="mt-2 text-xs text-amber-200/70">Copied credentials are wiped from the clipboard 15s after copying and when this window loses focus.</p></div> : null}
+      {renderConfirm()}
     </form>
   );
 }
@@ -606,6 +629,7 @@ DAEMON_ALLOW_INSECURE_NO_AUTH=false
 function NodeAllocationTab({ node, allocations }: { node: ApiNode; allocations: ApiAllocation[] }) {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const [confirm, renderConfirm] = useConfirm();
   const [filter, setFilter] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [aliases, setAliases] = useState<Record<string, string>>({});
@@ -658,7 +682,7 @@ function NodeAllocationTab({ node, allocations }: { node: ApiNode; allocations: 
       <div className="flex items-center gap-3">
         <Input placeholder="Filter IP or port" value={filter} onChange={setFilter} />
         {selected.size > 0 && (
-          <Btn tone="danger" disabled={deleteBulkMut.isPending} onClick={() => { if (confirm(`Delete ${selected.size} allocation(s)?`)) deleteBulkMut.mutate(); }}>
+          <Btn tone="danger" disabled={deleteBulkMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: `Delete ${selected.size} allocation${selected.size === 1 ? "" : "s"}?`, description: "Free allocations only — allocations attached to a server are excluded. This action cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteBulkMut.mutate(); })(); }}>
             <Trash2 size={14} /> {deleteBulkMut.isPending ? "Deleting…" : `Delete ${selected.size}`}
           </Btn>
         )}
@@ -702,6 +726,7 @@ function NodeAllocationTab({ node, allocations }: { node: ApiNode; allocations: 
           </tbody>
         </table>
       </Card>
+      {renderConfirm()}
     </div>
   );
 }
@@ -818,8 +843,20 @@ function CreateNodeModal({ open, onClose, locations, locationsError, onRetryLoca
 
   const [onboarding, setOnboarding] = useState<{ id: string; token: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [credentialMasked, setCredentialMasked] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const panelURL = getBeaconAPIURL();
+
+  useEffect(() => {
+    const hide = () => setCredentialMasked(true);
+    const onVisibilityChange = () => { if (document.visibilityState === "hidden") hide(); };
+    window.addEventListener("blur", hide);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("blur", hide);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
 
   const createMut = useMutation({
     mutationFn: () => {
@@ -884,11 +921,11 @@ function CreateNodeModal({ open, onClose, locations, locationsError, onRetryLoca
     <Modal title="New Node" onClose={onClose} className="max-w-6xl">
       {onboarding ? (
         <div className="space-y-4">
-          <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 p-4 text-sm text-amber-100">Save this credential now. Forge will not show it again; rotate the token if it is lost.</div>
+          <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 p-4 text-sm text-amber-100">Save this credential now. Forge will not show it again; rotate the token if it is lost. Revealed values are hidden automatically when this window loses focus.</div>
           <pre className="overflow-auto rounded bg-[#0a0e16] p-4 text-xs leading-relaxed text-emerald-300">{`# /etc/forge/beacon.env (mode 0600)
 APP_ENV=production
 DAEMON_NODE_ID=${onboarding.id}
-DAEMON_NODE_TOKEN=${onboarding.token}
+DAEMON_NODE_TOKEN=${credentialMasked ? "••••••••••••••••" : onboarding.token}
 PANEL_API_URL=${panelURL}
 DAEMON_ADDR=:${daemonListen}
 DAEMON_SFTP_ADDR=:${daemonSftp}
@@ -897,7 +934,8 @@ DAEMON_ALLOW_INSECURE_NO_AUTH=false
 
 # Configure Beacon's systemd EnvironmentFile= or container env_file, then restart Beacon.`}</pre>
           <div className="flex justify-end gap-2">
-            <Btn tone="ghost" onClick={() => { if (navigator.clipboard) void navigator.clipboard.writeText(onboarding.token).then(() => setCopied(true)); }}>{copied ? "Credential copied" : "Copy credential"}</Btn>
+            <Btn tone="ghost" onClick={() => setCredentialMasked((masked) => !masked)}>{credentialMasked ? <><Eye size={14} /> Reveal credential</> : <><EyeOff size={14} /> Hide credential</>}</Btn>
+            <Btn tone="ghost" onClick={async () => { if (await copySecret(onboarding.token)) { setCopied(true); setTimeout(() => setCopied(false), 2000); } }}>{copied ? "Credential copied" : "Copy credential"}</Btn>
             <Btn tone="primary" onClick={onClose}>I stored this credential</Btn>
           </div>
         </div>

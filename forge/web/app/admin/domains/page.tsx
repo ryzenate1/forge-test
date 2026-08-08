@@ -6,6 +6,7 @@ import { Globe, Plus, Trash2, ShieldCheck, ShieldAlert, RotateCw, Network } from
 import { fetchJSON, postJSON, deleteJSON } from "@/lib/api";
 import { checkDNS as checkDNSApi } from "@/lib/api/domains";
 import { AdminPageLayout, AdminSelect, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type DomainRecord = {
   id: string;
@@ -37,6 +38,7 @@ type DNSResult = {
 };
 
 export default function AdminDomainsPage() {
+  const [confirm, renderConfirm] = useConfirm();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [serverFilter, setServerFilter] = useState("");
@@ -196,9 +198,9 @@ export default function AdminDomainsPage() {
                           size="sm"
                           tone="danger"
                           onClick={() => {
-                            if (confirm("Remove domain " + d.domain + "?")) {
+                            void (async () => { if (await confirm({ title: `Remove domain ${d.domain}?`, description: "The domain mapping will be removed. This cannot be undone.", danger: true, confirmLabel: "Remove" })) {
                               deleteMutation.mutate({ serverId: d.serverId, id: d.id });
-                            }
+                            } })();
                           }}
                         >
                           <Trash2 size={12} />
@@ -290,6 +292,8 @@ export default function AdminDomainsPage() {
           />
         </Modal>
       )}
+      {renderConfirm()}
     </AdminPageLayout>
   );
 }
+

@@ -195,3 +195,58 @@ func TestBuildBackupAdapterRejectsUnknownAdapter(t *testing.T) {
 		t.Fatalf("unknown adapter must fail closed: adapter=%T err=%v", adapter, err)
 	}
 }
+
+func TestSFTPHostKeyPassphraseExplicitEnvWins(t *testing.T) {
+	passphrase, err := sftpHostKeyPassphrase(t.TempDir(), "0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatalf("explicit passphrase rejected: %v", err)
+	}
+	if passphrase != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("explicit passphrase not preserved: %q", passphrase)
+	}
+}
+
+func TestSFTPHostKeyPassphraseRejectsShortEnv(t *testing.T) {
+	if _, err := sftpHostKeyPassphrase(t.TempDir(), "short"); err == nil {
+		t.Fatal("short explicit passphrase must be rejected")
+	}
+}
+
+func TestSFTPHostKeyPassphraseGeneratedAndStable(t *testing.T) {
+	dataDir := t.TempDir()
+	first, err := sftpHostKeyPassphrase(dataDir, "")
+	if err != nil {
+		t.Fatalf("first-run generation failed: %v", err)
+	}
+	if len(first) < 16 {
+		t.Fatalf("generated passphrase too short: %q", first)
+	}
+	second, err := sftpHostKeyPassphrase(dataDir, "")
+	if err != nil {
+		t.Fatalf("subsequent load failed: %v", err)
+	}
+	if first != second {
+		t.Fatal("passphrase must be stable across daemon restarts")
+	}
+	info, err := os.Stat(filepath.Join(dataDir, ".sftp", "host-key-passphrase"))
+	if err != nil {
+		t.Fatalf("secret file missing: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("secret file permissions must be 0600, got %o", info.Mode().Perm())
+	}
+}
+
+func TestSFTPHostKeyPassphraseRejectsCorruptStoredSecret(t *testing.T) {
+	dataDir := t.TempDir()
+	secretPath := filepath.Join(dataDir, ".sftp", "host-key-passphrase")
+	if err := os.MkdirAll(filepath.Dir(secretPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, []byte("tiny\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sftpHostKeyPassphrase(dataDir, ""); err == nil {
+		t.Fatal("corrupt stored secret must be rejected")
+	}
+}

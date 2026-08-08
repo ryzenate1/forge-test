@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Box, Plus, Trash2, ExternalLink } from "lucide-react";
 import { ApiError, createEndpoint, deleteEndpoint, fetchEndpoints } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import {
   AdminFormSection, AdminSelect, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, PermissionDeniedState, Pill, SectionHeader,
 } from "./admin-ui";
@@ -28,6 +29,7 @@ const STATUS_COLORS: Record<string, string> = {
 export function AdminEndpoints() {
   const { toast } = useToast();
   const qc = useQueryClient();
+  const [confirm, renderConfirm] = useConfirm();
   const endpointsQuery = useQuery({ queryKey: ["infra-endpoints"], queryFn: fetchEndpoints });
   const endpoints = useMemo(() => endpointsQuery.data ?? [], [endpointsQuery.data]);
 
@@ -136,11 +138,7 @@ export function AdminEndpoints() {
                   <td className="px-4 py-3 text-slate-400">{ep.version || "-"}</td>
                   <td className="px-4 py-3">
                     <button
-                      onClick={() => {
-                        if (window.confirm(`Delete endpoint "${ep.name}"?`)) {
-                          deleteMut.mutate(ep.id);
-                        }
-                      }}
+                      onClick={() => { void (async () => { if (await confirm({ title: `Delete endpoint "${ep.name}"?`, description: "The endpoint will be removed from the panel. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMut.mutate(ep.id); })(); }}
                       className="rounded p-1 text-slate-500 hover:bg-red-500/10 hover:text-red-400 transition-colors"
                       title="Delete"
                     >
@@ -187,6 +185,7 @@ export function AdminEndpoints() {
           />
         </Modal>
       )}
+      {renderConfirm()}
     </div>
   );
 }

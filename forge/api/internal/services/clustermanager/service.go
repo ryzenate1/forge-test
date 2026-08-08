@@ -672,6 +672,7 @@ func runtimeCreateRequest(target store.ServerProvisionTarget) gpruntime.CreateSe
 		Ports: ports, Mounts: mounts, MemoryMB: target.MemoryMB, SwapMB: target.SwapMB,
 		CPUShares: target.CPUShares, CPULimit: target.CPULimit, DiskMB: target.DiskMB,
 		IOWeight: target.IOWeight, Threads: target.Threads, OOMDisabled: target.OOMDisabled,
+		UID: int(target.ContainerUID), GID: int(target.ContainerGID),
 	}
 }
 
@@ -702,11 +703,26 @@ func runtimeConfiguration(target store.ServerProvisionTarget) gpruntime.ServerCo
 	for _, mount := range target.Mounts {
 		mounts = append(mounts, gpruntime.Mount{Source: mount.Source, Target: mount.Target, ReadOnly: mount.ReadOnly})
 	}
+	environment := runtimeEnvironment(target.Environment, target.Image)
 	return gpruntime.ServerConfiguration{
-		UUID: target.ServerID, Name: target.Name, Environment: target.Environment, Invocation: target.StartupCommand,
+		UUID: target.ServerID, Name: target.Name, Environment: environment, Invocation: target.StartupCommand,
 		DockerImage: target.Image, Egg: map[string]any{"id": target.EggID, "fileDenylist": denylist}, Config: config, Allocations: allocations, Mounts: mounts,
 		Build: map[string]any{"memoryLimit": target.MemoryMB, "swapMb": target.SwapMB, "cpuShares": target.CPUShares, "cpuLimit": target.CPULimit, "diskSpace": target.DiskMB, "ioWeight": target.IOWeight, "threads": target.Threads, "oomDisabled": target.OOMDisabled},
+		UID: int(target.ContainerUID), GID: int(target.ContainerGID),
 	}
+}
+
+// runtimeEnvironment augments egg variables with image-specific requirements
+// shared by every runtime path (create and configuration sync).
+func runtimeEnvironment(environment map[string]string, image string) map[string]string {
+	env := make(map[string]string, len(environment))
+	for key, value := range environment {
+		env[key] = value
+	}
+	if strings.Contains(image, "itzg/minecraft-server") {
+		env["EULA"] = "TRUE"
+	}
+	return env
 }
 
 func runtimeTargetFromProvision(target store.ServerProvisionTarget) gpruntime.Target {

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -275,6 +277,21 @@ func (s *Server) authRequest(payload map[string]string) (AuthResult, error) {
 	req.Header.Set("Authorization", "Bearer "+s.NodeToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	// The panel's /api/remote middleware requires a signed request (method,
+	// URI, timestamp, nonce, and body) with a fresh nonce to prevent replay.
+	// The scheme matches beacon/internal/remote/client.go.
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return AuthResult{}, fmt.Errorf("generate panel request nonce: %w", err)
+	}
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	nonce := hex.EncodeToString(nonceBytes)
+	mac := hmac.New(sha256.New, []byte(s.NodeToken))
+	_, _ = io.WriteString(mac, req.Method+"\n"+req.URL.RequestURI()+"\n"+timestamp+"\n"+nonce+"\n")
+	_, _ = mac.Write(body)
+	req.Header.Set("X-Panel-Timestamp", timestamp)
+	req.Header.Set("X-Panel-Nonce", nonce)
+	req.Header.Set("X-Panel-Signature", hex.EncodeToString(mac.Sum(nil)))
 	res, err := s.HTTPClient.Do(req)
 	if err != nil {
 		return AuthResult{}, err

@@ -17,6 +17,7 @@ const tabs: Array<{ id: ServerTab; labelKey: string; fallback: string; icon: typ
   { id: "console", labelKey: "server.console", fallback: "Console", icon: Terminal, permissions: ["websocket.connect", "control.console"] },
   { id: "files", labelKey: "server.files", fallback: "Files", icon: Folder, permissions: ["file.read"] },
   { id: "databases", labelKey: "server.databases", fallback: "Databases", icon: Database, permissions: ["database.read"] },
+  { id: "database", labelKey: "server.database", fallback: "Database", icon: Database, permissions: ["database.read"] },
   { id: "schedules", labelKey: "server.schedules", fallback: "Schedules", icon: Calendar, permissions: ["schedule.read"] },
   { id: "users", labelKey: "admin.users", fallback: "Users", icon: Users, permissions: ["user.read"] },
   { id: "backups", labelKey: "server.backups", fallback: "Backups", icon: HardDrive, permissions: ["backup.read"] },
@@ -28,6 +29,7 @@ const tabs: Array<{ id: ServerTab; labelKey: string; fallback: string; icon: typ
   { id: "activity", labelKey: "admin.activity", fallback: "Activity", icon: Activity, permissions: ["activity.read"] },
   { id: "processes", labelKey: "server.processes", fallback: "Processes", icon: Layers, permissions: ["control.start"] },
   { id: "deployments", labelKey: "server.deployments", fallback: "Deployments", icon: Rocket, permissions: [] },
+  { id: "transfer", labelKey: "server.transfer", fallback: "Transfer", icon: Network, permissions: ["settings.reinstall"] },
 ];
 
 function statusTone(server: ApiServer) {

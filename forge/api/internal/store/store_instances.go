@@ -167,20 +167,38 @@ func (s *Store) CreateInstance(ctx context.Context, tx pgx.Tx, appID, nodeID str
 	if runtimeProvider == "" {
 		runtimeProvider = "docker"
 	}
-	_, err := tx.Exec(ctx, `
-		INSERT INTO instances (id, app_id, idx, node_id, status, cpu, memory_mb, disk_mb, placement_id, runtime_provider)
-		VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8, $9)
-	`, id, appID, idx, nodeID, cpu, memoryMB, diskMB, placementID, runtimeProvider)
+	var err error
+	if tx != nil {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO instances (id, app_id, idx, node_id, status, cpu, memory_mb, disk_mb, placement_id, runtime_provider)
+			VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8, $9)
+		`, id, appID, idx, nodeID, cpu, memoryMB, diskMB, placementID, runtimeProvider)
+	} else {
+		_, err = s.db.Exec(ctx, `
+			INSERT INTO instances (id, app_id, idx, node_id, status, cpu, memory_mb, disk_mb, placement_id, runtime_provider)
+			VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8, $9)
+		`, id, appID, idx, nodeID, cpu, memoryMB, diskMB, placementID, runtimeProvider)
+	}
 	if err != nil {
 		return Instance{}, err
+	}
+	// Read back through the same transaction when one is active so the row is
+	// visible before commit; fall back to the pool otherwise.
+	if tx != nil {
+		return s.getInstance(ctx, tx, id)
 	}
 	return s.GetInstance(ctx, id)
 }
 
-func (s *Store) GetInstance(ctx context.Context, id string) (Instance, error) {
+// instanceQuerier abstracts the QueryRow method shared by pgx.Tx and the pool.
+type instanceQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func (s *Store) getInstance(ctx context.Context, q instanceQuerier, id string) (Instance, error) {
 	var inst Instance
 	var allocID, resID sql.NullString
-	err := s.db.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		SELECT id::text, app_id::text, idx, node_id::text, status, cpu, memory_mb, disk_mb,
 		       allocation_id::text, placement_id::text, reservation_id::text, runtime_provider, created_at, updated_at
 		FROM instances WHERE id = $1
@@ -196,6 +214,43 @@ func (s *Store) GetInstance(ctx context.Context, id string) (Instance, error) {
 		inst.ReservationID = &resID.String
 	}
 	return inst, nil
+}
+
+func (s *Store) GetInstance(ctx context.Context, id string) (Instance, error) {
+	return s.getInstance(ctx, s.db, id)
+}
+
+// GetInstanceReplacementAttempts returns the persisted replacement attempt
+// count for an instance.
+func (s *Store) GetInstanceReplacementAttempts(ctx context.Context, id string) (int, error) {
+	var attempts int
+	err := s.db.QueryRow(ctx, `SELECT replacement_attempts FROM instances WHERE id = $1`, id).Scan(&attempts)
+	if err != nil {
+		return 0, err
+	}
+	return attempts, nil
+}
+
+// IncrementInstanceReplacementAttempts atomically bumps the replacement
+// attempt counter and returns the new value.
+func (s *Store) IncrementInstanceReplacementAttempts(ctx context.Context, id string) (int, error) {
+	var attempts int
+	err := s.db.QueryRow(ctx, `
+		UPDATE instances SET replacement_attempts = replacement_attempts + 1, updated_at = now()
+		WHERE id = $1
+		RETURNING replacement_attempts
+	`, id).Scan(&attempts)
+	if err != nil {
+		return 0, err
+	}
+	return attempts, nil
+}
+
+// ResetInstanceReplacementAttempts clears the counter after a successful
+// replacement.
+func (s *Store) ResetInstanceReplacementAttempts(ctx context.Context, id string) error {
+	_, err := s.db.Exec(ctx, `UPDATE instances SET replacement_attempts = 0, updated_at = now() WHERE id = $1`, id)
+	return err
 }
 
 func (s *Store) ListInstancesByApp(ctx context.Context, appID string) ([]Instance, error) {

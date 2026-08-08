@@ -41,17 +41,45 @@ fi
 
 export DATABASE_URL="${DATABASE_URL:-postgres://${DB_USER}:${DB_PASS}@localhost:${DB_PORT}/${DB_NAME}?sslmode=disable}"
 export API_ADDR="${API_ADDR:-:${API_PORT}}"
-export API_AUTH_SECRET="${API_AUTH_SECRET:-dev-api-secret}"
 export APP_ENV="${APP_ENV:-development}"
-export DAEMON_NODE_TOKEN="${DAEMON_NODE_TOKEN:-devnodetoken0001.dev-node-token}"
 export API_DEMO_MODE="${API_DEMO_MODE:-false}"
 export REDIS_ADDR="${REDIS_ADDR:-localhost:${REDIS_PORT}}"
 export MIGRATIONS_DIR="${MIGRATIONS_DIR:-$ROOT/forge/api/migrations}"
 export NEXT_PUBLIC_API_URL="${NEXT_PUBLIC_API_URL:-http://localhost:${API_PORT}/api/v1}"
 export SEED_NODE_BASE_URL="${SEED_NODE_BASE_URL:-http://localhost:${DAEMON_PORT}}"
-export FORGE_MASTER_KEY="${FORGE_MASTER_KEY:-ZGV2LW1hc3Rlci1rZXktMzItYnl0ZXMtbG9uZy1zZWNyZXQta2V5PQ==}"
 export FORGE_MASTER_KEY_ID="${FORGE_MASTER_KEY_ID:-primary}"
 export FORGE_ALLOW_EPHEMERAL_MASTER_KEY="${FORGE_ALLOW_EPHEMERAL_MASTER_KEY:-false}"
+# Local development secrets are generated once and persisted in
+# .dev-data/secrets.env (git-ignored) so encrypted demo data stays decryptable
+# across restarts. Values provided via env/.env always win. Never commit these.
+DEV_SECRETS_FILE="$ROOT/.dev-data/secrets.env"
+if [ -f "$DEV_SECRETS_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$DEV_SECRETS_FILE"
+  set +a
+fi
+if [ -z "${DAEMON_NODE_TOKEN:-}" ]; then
+  DAEMON_NODE_TOKEN="dev-$(openssl rand -hex 8).$(openssl rand -hex 24)"
+  export DAEMON_NODE_TOKEN
+fi
+if [ -z "${API_AUTH_SECRET:-}" ]; then
+  API_AUTH_SECRET="dev-$(openssl rand -hex 32)"
+  export API_AUTH_SECRET
+fi
+if [ -z "${FORGE_MASTER_KEY:-}" ]; then
+  FORGE_MASTER_KEY="$(openssl rand -base64 32)"
+  export FORGE_MASTER_KEY
+fi
+mkdir -p "$ROOT/.dev-data"
+umask 077
+cat > "$DEV_SECRETS_FILE" <<EOF
+DAEMON_NODE_TOKEN=$DAEMON_NODE_TOKEN
+API_AUTH_SECRET=$API_AUTH_SECRET
+FORGE_MASTER_KEY=$FORGE_MASTER_KEY
+EOF
+umask 022
+printf "[dev] development node token: %s\n" "$DAEMON_NODE_TOKEN"
 
 
 mkdir -p "$PID_DIR" "$LOG_DIR"
@@ -332,5 +360,6 @@ printf "\n%sGamePanel dev environment is running.%s\n" "$green" "$reset"
 printf "  Frontend: http://localhost:%s\n" "$FRONTEND_PORT"
 printf "  API:      http://localhost:%s/api/v1\n" "$API_PORT"
 printf "  Daemon:   http://localhost:%s\n" "$DAEMON_PORT"
+printf "  Node token (DAEMON_NODE_TOKEN): %s\n" "$DAEMON_NODE_TOKEN"
 printf "  Logs:     ./scripts/logs.sh\n"
 printf "  Stop:     ./scripts/stop-dev.sh\n"

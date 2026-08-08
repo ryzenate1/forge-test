@@ -18,7 +18,7 @@ func registerSchedulerRoutes(protected fiber.Router, cfg Config, scorer *schedul
 		sc.Get("/predictive/scores", requireRole("admin"), requireAdminScope("scheduler.read"), func(c *fiber.Ctx) error {
 			scores, err := scorer.ListAllScores(c.Context())
 			if err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+				return respondInternalError(c, err)
 			}
 			return c.JSON(fiber.Map{"data": scores})
 		})
@@ -26,7 +26,7 @@ func registerSchedulerRoutes(protected fiber.Router, cfg Config, scorer *schedul
 		sc.Get("/predictive/nodes/:nodeId/score", requireRole("admin"), requireAdminScope("scheduler.read"), func(c *fiber.Ctx) error {
 			score, err := scorer.ScorePredictive(c.Context(), c.Params("nodeId"), domain.PlacementRequest{})
 			if err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+				return respondInternalError(c, err)
 			}
 			return c.JSON(fiber.Map{"data": score})
 		})
@@ -43,7 +43,7 @@ func registerSchedulerRoutes(protected fiber.Router, cfg Config, scorer *schedul
 		sc.Get("/predictive/affinity-rules", requireRole("admin"), requireAdminScope("scheduler.read"), func(c *fiber.Ctx) error {
 			rules, err := scorer.ListAffinityRules(c.Context())
 			if err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+				return respondInternalError(c, err)
 			}
 			return c.JSON(fiber.Map{"data": rules})
 		})
@@ -54,14 +54,14 @@ func registerSchedulerRoutes(protected fiber.Router, cfg Config, scorer *schedul
 				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 			}
 			if err := scorer.AddAffinityRule(c.Context(), rule); err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+				return respondInternalError(c, err)
 			}
 			return c.Status(fiber.StatusCreated).JSON(fiber.Map{"data": rule})
 		})
 
 		sc.Delete("/predictive/affinity-rules/:id", mutationLimiter, requireRole("admin"), requireAdminScope("scheduler.write"), func(c *fiber.Ctx) error {
 			if err := scorer.RemoveAffinityRule(c.Context(), c.Params("id")); err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+				return respondInternalError(c, err)
 			}
 			return c.SendStatus(fiber.StatusNoContent)
 		})
@@ -69,7 +69,7 @@ func registerSchedulerRoutes(protected fiber.Router, cfg Config, scorer *schedul
 		sc.Get("/predictive/anti-affinity-rules", requireRole("admin"), requireAdminScope("scheduler.read"), func(c *fiber.Ctx) error {
 			rules, err := scorer.ListAntiAffinityRules(c.Context())
 			if err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+				return respondInternalError(c, err)
 			}
 			return c.JSON(fiber.Map{"data": rules})
 		})
@@ -80,14 +80,14 @@ func registerSchedulerRoutes(protected fiber.Router, cfg Config, scorer *schedul
 				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 			}
 			if err := scorer.AddAntiAffinityRule(c.Context(), rule); err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+				return respondInternalError(c, err)
 			}
 			return c.Status(fiber.StatusCreated).JSON(fiber.Map{"data": rule})
 		})
 
 		sc.Delete("/predictive/anti-affinity-rules/:id", mutationLimiter, requireRole("admin"), requireAdminScope("scheduler.write"), func(c *fiber.Ctx) error {
 			if err := scorer.RemoveAntiAffinityRule(c.Context(), c.Params("id")); err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+				return respondInternalError(c, err)
 			}
 			return c.SendStatus(fiber.StatusNoContent)
 		})
@@ -152,7 +152,7 @@ func registerSchedulerRoutes(protected fiber.Router, cfg Config, scorer *schedul
 			if strings.Contains(err.Error(), "not found") {
 				return fiber.NewError(fiber.StatusNotFound, err.Error())
 			}
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(node)
 	})

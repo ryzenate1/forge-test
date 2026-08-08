@@ -88,6 +88,12 @@ func (mr *MigrationRunner) Run(ctx context.Context) error {
 			sql = sqliteCompatibleMigration(sql)
 		}
 		statements := splitSQLStatements(sql)
+
+		tx, err := mr.driver.BeginTx(ctx)
+		if err != nil {
+			return fmt.Errorf("begin transaction for %s: %w", file, err)
+		}
+
 		for _, stmt := range statements {
 			stmt = strings.TrimSpace(stmt)
 			if stmt == "" {
@@ -108,23 +114,30 @@ func (mr *MigrationRunner) Run(ctx context.Context) error {
 					continue
 				}
 				for _, expanded := range splitSQLiteAlterAdd(stmt) {
-					if _, err := mr.driver.Exec(ctx, strings.TrimSpace(expanded)); err != nil {
+					if _, err := tx.ExecContext(ctx, strings.TrimSpace(expanded)); err != nil {
 						if strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 							continue
 						}
+						tx.Rollback()
 						return fmt.Errorf("run migration %s: %w (stmt: %s)", file, err, strings.TrimSpace(expanded))
 					}
 				}
 				continue
 			}
-			if _, err := mr.driver.Exec(ctx, stmt); err != nil {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				tx.Rollback()
 				return fmt.Errorf("run migration %s: %w (stmt: %s)", file, err, stmt)
 			}
 		}
 
 		recordSQL := getRecordMigrationSQL(mr.driver.Type())
-		if _, err := mr.driver.Exec(ctx, recordSQL, file); err != nil {
+		if _, err := tx.ExecContext(ctx, recordSQL, file); err != nil {
+			tx.Rollback()
 			return fmt.Errorf("record migration %s: %w", file, err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration %s: %w", file, err)
 		}
 	}
 

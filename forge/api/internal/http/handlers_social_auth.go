@@ -192,6 +192,14 @@ func handleSocialAuthCallback(c *fiber.Ctx, cfg Config) error {
 		if err != nil {
 			return fiber.NewError(fiber.StatusUnauthorized, err.Error())
 		}
+		// Discord only vouches for the email address when the account owner
+		// completed email verification. Accepting an unverified email would let
+		// an attacker register a Discord account with someone else's address
+		// (Discord does not require the address to be validated) and then take
+		// over the matching panel account via the email link flow.
+		if !user.Verified || user.Email == "" {
+			return fiber.NewError(fiber.StatusForbidden, "discord email must be verified to use Discord sign-in")
+		}
 		providerID = user.ID
 		providerName = user.Username
 		email = user.Email
@@ -603,7 +611,7 @@ func listSocialIdentities(c *fiber.Ctx, cfg Config) error {
 
 	identities, err := cfg.Store.ListSocialIdentities(ctx, claims.Sub)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return respondInternalError(c, err)
 	}
 
 	return c.JSON(identities)
@@ -696,7 +704,7 @@ func unlinkSocialIdentity(c *fiber.Ctx, cfg Config) error {
 	defer cancel()
 
 	if err := cfg.Store.UnlinkSocialIdentity(ctx, claims.Sub, provider); err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return respondInternalError(c, err)
 	}
 
 	return c.JSON(fiber.Map{"ok": true})
@@ -736,7 +744,7 @@ func listSocialProviders(c *fiber.Ctx, cfg Config) error {
 
 	providers, err := cfg.Store.GetSocialProviders(ctx)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return respondInternalError(c, err)
 	}
 
 	response := make([]socialProviderResponse, 0, len(providers))
@@ -767,7 +775,7 @@ func updateSocialProvider(c *fiber.Ctx, cfg Config) error {
 
 	provider, err := cfg.Store.UpdateSocialProvider(ctx, c.Params("id"), req.Enabled, req.ClientID, req.ClientSecret, req.IssuerURL, req.Scopes)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return respondInternalError(c, err)
 	}
 
 	return c.JSON(socialProviderPublicView(*provider))

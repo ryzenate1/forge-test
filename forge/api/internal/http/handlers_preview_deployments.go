@@ -16,7 +16,7 @@ func registerPreviewDeploymentRoutes(protected fiber.Router, cfg Config, svc *pr
 	pd.Get("/", requireRole("admin"), requireAdminScope("deployments.read"), func(c *fiber.Ctx) error {
 		previews, err := svc.ListAll(c.Context())
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": previews})
 	})
@@ -61,21 +61,21 @@ func registerPreviewDeploymentRoutes(protected fiber.Router, cfg Config, svc *pr
 			Source:    req.Source,
 		})
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(201).JSON(fiber.Map{"data": p})
 	})
 
 	pd.Post("/:id/deploy", mutationLimiter, requireRole("admin"), requireAdminScope("deployments.write"), func(c *fiber.Ctx) error {
 		if err := svc.Deploy(c.Context(), c.Params("id")); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": fiber.Map{"id": c.Params("id")}})
 	})
 
 	pd.Post("/:id/cleanup", mutationLimiter, requireRole("admin"), requireAdminScope("deployments.write"), func(c *fiber.Ctx) error {
 		if err := svc.Cleanup(c.Context(), c.Params("id")); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": fiber.Map{"id": c.Params("id")}})
 	})
@@ -88,7 +88,7 @@ func registerPreviewDeploymentRoutes(protected fiber.Router, cfg Config, svc *pr
 			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 		if err := svc.UpdateStatus(c.Context(), c.Params("id"), req.Status); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": fiber.Map{"id": c.Params("id"), "status": req.Status}})
 	})
@@ -96,7 +96,7 @@ func registerPreviewDeploymentRoutes(protected fiber.Router, cfg Config, svc *pr
 	pd.Get("/server/:serverId", requireRole("admin"), requireAdminScope("deployments.read"), func(c *fiber.Ctx) error {
 		previews, err := svc.List(c.Context(), c.Params("serverId"))
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": previews})
 	})

@@ -25,7 +25,7 @@ func registerDeploymentHistoryRoutes(protected fiber.Router, cfg Config, adminIP
 			records, err = cfg.Store.ListAllDeploymentRecords(c.Context())
 		}
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": records})
 	})
@@ -42,7 +42,7 @@ func registerDeploymentHistoryRoutes(protected fiber.Router, cfg Config, adminIP
 		limit, _ := strconv.Atoi(c.Query("limit", "100"))
 		entries, err := cfg.Store.ListDeploymentLogs(c.Context(), c.Params("id"), limit)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		type logEntry struct {
 			ID        string `json:"id"`
@@ -63,7 +63,7 @@ func registerDeploymentHistoryRoutes(protected fiber.Router, cfg Config, adminIP
 	dh.Get("/:id/rollbacks", requireRole("admin"), requireAdminScope("deployments.read"), func(c *fiber.Ctx) error {
 		rollbacks, err := cfg.Store.ListRollbacks(c.Context(), c.Params("id"))
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": rollbacks})
 	})

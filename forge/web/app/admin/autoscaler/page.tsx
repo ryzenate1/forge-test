@@ -16,6 +16,7 @@ import {
   ModalFooter,
   Pill,
 } from '@/components/admin/admin-ui';
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type ScalingPolicy = {
   id: string;
@@ -52,6 +53,7 @@ const defaultForm = {
 };
 
 export default function AdminAutoscalerPage() {
+  const [confirm, renderConfirm] = useConfirm();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
@@ -209,7 +211,7 @@ export default function AdminAutoscalerPage() {
                           size="sm"
                           tone="danger"
                           onClick={() => {
-                            if (confirm('Delete this policy?')) deleteMutation.mutate(policy.id);
+                            void (async () => { if (await confirm({ title: "Delete this autoscale policy?", description: "Automatic scaling for this server will stop. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMutation.mutate(policy.id); })();
                           }}
                         >
                           <Trash2 size={12} />
@@ -248,6 +250,7 @@ export default function AdminAutoscalerPage() {
           saving={updateMutation.isPending}
         />
       )}
+      {renderConfirm()}
     </AdminPageLayout>
   );
 }
@@ -340,3 +343,4 @@ function PolicyFormModal({
     </Modal>
   );
 }
+

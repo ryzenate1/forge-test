@@ -123,7 +123,7 @@ func listContainers(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		targets, err := resolveAdminNodeTargets(cfg)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		type nodeContainerList struct {
 			NodeID      string          `json:"nodeId"`
@@ -449,7 +449,7 @@ func listImages(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		targets, err := resolveAdminNodeTargets(cfg)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		type nodeImageList struct {
 			NodeID   string          `json:"nodeId"`
@@ -558,7 +558,7 @@ func pruneImages(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		targets, err := resolveAdminNodeTargets(cfg)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		type pruneResult struct {
 			NodeID   string          `json:"nodeId"`
@@ -584,7 +584,7 @@ func listNetworks(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		targets, err := resolveAdminNodeTargets(cfg)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		type nodeNetworkList struct {
 			NodeID   string          `json:"nodeId"`
@@ -668,7 +668,7 @@ func listVolumes(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		targets, err := resolveAdminNodeTargets(cfg)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		type nodeVolumeList struct {
 			NodeID   string          `json:"nodeId"`
@@ -750,7 +750,7 @@ func volumeUsage(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		targets, err := resolveAdminNodeTargets(cfg)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		type nodeVolumeUsage struct {
 			NodeID   string          `json:"nodeId"`

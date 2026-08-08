@@ -33,7 +33,7 @@ func registerDomainRoutes(protected fiber.Router, cfg Config, svc *domains.Servi
 
 		domain, err := svc.AddDomain(c.Context(), serverID, req.Domain)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(201).JSON(fiber.Map{"data": domain})
 	})
@@ -42,7 +42,7 @@ func registerDomainRoutes(protected fiber.Router, cfg Config, svc *domains.Servi
 		serverID := c.Params("id")
 		domains, err := svc.ListDomains(c.Context(), serverID)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": domains})
 	})
@@ -50,7 +50,7 @@ func registerDomainRoutes(protected fiber.Router, cfg Config, svc *domains.Servi
 	protected.Delete("/servers/:id/domains/:domainId", mutationLimiter, requireRole("admin"), requireAdminScope("domains.write"), func(c *fiber.Ctx) error {
 		domainID := c.Params("domainId")
 		if err := svc.RemoveDomain(c.Context(), domainID); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.SendStatus(204)
 	})
@@ -68,7 +68,7 @@ func registerDomainRoutes(protected fiber.Router, cfg Config, svc *domains.Servi
 
 		result, err := svc.VerifyOwnership(c.Context(), req.ID)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": result})
 	})
@@ -84,7 +84,7 @@ func registerDomainRoutes(protected fiber.Router, cfg Config, svc *domains.Servi
 
 		result, err := svc.CheckDNS(c.Context(), req.Domain, req.ExpectedIP)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": result})
 	})

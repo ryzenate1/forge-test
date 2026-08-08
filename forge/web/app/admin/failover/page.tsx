@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, BarChart3, Plus, Shield, ShieldAlert, Trash2, Zap } from "lucide-react";
 import { deleteJSON, fetchJSON, postJSON, putJSON } from "@/lib/api";
 import { AdminPageHeader, AdminPageLayout, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill } from "@/components/admin/admin-ui";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type ApiResponse<T> = { data: T };
 type FailoverAction = "evacuate" | "restart" | "notify";
@@ -46,6 +47,7 @@ function errorMessage(error: unknown, fallback: string) {
 
 export default function AdminFailoverPage() {
   const queryClient = useQueryClient();
+  const [confirm, renderConfirm] = useConfirm();
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [editingPolicy, setEditingPolicy] = useState<FailoverPolicy | null>(null);
@@ -155,7 +157,7 @@ export default function AdminFailoverPage() {
                     <td className="px-4 py-3"><div className="flex gap-1">
                       <Btn size="sm" tone="ghost" onClick={() => openEdit(policy)}>Edit</Btn>
                       <Btn size="sm" tone="warning" onClick={() => recordFailureMutation.mutate(policy.nodeId)} disabled={recordFailureMutation.isPending}>Record failure</Btn>
-                      <Btn size="sm" tone="danger" onClick={() => { if (confirm("Delete this failover policy?")) deleteMutation.mutate(policy.id); }} disabled={deleteMutation.isPending}><Trash2 size={12} /></Btn>
+                      <Btn size="sm" tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Delete failover policy for ${policy.nodeId}?`, description: "Automatic failover for this node will stop. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMutation.mutate(policy.id); })(); }} disabled={deleteMutation.isPending}><Trash2 size={12} /></Btn>
                     </div></td>
                   </tr>
                 ))}</tbody>
@@ -196,6 +198,7 @@ export default function AdminFailoverPage() {
           <ModalFooter onCancel={closeModal} onConfirm={() => showCreate ? createMutation.mutate() : updateMutation.mutate()} confirmLabel="Save" disabled={createMutation.isPending || updateMutation.isPending || !form.nodeId.trim() || form.maxFailures < 1 || form.failureWindowSec < 1 || form.cooldownSec < 1} />
         </Modal>
       )}
+      {renderConfirm()}
     </AdminPageLayout>
   );
 }

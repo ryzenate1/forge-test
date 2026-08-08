@@ -13,7 +13,7 @@ import {
 } from "@/lib/api/apps";
 import { Btn, Card, CardHeader, EmptyState, Input, Pill, SectionHeader, cn } from "@/components/admin/admin-ui";
 import { formatDate } from "@/lib/utils";
-import { toast, Toaster } from "@/components/ui/sonner";
+import { toast } from "@/components/ui/sonner";
 
 interface GitConfig {
   repoUrl?: string;
@@ -234,7 +234,6 @@ export default function GitSourcePage({ params }: { params: Promise<{ id: string
           </div>
         )}
       </Card>
-      <Toaster />
     </div>
   );
 }

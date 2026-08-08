@@ -246,7 +246,8 @@ func TestBackupRestoreExecutorRegistersWithoutMigrationExecutor(t *testing.T) {
 }
 
 func TestDaemonBackupRestoreRejectsUnverifiedSource(t *testing.T) {
-	executor := &DaemonBackupRestoreExecutor{store: &store.Store{}, daemon: daemon.NewClient()}
+	daemonClient, _ := daemon.NewClient("http://localhost", "test-token")
+	executor := &DaemonBackupRestoreExecutor{store: &store.Store{}, daemon: daemonClient}
 	err := executor.VerifyAndRestore(context.Background(), store.RecoveryItem{
 		ID: "item-1", ServerID: "server-1", TargetNodeID: "target-1",
 	})

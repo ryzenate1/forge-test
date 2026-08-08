@@ -446,7 +446,7 @@ export default function CreateAppPage() {
                 </div>
                 <Input label="Registry URL" value={registryUrl} onChange={setRegistryUrl} placeholder="registry.example.com" />
                 <Input label="Username" value={registryUser} onChange={setRegistryUser} placeholder="(optional)" />
-                <Input label="Password" value={registryPass} onChange={setRegistryPass} type="password" placeholder="(optional)" />
+                <Input label="Password" value={registryPass} onChange={setRegistryPass} type="password" placeholder="(optional)" autoComplete="off" />
               </div>
             </Card>
           )}

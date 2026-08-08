@@ -8,6 +8,7 @@ import { WebSocketManager } from "@/lib/api/ws/websocket-manager";
 import { cn, formatBytes } from "@/lib/utils";
 import { hasServerPermission, useServerContext } from "./server-context";
 import { CrashBanner } from "./crash-banner";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 const MAX_LINES = 500;
 const MAX_POINTS = 60;
@@ -33,7 +34,7 @@ function formatUptime(ms: number | undefined | null): string {
 /*  Install / Transfer state banners                                         */
 /* -------------------------------------------------------------------------- */
 
-function InstallBanner({ server }: { server: ApiServer }) {
+function InstallBanner() {
   return (
     <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
       <Download className="mt-0.5 shrink-0 text-amber-300" size={19} />
@@ -43,11 +44,6 @@ function InstallBanner({ server }: { server: ApiServer }) {
           The installation process is running. The console will display output from the installation script.
           Do not restart or power off the server during this process.
         </p>
-        {server.installationState && (
-          <p className="mt-2 text-xs font-mono text-amber-300/60">
-            State: {server.installationState}
-          </p>
-        )}
       </div>
     </div>
   );
@@ -115,6 +111,7 @@ export function ConsoleView({ server }: { server: ApiServer }) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [showTimestamps, setShowTimestamps] = useState(false);
+  const [confirm, renderConfirm] = useConfirm();
   const messageCount = useRef(0);
   const connectedAt = useRef<number | null>(null);
   const HISTORY_KEY = `console-history-${server.id}`;
@@ -191,12 +188,14 @@ export function ConsoleView({ server }: { server: ApiServer }) {
 
   useEffect(() => {
     if (!canConsole) return;
+    let aborted = false;
     const statsManager = new WebSocketManager({
       maxRetries: 20,
       baseDelay: 1000,
       maxDelay: 30000,
       factory: () => connectServerWebSocket(server.id, "stats"),
       onMessage: (data) => {
+        if (aborted) return;
         const statsData = data as ApiStats & { error?: string };
         if (statsData.error) return;
         setStats(statsData);
@@ -206,10 +205,10 @@ export function ConsoleView({ server }: { server: ApiServer }) {
         setMemoryHistory((items) => [...items.slice(-(MAX_POINTS - 1)), memory]);
         setNetworkHistory((items) => [...items.slice(-(MAX_POINTS - 1)), network]);
       },
-      onError: () => { setConnectionError("Stats connection failed."); },
+      onError: () => { if (!aborted) setConnectionError("Stats connection failed."); },
     });
     void statsManager.connect();
-    return () => { statsManager.disconnect(); };
+    return () => { aborted = true; statsManager.disconnect(); };
   }, [canConsole, server.id]);
 
   useEffect(() => {
@@ -230,17 +229,18 @@ export function ConsoleView({ server }: { server: ApiServer }) {
   const blocked = server.suspended || server.transferring || server.status === "installing";
 
   return <div className="space-y-5">
+    {renderConfirm()}
     {/* State banners — install / transfer state */}
     {server.suspended ? <SuspendedBanner /> : null}
     {server.transferring ? <TransferBanner server={server} /> : null}
-    {server.status === "installing" && !server.suspended && !server.transferring ? <InstallBanner server={server} /> : null}
+    {server.status === "installing" && !server.suspended && !server.transferring ? <InstallBanner /> : null}
 
     {!server.suspended && !server.transferring && server.status !== "installing" ? (
       <CrashBanner serverId={server.id} />
     ) : null}
 
     {(power.error || install.error) ? <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200" role="alert">{[power.error, install.error].filter(Boolean).map((err) => err instanceof Error ? err.message : "The server action failed.").join("; ")}</div> : null}
-    <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-center"><div><h2 className="text-xl font-bold text-white">Console</h2><p className="mt-1 text-sm text-slate-400">Live daemon output and telemetry for {server.name}.</p></div><div className="grid grid-cols-4 gap-2">{controls.map((signal) => <button className={cn("rounded-lg px-3 py-2 text-xs font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40", signal === "start" ? "bg-emerald-600" : signal === "stop" || signal === "kill" ? "bg-red-700" : "bg-slate-600")} disabled={!canPower(signal) || blocked || power.isPending || (signal === "start" ? server.status === "running" : server.status !== "running")} key={signal} onClick={() => { if (signal === "kill" && !window.confirm("Kill the server process immediately? Unsaved data may be lost.")) return; power.mutate(signal); }} type="button">{power.isPending && power.variables === signal ? "…" : signal}</button>)}</div></div>
+    <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-center"><div><h2 className="text-xl font-bold text-white">Console</h2><p className="mt-1 text-sm text-slate-400">Live daemon output and telemetry for {server.name}.</p></div><div className="grid grid-cols-4 gap-2">{controls.map((signal) => <button className={cn("rounded-lg px-3 py-2 text-xs font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40", signal === "start" ? "bg-emerald-600" : signal === "stop" || signal === "kill" ? "bg-red-700" : "bg-slate-600")} disabled={!canPower(signal) || blocked || power.isPending || (signal === "start" ? server.status === "running" : server.status !== "running")} key={signal} onClick={async () => { if (signal === "kill" && !(await confirm({ title: "Kill server?", description: "The server process will be terminated immediately. Unsaved data may be lost.", danger: true, confirmLabel: "Kill" }))) return; power.mutate(signal); }} type="button">{power.isPending && power.variables === signal ? "…" : signal}</button>)}</div></div>
 
     {/* Stats row with uptime */}
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -310,6 +310,6 @@ export function ConsoleView({ server }: { server: ApiServer }) {
         <button aria-label="Send command" className="rounded-lg bg-red-600 p-2 text-white disabled:opacity-40" disabled={connection !== "connected" || !command.trim()} type="submit"><Send size={16} /></button>
       </form>
     </section>
-    <div className="flex justify-end"><button className="rounded-lg border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5 disabled:opacity-40" disabled={!canReinstall || install.isPending || server.status === "installing"} onClick={() => { if (window.confirm("Reinstall this server? Installation scripts may overwrite server files.")) install.mutate(); }} type="button">{install.isPending ? "Reinstall requested…" : "Reinstall server"}</button></div>
+    <div className="flex justify-end"><button className="rounded-lg border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5 disabled:opacity-40" disabled={!canReinstall || install.isPending || server.status === "installing"} onClick={async () => { if (await confirm({ title: "Reinstall this server?", description: "Installation scripts may overwrite server files.", danger: true, confirmLabel: "Reinstall" })) install.mutate(); }} type="button">{install.isPending ? "Reinstall requested…" : "Reinstall server"}</button></div>
   </div>;
 }

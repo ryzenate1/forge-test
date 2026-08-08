@@ -465,7 +465,7 @@ func (l *LocalBackup) Delete(namespace, name string) error {
 	return nil
 }
 
-func (l *LocalBackup) Restore(ctx context.Context, namespace, name, serverRoot string, truncate bool) error {
+func (l *LocalBackup) Restore(ctx context.Context, namespace, name, serverRoot string, truncate bool, paths []string) error {
 	unlock := l.lockNamespace(namespace)
 	defer unlock()
 	l.reportProgress(0, 0, "restoring backup")
@@ -513,6 +513,21 @@ func (l *LocalBackup) Restore(ctx context.Context, namespace, name, serverRoot s
 		return fmt.Errorf("%w: expected %s, got %s", ErrChecksumMismatch, metadata.Checksum, actualChecksum)
 	}
 
+	targeted := len(paths) > 0
+	selected := reader.File
+	if targeted {
+		// A targeted restore only touches the requested entries and is never
+		// destructive: the truncate swap would discard every unlisted file.
+		selected, err = selectRestoreEntries(reader.File, paths)
+		if err != nil {
+			return err
+		}
+		if len(selected) == 0 {
+			return fmt.Errorf("no archive entries match the requested restore paths %v", paths)
+		}
+		truncate = false
+	}
+
 	if !truncate {
 		// Non-truncate restore: extract directly to target directory
 		targetFS, err := rootfs.New(canonicalRoot)
@@ -520,7 +535,7 @@ func (l *LocalBackup) Restore(ctx context.Context, namespace, name, serverRoot s
 			return fmt.Errorf("secure server root: %w", err)
 		}
 		defer targetFS.Close()
-		if err := extractArchive(ctx, targetFS, reader.File); err != nil {
+		if err := extractArchive(ctx, targetFS, selected); err != nil {
 			return err
 		}
 		return syncDirectory(filepath.Dir(canonicalRoot))
@@ -543,7 +558,7 @@ func (l *LocalBackup) Restore(ctx context.Context, namespace, name, serverRoot s
 	if err != nil {
 		return fmt.Errorf("secure restore staging root: %w", err)
 	}
-	if err := extractArchive(ctx, stagingFS, reader.File); err != nil {
+	if err := extractArchive(ctx, stagingFS, selected); err != nil {
 		_ = stagingFS.Close()
 		return err
 	}
@@ -707,6 +722,36 @@ func extractArchive(ctx context.Context, destination *rootfs.FS, files []*zip.Fi
 		}
 	}
 	return nil
+}
+
+// selectRestoreEntries filters archive entries down to the requested restore
+// paths plus their ancestor directories. Every requested path is validated to
+// be a clean relative path: absolute paths, ".." traversal, and backslashes
+// are rejected before any extraction.
+func selectRestoreEntries(files []*zip.File, paths []string) ([]*zip.File, error) {
+	cleaned := make([]string, 0, len(paths))
+	for _, raw := range paths {
+		if raw == "" || strings.Contains(raw, `\`) || strings.Contains(raw, "\x00") {
+			return nil, fmt.Errorf("invalid restore path %q", raw)
+		}
+		p := path.Clean(raw)
+		if p == "." || p == ".." || strings.HasPrefix(p, "/") ||
+			strings.HasPrefix(p, "../") {
+			return nil, fmt.Errorf("invalid restore path %q", raw)
+		}
+		cleaned = append(cleaned, strings.TrimSuffix(p, "/"))
+	}
+	var selected []*zip.File
+	for _, file := range files {
+		name := strings.TrimSuffix(path.Clean(file.Name), "/")
+		for _, p := range cleaned {
+			if name == p || strings.HasPrefix(name, p+"/") || strings.HasPrefix(p, name+"/") {
+				selected = append(selected, file)
+				break
+			}
+		}
+	}
+	return selected, nil
 }
 
 func readOrCreateMetadata(backupPath string) (localMetadata, error) {

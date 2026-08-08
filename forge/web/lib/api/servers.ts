@@ -1,5 +1,5 @@
 // Server management API functions
-import { fetchJSON, postJSON, putJSON, patchJSON, deleteJSON, API_BASE_URL, getAuthHeaders } from './http';
+import { fetchJSON, postJSON, putJSON, patchJSON, deleteJSON, API_BASE_URL, getAuthHeaders, ApiError } from './http';
 import type {
   ApiServerSubuser,
   ApiAuditEvent,
@@ -385,8 +385,9 @@ export async function fetchServerTransferStatus(
     return await fetchJSON<{ transferring: boolean; transferId?: string; status?: string; progress?: number }>(
       `/servers/${encodeURIComponent(serverId)}/transfer`,
     );
-  } catch {
-    return null;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
   }
 }
 
@@ -397,10 +398,11 @@ export async function cancelServerTransfer(serverId: string): Promise<{ ok: bool
 export async function transferServer(
   serverId: string,
   targetNodeId: string,
+  primaryAllocationId?: string,
 ): Promise<{ ok: boolean; transferId?: string }> {
   return postJSON<{ ok: boolean; transferId?: string }>(
     `/servers/${encodeURIComponent(serverId)}/transfer`,
-    { targetNodeId },
+    { targetNodeId, primaryAllocationId },
   );
 }
 

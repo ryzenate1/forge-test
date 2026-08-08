@@ -64,7 +64,7 @@ type UpdateStackRequest struct {
 }
 
 func registerComposeRoutes(protected fiber.Router, cfg Config, mutationLimiter fiber.Handler) {
-	composeSvc, err := compose.New(cfg.Store)
+	composeSvc, err := compose.New(cfg.Store, cfg.Daemon)
 	if err != nil {
 		slog.Error("failed to create compose service", "error", err)
 		return
@@ -73,7 +73,7 @@ func registerComposeRoutes(protected fiber.Router, cfg Config, mutationLimiter f
 		composeSvc = cfg.ComposeService
 	}
 
-	gitOpsSvc := compose.NewGitOpsService(cfg.Store, composeSvc, cfg.GitDeployService, nil, slog.Default())
+	gitOpsSvc := compose.NewGitOpsService(cfg.Store, composeSvc, cfg.GitDeployService, nil, slog.Default(), cfg.Daemon)
 
 	protected.Post("/compose/validate", requireRole("admin"), func(c *fiber.Ctx) error {
 		var req ComposeValidateRequest
@@ -124,7 +124,7 @@ func registerComposeRoutes(protected fiber.Router, cfg Config, mutationLimiter f
 			Revision:       1,
 		}
 		if err := cfg.Store.CreateComposeProject(ctx, project); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(project)
 	})
@@ -161,7 +161,7 @@ func registerComposeRoutes(protected fiber.Router, cfg Config, mutationLimiter f
 			CredentialID:    req.CredentialID,
 		})
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(result)
 	})
@@ -336,7 +336,7 @@ func registerComposeRoutes(protected fiber.Router, cfg Config, mutationLimiter f
 			EnvironmentID: req.EnvironmentID,
 		})
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(stack)
 	})
@@ -386,7 +386,7 @@ func registerComposeRoutes(protected fiber.Router, cfg Config, mutationLimiter f
 			DiskMB:      req.DiskMB,
 		})
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(stack)
 	})
@@ -427,7 +427,7 @@ func registerComposeRoutes(protected fiber.Router, cfg Config, mutationLimiter f
 			EnvironmentID: existing.EnvironmentID,
 		})
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(stack)
 	})
@@ -549,7 +549,7 @@ func registerComposeRoutes(protected fiber.Router, cfg Config, mutationLimiter f
 			existing.Name = req.Name
 		}
 		if err := cfg.Store.UpdateComposeProject(ctx, existing); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(existing)
 	})

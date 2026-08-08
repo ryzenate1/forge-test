@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { SystemInfo } from "@/lib/api";
 import { sanitizeError } from "@/lib/sanitize";
 import { formatBytes, formatUptime } from "@/lib/format";
+import { redirectOnUnauthorized } from "@/lib/client-auth";
 
 const POLL_INTERVAL_MS = 30000;
 
@@ -22,6 +23,7 @@ export function SystemInfoDisplay() {
     setError(null);
     fetch("/api/proxy/system", { signal: controller.signal, credentials: "include" })
       .then(async (r) => {
+		redirectOnUnauthorized(r);
         if (!r.ok) {
           const body = await r.json().catch(() => null);
           throw new Error(body?.error || `Failed to load: ${r.status}`);
@@ -46,6 +48,7 @@ export function SystemInfoDisplay() {
       const token = ++serverTokenRef.current;
       fetch("/api/proxy/system", { signal: lastController.signal, credentials: "include" })
         .then((r) => {
+			redirectOnUnauthorized(r);
           if (!r.ok) {
             const body = r.clone();
             return body.json().catch(() => null).then((parsed) => {
@@ -116,11 +119,11 @@ export function SystemInfoDisplay() {
           <p className="mt-1 text-lg font-bold text-ink">{info.cpuThreads}</p>
         </div>
         <div className="rounded-xl border border-line bg-paper p-5">
-          <p className="text-xs font-bold uppercase text-muted">Docker</p>
+          <p className="text-xs font-bold uppercase text-muted">Beacon Runtime</p>
           <div className="mt-1 flex items-center gap-2">
-            <span role="img" aria-label={info.docker.running ? "Healthy" : "Unhealthy"} className={`inline-block h-3 w-3 rounded-full ${info.docker.running ? "bg-green-500" : "bg-red"}`} />
+            <span role="img" aria-label={info.runtime.reachable ? "Healthy" : "Unhealthy"} className={`inline-block h-3 w-3 rounded-full ${info.runtime.reachable ? "bg-green-500" : "bg-red"}`} />
             <span className="text-lg font-bold text-ink">
-              {info.docker.running ? `Running${info.docker.version ? ` (${info.docker.version})` : ""}` : "Not running"}
+              {info.runtime.reachable ? "Reachable" : "Unavailable"}
             </span>
           </div>
         </div>

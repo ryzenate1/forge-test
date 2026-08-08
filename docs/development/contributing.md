@@ -8,7 +8,7 @@
 5. Open a Pull Request
 
 ## Development Setup
-See [docs/development/development.md](docs/development/development.md) for the full development guide.
+See the [root README](../../README.md#quick-start-for-development) for the full development guide.
 
 ## Code Style
 - Go: Use `gofmt` and `goimports` (run `make format`)

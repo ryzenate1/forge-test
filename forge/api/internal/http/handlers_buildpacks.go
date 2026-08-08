@@ -15,7 +15,7 @@ func registerBuildpackRoutes(protected fiber.Router, cfg Config, buildpackSvc *b
 	protected.Get("/admin/buildpacks", requireRole("admin"), func(c *fiber.Ctx) error {
 		bps, err := cfg.Store.ListBuildpacks(c.Context())
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		if bps == nil {
 			bps = []store.Buildpack{}
@@ -32,7 +32,7 @@ func registerBuildpackRoutes(protected fiber.Router, cfg Config, buildpackSvc *b
 		}
 		bp, err := cfg.Store.CreateBuildpack(c.Context(), req)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"data": bp})
 	})
@@ -40,7 +40,7 @@ func registerBuildpackRoutes(protected fiber.Router, cfg Config, buildpackSvc *b
 	protected.Get("/servers/:id/buildpacks", func(c *fiber.Ctx) error {
 		sb, err := cfg.Store.ListServerBuildpacks(c.Context(), c.Params("id"))
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		if sb == nil {
 			sb = []store.ServerBuildpack{}
@@ -60,13 +60,13 @@ func registerBuildpackRoutes(protected fiber.Router, cfg Config, buildpackSvc *b
 		}
 		sb, err := cfg.Store.AssignBuildpackToServer(c.Context(), c.Params("id"), req.BuildpackID, req.Priority)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"data": sb})
 	})
 	protected.Delete("/servers/:id/buildpacks/:buildpackId", mutationLimiter, func(c *fiber.Ctx) error {
 		if err := cfg.Store.RemoveServerBuildpack(c.Context(), c.Params("id"), c.Params("buildpackId")); err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.SendStatus(fiber.StatusNoContent)
 	})
@@ -83,7 +83,7 @@ func registerBuildpackRoutes(protected fiber.Router, cfg Config, buildpackSvc *b
 		}
 		langInfo, err := buildpackSvc.DetectBuildpack(c.Context(), req.Files)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": langInfo})
 	})
@@ -98,14 +98,14 @@ func registerBuildpackRoutes(protected fiber.Router, cfg Config, buildpackSvc *b
 		}
 		build, err := buildpackSvc.TriggerBuild(c.Context(), c.Params("id"), req.BuildpackID)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"data": build})
 	})
 	builds.Get("/", func(c *fiber.Ctx) error {
 		list, err := cfg.Store.ListAppBuilds(c.Context(), c.Params("id"))
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		if list == nil {
 			list = []store.AppBuild{}

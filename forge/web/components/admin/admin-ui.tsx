@@ -5,6 +5,7 @@
  */
 
 import { ArrowLeft, LoaderCircle, LockKeyhole, X, type LucideIcon } from "lucide-react";
+import { useRef } from "react";
 import { Button, Dialog, EmptyState as SharedEmptyState, Input as SharedInput, Select as SharedSelect, Textarea as SharedTextarea } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
@@ -103,13 +104,14 @@ export function Btn({
   return <Button aria-label={ariaLabel} className={cn(tone === "warning" && "border-amber-700/40 bg-amber-900/70 text-amber-200 hover:bg-amber-800", tone === "success" && "border-emerald-700/40 bg-emerald-900/70 text-emerald-200 hover:bg-emerald-800", className)} disabled={disabled} loading={loading} onClick={onClick} size={size === "sm" ? "sm" : "default"} title={title} type={type} variant={variants[tone]}>{children}</Button>;
 }
 
-export function Input({ label, value, onChange, placeholder, type = "text", mono, required, readOnly, disabled }: {
-  label?: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; mono?: boolean; required?: boolean; readOnly?: boolean; disabled?: boolean;
+export function Input({ label, value, onChange, placeholder, type = "text", mono, required, readOnly, disabled, autoComplete }: {
+  label?: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; mono?: boolean; required?: boolean; readOnly?: boolean; disabled?: boolean; autoComplete?: string;
 }) {
  return (
  <label className="block text-sm font-medium text-slate-300">
  {label ? <span className="mb-1.5 block">{label}</span> : null}
  <SharedInput
+ autoComplete={autoComplete}
  className={cn("min-h-9 bg-surface-card-header", mono && "font-mono text-xs")}
  onChange={(e) => onChange(e.target.value)}
  disabled={disabled}
@@ -206,8 +208,20 @@ export function AdminErrorState({ message, retry }: { message: string; retry?: (
 
 export interface AdminTab { id: string; label: string; icon?: LucideIcon; danger?: boolean; }
 export function AdminTabs({ tabs, active, onChange, label = "Page sections" }: { tabs: AdminTab[]; active: string; onChange: (id: string) => void; label?: string }) {
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const handleTabKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let next: number | null = null;
+    if (e.key === "ArrowRight") next = (index + 1) % tabs.length;
+    else if (e.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = tabs.length - 1;
+    if (next === null) return;
+    e.preventDefault();
+    onChange(tabs[next].id);
+    tabRefs.current[next]?.focus();
+  };
   return <div aria-label={label} className="flex overflow-x-auto border-b border-white/[0.08]" role="tablist">
-    {tabs.map((tab) => {
+    {tabs.map((tab, index) => {
       const isActive = active === tab.id;
       const Icon = tab.icon;
       return <button
@@ -220,7 +234,10 @@ export function AdminTabs({ tabs, active, onChange, label = "Page sections" }: {
         )}
         key={tab.id}
         onClick={() => onChange(tab.id)}
+        onKeyDown={(e) => handleTabKeyDown(e, index)}
+        ref={(el) => { tabRefs.current[index] = el; }}
         role="tab"
+        tabIndex={isActive ? 0 : -1}
         type="button"
       >
         {Icon ? <Icon size={14} /> : null}

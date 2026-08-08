@@ -99,15 +99,16 @@ flowchart LR
 
 | Goal | Recommended method | What you need |
 |---|---|---|
-| Quick production install | `./scripts/install.sh` | Ubuntu/Debian server, Docker, domain |
+| Quick production install | `./scripts/install/install.sh` | Ubuntu/Debian server, Docker, domain |
 | Evaluate or contribute locally | Development launcher | Go, Node.js, npm and Docker Desktop/Engine |
 | Host everything on one VPS | Production Compose | Ubuntu, Docker Engine, Compose v2, domain and TLS |
 | Add game capacity | Standalone Beacon | A second Linux VPS, Docker and a panel-issued node credential |
 | Test offline recovery | Two Beacons + shared object storage | S3-compatible bucket accessible from both nodes |
 | Provision AWS nodes | Forge cloud module | AWS credentials/role, VPC settings and a published Beacon image |
 
-See [Installation Guide](./docs/installation.md) for a step-by-step walkthrough
-and [Upgrading](./docs/upgrading.md) for upgrade procedures.
+See [Installation Guide](#production-deployment-on-ubuntu) for a step-by-step
+walkthrough and [Upgrading](./scripts/cleanup/upgrade.sh) for the upgrade
+procedure with backup and rollback.
 
 ## Requirements and downloads
 
@@ -190,7 +191,7 @@ npm run dev:stop     # stop managed development processes
 If PostgreSQL and Redis already run locally, use:
 
 ```bash
-./scripts/start-dev.sh native
+./start-dev.sh --native
 ```
 
 ### Local service addresses
@@ -210,8 +211,7 @@ If PostgreSQL and Redis already run locally, use:
 ## Production deployment on Ubuntu
 
 The complete copy-and-paste installation, firewall, TLS, second-node, AWS,
-load-balancer, evacuation and recovery instructions live in the
-**[Ubuntu production deployment runbook](./docs/operations/production-deployment.md)**.
+load-balancer, evacuation and recovery instructions are in this section.
 
 The short version is:
 
@@ -379,7 +379,6 @@ forge-plane/
 ├── lang/                    # Translation catalogs
 ├── docs/                    # Maintainer and operator documentation
 ├── scripts/                 # Development, validation and operations helpers
-├── reference/               # Upstream research; not shipped runtime code
 ├── Makefile
 ├── go.work
 └── package.json
@@ -388,26 +387,24 @@ forge-plane/
 ## Documentation
 
 | Start here | Description |
-|---|---|---|
+|---|---|
 | [Documentation index](./docs/README.md) | Map of the documentation tree |
-| [Installation guide](./docs/operations/installation.md) | Step-by-step installation |
-| [Upgrading](./docs/operations/upgrading.md) | Upgrade procedures and rollback |
-| [Production deployment](./docs/operations/README.md) | Deployment guide, configuration reference, backup/restore, monitoring, troubleshooting |
-| [Security operations](./docs/operations/security.md) | Security controls and operator guidance |
-| [Architecture overview](./docs/architecture/README.md) | System components, data flow, API overview, deployment architecture |
-| [Current architecture](./docs/architecture/current-architecture.md) | Implemented runtime architecture |
-| [Domain model](./docs/architecture/domain-model.md) | Core orchestration entities and relationships |
-| [Developer setup](./docs/development/development.md) | Source development workflow |
-| [API guide](./docs/api/README.md) | API reference, auth, endpoints, examples, error codes |
-| [API contracts](./docs/api/API_CONTRACTS.md) | Shared request and response contracts |
+| [Installation guide](#production-deployment-on-ubuntu) | Step-by-step installation and first game |
+| [Upgrading](./scripts/cleanup/upgrade.sh) | Upgrade procedure with backup and rollback |
+| [Production deployment](./infra/README.md) | Compose, TLS, monitoring and bootstrap configuration |
+| [Security checklist](#security-checklist) | Security controls and operator guidance |
+| [Architecture overview](#architecture) | System components, data flow and deployment architecture |
+| [Domain model](./packages/shared-types/README.md) | Core entities and shared contracts |
+| [Developer setup](./docs/development/contributing.md) | Contribution and source development workflow |
+| [API contracts](./packages/sdk/README.md) | TypeScript SDK for the Forge API |
+| [OpenAPI specification](./forge/api/docs/openapi.json) | Machine-readable API schema |
 | [Server lifecycle](./forge/api/docs/server-lifecycle.md) | Provisioning and runtime lifecycle |
 | [Encryption at rest](./forge/api/docs/encryption-at-rest.md) | Master-key management and rotation |
-| [OpenAPI specification](./forge/api/docs/openapi.json) | Machine-readable API schema |
-| [Architecture decisions](./docs/adr/README.md) | Important technical decisions |
+| [Docker Compose audit](./docs/audits/docker-compose-audit.md) | Historical infrastructure audit |
 
-Documents in `docs/archive/`, `docs/audits/`, `docs/comparative-audit/`, and
-`reference/` preserve research and historical state. For current deployment
-instructions, prefer `docs/operations/README.md`.
+Historical audits and research are preserved in `docs/audits/`. For current
+deployment instructions, prefer the
+[Production deployment](#production-deployment-on-ubuntu) section.
 
 ## Security checklist
 
@@ -420,8 +417,8 @@ instructions, prefer `docs/operations/README.md`.
 - Store PostgreSQL dumps and verified game backups off-host.
 - Test recovery before relying on it.
 - Review image tags and dependency updates before production rollout.
-- Run [`scripts/production-guard.sh`](./scripts/production-guard.sh) against the
-  loaded production environment before deployment.
+- Run [`scripts/cleanup/production-guard.sh`](./scripts/cleanup/production-guard.sh)
+  against the loaded production environment before deployment.
 
 Report security-sensitive problems privately to the repository owner instead
 of publishing credentials or exploit details in a public issue.
@@ -441,9 +438,9 @@ of publishing credentials or exploit details in a public issue.
 Useful commands:
 
 ```bash
-./scripts/diagnose.sh
-./scripts/status.sh
-./scripts/logs.sh
+./scripts/diagnostics/diagnose.sh
+./scripts/diagnostics/status.sh
+./scripts/diagnostics/logs.sh
 
 cd infra
 docker compose -f compose.yml -f compose.production.yml --env-file .env ps

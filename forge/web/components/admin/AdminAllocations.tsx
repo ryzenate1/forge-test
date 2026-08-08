@@ -6,6 +6,7 @@ import { AlertCircle, ArrowDownUp, Copy, Edit3, Globe, Network, Plus, Server, Tr
 import type { ApiAllocation, ApiAllocationNode } from "@/lib/api";
 import { createAllocation, deleteAllocations, fetchAllocationNodes, fetchAllocations, setAdminAllocationAlias } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, StatsRow } from "./admin-ui";
 
 const EMPTY_NODES: ApiAllocationNode[] = [];
@@ -36,6 +37,7 @@ function validateCreateInput(ip: string, ports: string): string | null {
 export function AdminAllocations() {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const [confirm, renderConfirm] = useConfirm();
 
   const [modal, setModal] = useState(false);
   const [search, setSearch] = useState("");
@@ -123,8 +125,10 @@ export function AdminAllocations() {
   };
 
   const openEdit = (allocation: ApiAllocation) => { setEditing(allocation); setEditAlias(allocation.alias ?? ""); setEditError(null); };
-  const confirmDelete = (ids: string[]) => {
-    if (ids.length === 0 || !window.confirm(`Delete ${ids.length} free allocation${ids.length === 1 ? "" : "s"}? This cannot be undone.`)) return;
+  const confirmDelete = async (ids: string[]) => {
+    if (ids.length === 0) return;
+    const confirmed = await confirm({ title: `Delete ${ids.length} free allocation${ids.length === 1 ? "" : "s"}?`, description: "Only free (unassigned) allocations will be deleted. This cannot be undone.", danger: true, confirmLabel: "Delete" });
+    if (!confirmed) return;
     setDeleteError(null);
     bulkDeleteMut.mutate(ids);
   };
@@ -378,6 +382,7 @@ export function AdminAllocations() {
           />
         </Modal>
       ) : null}
+      {renderConfirm()}
     </div>
   );
 }

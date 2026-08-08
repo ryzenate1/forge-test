@@ -25,11 +25,8 @@ type DownloadExtract struct {
 	Dest    string `json:"dest"`
 	Strip   int    `json:"strip,omitempty"`
 	Timeout int    `json:"timeout,omitempty"`
-	// ExpectedSHA256 is an optional hex-encoded SHA-256 digest of the
-	// downloaded archive. When set, the archive is hashed in full before
-	// any of its contents are extracted; a mismatch aborts the operation
-	// and deletes the downloaded artifact. When empty, integrity
-	// verification is skipped and a warning is logged.
+	// ExpectedSHA256 is the required hex-encoded SHA-256 digest of the
+	// downloaded archive. The archive is verified before extraction.
 	ExpectedSHA256 string `json:"expectedSha256,omitempty"`
 	MaxBytes       int64  `json:"maxBytes,omitempty"`
 }
@@ -200,6 +197,7 @@ func (op *DownloadExtract) extractZip(ctx context.Context, archivePath, dest str
 	}
 	defer zipReader.Close()
 
+	var extracted int64
 	for _, f := range zipReader.File {
 		select {
 		case <-ctx.Done():
@@ -226,6 +224,9 @@ func (op *DownloadExtract) extractZip(ctx context.Context, archivePath, dest str
 		if !f.Mode().IsRegular() {
 			return fmt.Errorf("unsupported zip entry type %q", f.Name)
 		}
+		if f.UncompressedSize64 > uint64(op.MaxBytes) || extracted > op.MaxBytes-int64(f.UncompressedSize64) {
+			return fmt.Errorf("zip extraction exceeds %d-byte limit", op.MaxBytes)
+		}
 
 		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 			return fmt.Errorf("mkdir: %w", err)
@@ -242,13 +243,17 @@ func (op *DownloadExtract) extractZip(ctx context.Context, archivePath, dest str
 			return fmt.Errorf("create %q: %w", target, err)
 		}
 
-		_, copyErr := io.Copy(out, &contextReader{ctx: ctx, reader: rc})
+		written, copyErr := io.Copy(out, &contextReader{ctx: ctx, reader: io.LimitReader(rc, int64(f.UncompressedSize64)+1)})
 		syncErr := out.Sync()
 		closeOutErr := out.Close()
 		closeInErr := rc.Close()
 		if err := errors.Join(copyErr, syncErr, closeOutErr, closeInErr); err != nil {
 			return fmt.Errorf("write %q: %w", target, err)
 		}
+		if written != int64(f.UncompressedSize64) {
+			return fmt.Errorf("zip entry %q size mismatch", f.Name)
+		}
+		extracted += written
 	}
 	return operations.SyncDirectory(dest)
 }
@@ -264,6 +269,7 @@ func (op *DownloadExtract) extractTarGz(ctx context.Context, r io.Reader, dest s
 
 func (op *DownloadExtract) extractTar(ctx context.Context, r io.Reader, dest string) error {
 	tr := tar.NewReader(r)
+	var extracted int64
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -292,7 +298,7 @@ func (op *DownloadExtract) extractTar(ctx context.Context, r io.Reader, dest str
 				return fmt.Errorf("mkdir %q: %w", target, err)
 			}
 		case tar.TypeReg:
-			if header.Size < 0 || header.Size > op.MaxBytes {
+			if header.Size < 0 || header.Size > op.MaxBytes || extracted > op.MaxBytes-header.Size {
 				return fmt.Errorf("tar entry %q has invalid size", header.Name)
 			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
@@ -311,6 +317,7 @@ func (op *DownloadExtract) extractTar(ctx context.Context, r io.Reader, dest str
 			if written != header.Size {
 				return fmt.Errorf("tar entry %q was truncated", header.Name)
 			}
+			extracted += written
 		default:
 			return fmt.Errorf("unsupported tar entry type %d", header.Typeflag)
 		}

@@ -198,9 +198,13 @@ func (s *EventStore) Prune(ctx context.Context, dispatchedBefore, deadLetterBefo
 	return nil
 }
 
+type eventPublisher interface {
+	Publish(ctx context.Context, envelope events.Envelope) error
+}
+
 type OutboxPublisher struct {
 	store    *EventStore
-	registry *events.Registry
+	registry eventPublisher
 }
 
 func NewOutboxPublisher(store *EventStore, registry *events.Registry) *OutboxPublisher {
@@ -211,7 +215,10 @@ func (p *OutboxPublisher) Publish(ctx context.Context, envelope events.Envelope)
 	if err := p.store.Publish(ctx, envelope); err != nil {
 		return err
 	}
-	return p.registry.Publish(ctx, envelope)
+	if err := p.registry.Publish(ctx, envelope); err != nil {
+		return fmt.Errorf("event %s persisted to DB but in-memory delivery failed: %w", envelope.ID, err)
+	}
+	return nil
 }
 
 func (s *EventStore) Count(ctx context.Context, dispatched bool) (int, error) {

@@ -10,7 +10,7 @@
   "images": {
     "Ubuntu": "ghcr.io/pterodactyl/yolks:ubuntu"
   },
-  "startup": "./ts3server default_voice_port={{PORT}} query_port={{QUERY_PORT}} filetransfer_port={{FILE_PORT}} serveradmin_password='{{SERVERADMIN_PASSWORD}}'",
+  "startup": "./ts3server default_voice_port={{SERVER_PORT}} query_port={{QUERY_PORT}} filetransfer_port={{FILE_PORT}} serveradmin_password='{{SERVERADMIN_PASSWORD}}'",
   "config": {
     "files": {},
     "startup": {

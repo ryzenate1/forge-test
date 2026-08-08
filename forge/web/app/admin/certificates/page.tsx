@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Shield, Plus, Trash2, RotateCw, AlertTriangle, CheckCircle, XCircle } from "lucide-react";
 import { fetchJSON, postJSON, deleteJSON } from "@/lib/api";
 import { AdminPageLayout, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type Certificate = {
   id: string;
@@ -22,6 +23,7 @@ type Certificate = {
 
 export default function AdminCertificatesPage() {
   const queryClient = useQueryClient();
+  const [confirm, renderConfirm] = useConfirm();
   const [search, setSearch] = useState("");
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploadForm, setUploadForm] = useState({ domainId: "", certificate: "", privateKey: "", issuer: "custom", autoRenew: false });
@@ -137,7 +139,7 @@ export default function AdminCertificatesPage() {
                             <RotateCw size={12} /> Renew
                           </Btn>
                         )}
-                        <Btn size="sm" tone="danger" onClick={() => { if (confirm("Delete certificate?")) deleteMutation.mutate(cert.id); }}>
+                        <Btn size="sm" tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Delete certificate for ${cert.domains[0] ?? cert.id.slice(0, 8)}?`, description: "HTTPS traffic will stop being served with this certificate. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMutation.mutate(cert.id); })(); }}>
                           <Trash2 size={12} />
                         </Btn>
                       </div>
@@ -186,6 +188,7 @@ export default function AdminCertificatesPage() {
           />
         </Modal>
       )}
+      {renderConfirm()}
     </AdminPageLayout>
   );
 }

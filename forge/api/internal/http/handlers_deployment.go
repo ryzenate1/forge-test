@@ -27,7 +27,7 @@ func registerDeploymentRoutes(protected fiber.Router, cfg Config, svc *deploymen
 		}
 		d, err := svc.StartBlueGreen(c.Context(), req.ServerID, req.Image, req.HealthCheckPath, req.HealthCheckPort)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(201).JSON(fiber.Map{"data": d})
 	})
@@ -35,7 +35,7 @@ func registerDeploymentRoutes(protected fiber.Router, cfg Config, svc *deploymen
 	dep.Post("/:id/rollback", mutationLimiter, requireRole("admin"), requireAdminScope("deployments.write"), func(c *fiber.Ctx) error {
 		d, err := svc.Rollback(c.Context(), c.Params("id"))
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": d})
 	})
@@ -43,7 +43,7 @@ func registerDeploymentRoutes(protected fiber.Router, cfg Config, svc *deploymen
 	dep.Post("/:id/complete", mutationLimiter, requireRole("admin"), requireAdminScope("deployments.write"), func(c *fiber.Ctx) error {
 		d, err := svc.CompleteDeployment(c.Context(), c.Params("id"))
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": d})
 	})
@@ -51,21 +51,21 @@ func registerDeploymentRoutes(protected fiber.Router, cfg Config, svc *deploymen
 	dep.Post("/:id/cancel", mutationLimiter, requireRole("admin"), requireAdminScope("deployments.write"), func(c *fiber.Ctx) error {
 		d, err := svc.CancelDeployment(c.Context(), c.Params("id"))
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": d})
 	})
 
 	dep.Post("/:id/execute", mutationLimiter, requireRole("admin"), requireAdminScope("deployments.write"), func(c *fiber.Ctx) error {
 		if err := svc.ExecuteDeployment(c.Context(), c.Params("id")); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": fiber.Map{"deploymentId": c.Params("id")}})
 	})
 
 	dep.Post("/:id/cleanup", mutationLimiter, requireRole("admin"), requireAdminScope("deployments.write"), func(c *fiber.Ctx) error {
 		if err := svc.CleanupDeployment(c.Context(), c.Params("id")); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": fiber.Map{"deploymentId": c.Params("id")}})
 	})
@@ -73,7 +73,7 @@ func registerDeploymentRoutes(protected fiber.Router, cfg Config, svc *deploymen
 	dep.Get("/:id/steps", requireRole("admin"), requireAdminScope("deployments.read"), func(c *fiber.Ctx) error {
 		steps, err := svc.ListSteps(c.Context(), c.Params("id"))
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": steps})
 	})
@@ -88,7 +88,7 @@ func registerDeploymentRoutes(protected fiber.Router, cfg Config, svc *deploymen
 
 	dep.Post("/resume", mutationLimiter, requireRole("admin"), requireAdminScope("deployments.write"), func(c *fiber.Ctx) error {
 		if err := svc.ResumeDeployments(c.Context()); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": "ok"})
 	})
@@ -104,7 +104,7 @@ func registerDeploymentRoutes(protected fiber.Router, cfg Config, svc *deploymen
 	dep.Get("/server/:serverId", requireRole("admin"), requireAdminScope("deployments.read"), func(c *fiber.Ctx) error {
 		deployments, err := svc.ListDeployments(c.Context(), c.Params("serverId"))
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": deployments})
 	})
@@ -112,7 +112,7 @@ func registerDeploymentRoutes(protected fiber.Router, cfg Config, svc *deploymen
 	dep.Get("/", requireRole("admin"), requireAdminScope("deployments.read"), func(c *fiber.Ctx) error {
 		all, err := svc.ListDeployments(c.Context(), "")
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": all})
 	})

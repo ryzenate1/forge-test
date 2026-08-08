@@ -34,25 +34,59 @@ BEACON_PORT=9090
 # Environment variables
 export DATABASE_URL="postgres://${DB_USER}:${DB_PASS}@localhost:${DB_PORT}/${DB_NAME}?sslmode=disable"
 export API_ADDR=":${API_PORT}"
-export API_AUTH_SECRET="dev-api-secret-for-development-only-123456789"
 export APP_ENV="development"
-export APP_KEY="base64:ZGV2LWFwcC1rZXktZm9yLWRldmVsb3BtZW50LTMyY2hhcg=="
 export APP_CIPHER="AES-256-GCM"
-# Token format is "<daemon_token_id>.<secret>" so it satisfies both the node
-# heartbeat check (VerifyNodeToken) and the remote server sync check
-# (AuthenticateRemoteNode, which requires the tokenID.secret form). These values
-# match the demo node seeded by the API (API_SEED_DEMO=true).
-export DAEMON_NODE_TOKEN="devnodetoken0001.dev-node-token"
-export DAEMON_NODE_ID="22222222-2222-2222-2222-222222222222"
 # Seed the demo node/admin so the daemon can authenticate against the panel.
 export API_SEED_DEMO="true"
 export REDIS_ADDR="localhost:${REDIS_PORT}"
 export REDIS_PASSWORD="CHANGE_ME"
 export NEXT_PUBLIC_API_URL="/api/v1"
 export SESSION_COOKIE_SECURE="false"
-export FORGE_MASTER_KEY="yi9pOL6gBpg6Vm7SFaGfYA6pwai4e4S8wxjG2E2+Z7o="
 export FORGE_MASTER_KEY_ID="primary"
 export FORGE_ALLOW_EPHEMERAL_MASTER_KEY="false"
+# Demo node id seeded by the API (API_SEED_DEMO=true). Not a secret.
+export DAEMON_NODE_ID="22222222-2222-2222-2222-222222222222"
+# Local development secrets are generated once and persisted in
+# .dev-secrets.env (git-ignored) so encrypted demo data stays decryptable
+# across restarts. Values provided via the environment always win.
+# NOTE: the API demo seed (API_SEED_DEMO) pins its own node token; to pair the
+# daemon with the seeded demo node, override DAEMON_NODE_TOKEN with that value.
+SECRETS_FILE="$ROOT/.dev-secrets.env"
+if [ -f "$SECRETS_FILE" ]; then
+    set -a
+    . "$SECRETS_FILE"
+    set +a
+fi
+if [ -z "$DAEMON_NODE_TOKEN" ]; then
+    DAEMON_NODE_TOKEN="dev-$(openssl rand -hex 8).$(openssl rand -hex 24)"
+fi
+if [ -z "$API_AUTH_SECRET" ]; then
+    API_AUTH_SECRET="dev-$(openssl rand -hex 32)"
+fi
+if [ -z "$APP_KEY" ]; then
+    APP_KEY="base64:$(openssl rand -base64 32)"
+fi
+if [ -z "$FORGE_MASTER_KEY" ]; then
+    FORGE_MASTER_KEY="$(openssl rand -base64 32)"
+fi
+if [ -z "$GRAFANA_ADMIN_PASSWORD" ]; then
+    GRAFANA_ADMIN_PASSWORD="$(openssl rand -hex 24)"
+fi
+if [ -z "$DAEMON_SFTP_HOST_KEY_PASSPHRASE" ]; then
+    DAEMON_SFTP_HOST_KEY_PASSPHRASE="dev-$(openssl rand -hex 16)"
+fi
+export DAEMON_NODE_TOKEN API_AUTH_SECRET APP_KEY FORGE_MASTER_KEY GRAFANA_ADMIN_PASSWORD DAEMON_SFTP_HOST_KEY_PASSPHRASE
+umask 077
+cat > "$SECRETS_FILE" <<EOF
+DAEMON_NODE_TOKEN=$DAEMON_NODE_TOKEN
+API_AUTH_SECRET=$API_AUTH_SECRET
+APP_KEY=$APP_KEY
+FORGE_MASTER_KEY=$FORGE_MASTER_KEY
+GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD
+DAEMON_SFTP_HOST_KEY_PASSPHRASE=$DAEMON_SFTP_HOST_KEY_PASSPHRASE
+EOF
+umask 022
+echo "  [dev] development node token: $DAEMON_NODE_TOKEN"
 
 # Colors
 RED='\033[0;31m'
@@ -171,10 +205,10 @@ else
             echo "  Creating infra/.env file..."
             cat > .env << EOF
 POSTGRES_PASSWORD=gamepanel
-API_AUTH_SECRET=dev-api-secret
-DAEMON_NODE_TOKEN=dev-node-token
-DAEMON_NODE_ID=1
-GRAFANA_ADMIN_PASSWORD=admin
+API_AUTH_SECRET=$API_AUTH_SECRET
+DAEMON_NODE_TOKEN=$DAEMON_NODE_TOKEN
+DAEMON_NODE_ID=$DAEMON_NODE_ID
+GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD
 DATABASE_URL=postgres://gamepanel:gamepanel@postgres:5432/gamepanel?sslmode=disable
 EOF
         fi
@@ -304,15 +338,15 @@ cat > "$PLIST_PATH" << PLIST
         <key>DAEMON_DATA_DIR</key>
         <string>/tmp/beacon-data</string>
         <key>DAEMON_NODE_ID</key>
-        <string>22222222-2222-2222-2222-222222222222</string>
+        <string>$DAEMON_NODE_ID</string>
         <key>DAEMON_NODE_TOKEN</key>
-        <string>devnodetoken0001.dev-node-token</string>
+        <string>$DAEMON_NODE_TOKEN</string>
         <key>PANEL_API_URL</key>
         <string>http://localhost:${API_PORT}/api/v1</string>
-        <key>DAEMON_ALLOW_INSECURE_NO_AUTH</key>
-        <string>true</string>
         <key>DAEMON_ALLOW_MOCK_RUNTIME</key>
         <string>true</string>
+        <key>DAEMON_SFTP_HOST_KEY_PASSPHRASE</key>
+        <string>$DAEMON_SFTP_HOST_KEY_PASSPHRASE</string>
         <key>APP_ENV</key>
         <string>development</string>
     </dict>

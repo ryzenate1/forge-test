@@ -21,9 +21,9 @@ coverage/
 # =============================================================================
 # Compiled Binaries
 # =============================================================================
-api
+/api
 beacon-daemon
-daemon
+/daemon
 /beacon/daemon
 /forge/api/api
 
@@ -41,7 +41,9 @@ daemon
 # =============================================================================
 .env
 .env.*
+.dev-secrets.env
 infra/.metrics-token
+infra/secrets/
 !.env.example
 beacon/daemon.env.dev
 
@@ -57,6 +59,7 @@ __debug_bin*
 # =============================================================================
 node_modules/
 .next/
+**/.next*
 
 # =============================================================================
 # Temporary Files
@@ -96,3 +99,7 @@ compile_check.*
 backups/
 scratch/
 servers/
+
+# Redis test artifacts
+# =============================================================================
+appendonlydir/

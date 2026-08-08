@@ -11,7 +11,7 @@
   "images": {
     "SteamCMD": "ghcr.io/pterodactyl/yolks:steamcmd"
   },
-  "startup": "./start-server.sh -servername {{SERVER_NAME}} -adminpassword {{ADMIN_PASSWORD}} -port {{PORT}}",
+  "startup": "./start-server.sh -servername {{SERVER_NAME}} -adminpassword {{ADMIN_PASSWORD}} -port {{SERVER_PORT}}",
   "config": {
     "files": {},
     "startup": {

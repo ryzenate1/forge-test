@@ -2,19 +2,12 @@
 
 import { Lock } from "lucide-react";
 import type { ReactNode } from "react";
+import { can, type AccessLike } from "@/lib/permissions";
 
-type Access = {
-  isAdmin?: boolean;
-  isOwner?: boolean;
-  permissions?: string[] | null;
-};
+type Access = AccessLike;
 
 function hasPermission(access: Access, required: string | string[]): boolean {
-  if (access.isAdmin || access.isOwner) return true;
-  if (!access.permissions) return false;
-  if (access.permissions.includes("*")) return true;
-  const list = Array.isArray(required) ? required : [required];
-  return list.some((item) => access.permissions!.includes(item));
+  return can(access, required);
 }
 
 function LockPlaceholder({ message }: { message: string }) {

@@ -1,10 +1,4 @@
 // Common API types
-export type PaginatedResponse<T> = {
-  data: T[];
-  total: number;
-  page: number;
-  perPage: number;
-};
 
 /** Matches the meta.pagination shape returned by paginated list endpoints. */
 export type PaginationMeta = {
@@ -15,13 +9,19 @@ export type PaginationMeta = {
   total_records: number;
 };
 
-/** Full paginated envelope including optional pagination metadata (meta.pagination). */
-export type PaginatedEnvelope<T> = {
+/**
+ * Canonical paginated envelope returned by list endpoints:
+ * `{ data: T[], meta: { pagination: PaginationMeta } }`.
+ */
+export type PaginatedResponse<T> = {
   data: T[];
   meta?: {
     pagination?: PaginationMeta;
   };
 };
+
+/** Alias for the paginated envelope shape (kept for backward compatibility). */
+export type PaginatedEnvelope<T> = PaginatedResponse<T>;
 
 export type ApiUser = {
   id: string;
@@ -50,6 +50,21 @@ export type ApiUser = {
   totpSecret?: string;
 };
 
+export type ApiServerDesiredState = "running" | "stopped" | "terminated";
+
+export type ApiServerActualState =
+  | "offline"
+  | "starting"
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "installing"
+  | "restoring_backup"
+  | "crashed"
+  | "terminating"
+  | "terminated"
+  | "unknown";
+
 export type ApiServer = {
   id: string;
   externalId?: string;
@@ -64,9 +79,9 @@ export type ApiServer = {
   sftpHost?: string;
   sftpPort?: number;
   permissions?: string[];
-  status: string;
-  desiredState?: string;
-  actualState?: string;
+  status: ApiServerActualState;
+  desiredState?: ApiServerDesiredState;
+  actualState?: ApiServerActualState;
   nodeId?: string;
   node?: string;
   allocationId?: string;
@@ -86,32 +101,40 @@ export type ApiServer = {
   suspended?: boolean;
   transferring?: boolean;
   installing?: boolean;
-  installationState?: string;
   transferTargetNodeId?: string;
   transferState?: string;
   transferError?: string;
-  image?: string;
+  transferRunToken?: string;
   createdAt?: string;
-  memory?: string | null;
-  cpu?: string | null;
-  uptime?: string | null;
-  featureLimits?: {
-    databases: number;
-    allocations: number;
-    backups: number;
-  };
   dockerImage?: string;
   startupCommand?: string;
-  environment?: Record<string, string>;
-  relationship?: 'owner' | 'subuser' | 'admin';
   configSyncPending?: boolean;
   configSyncError?: string;
   installedAt?: string;
   skipScripts?: boolean;
   dockerLabels?: Record<string, string>;
+  /** Monotonically increasing counter incremented on each recovery/evacuation. */
+  generation: number;
+  installed?: boolean;
+  /** Time after which a workload's lease expires; must be stopped afterwards. */
+  workloadLeaseExpiry?: string;
 };
 
-export type ApiNodeActualState = "online" | "offline" | "degraded" | "unknown";
+export type ApiNodeDesiredState = "active" | "maintenance" | "draining";
+
+export type ApiNodeActualState = "online" | "offline" | "degraded" | "reconciling" | "unknown";
+
+export type ApiNodeStatus =
+  | "online"
+  | "offline"
+  | "degraded"
+  | "maintenance"
+  | "draining"
+  | "installing"
+  | "restoring_backup"
+  | "stopped"
+  | "active"
+  | "unknown";
 
 export type ApiNode = {
   id: string;
@@ -120,8 +143,8 @@ export type ApiNode = {
   region: string;
   regionId?: string;
   locationId?: string;
-  status: string;
-  desiredState?: string;
+  status: ApiNodeStatus;
+  desiredState?: ApiNodeDesiredState;
   actualState?: ApiNodeActualState;
   heartbeatState?: string;
   heartbeatRecoveryCount?: number;
@@ -139,6 +162,7 @@ export type ApiNode = {
   daemonListen?: number;
   daemonSftp?: number;
   lastSeenAt?: string;
+  lastHeartbeatAt: string;
   memoryMb?: number;
   diskMb?: number;
   uploadSizeMb?: number;
@@ -190,7 +214,7 @@ export type ApiNode = {
   cpuThreads?: number;
   dockerStatus?: string;
   nodeMemoryMb?: number;
-  nodeDiskMb?: number;
+  nodeDiskMB?: number;
   heartbeatError?: string;
   schedulerType?: string;
   schedulerConfig?: Record<string, unknown>;
@@ -481,8 +505,10 @@ export type ApiScheduleTask = {
   action: string;
   payload: Record<string, unknown>;
   continueOnFailure: boolean;
-  sequenceOrder: number;
-  sequence?: number;
+  /** Ordering of the task within its schedule; the API always returns this field. */
+  sequence: number;
+  /** @deprecated The API and all consumers use `sequence`. Kept for backward compatibility. */
+  sequenceOrder?: number;
   timeOffset?: number;
   timeOffsetSeconds?: number;
 };

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"gamepanel/beacon/internal/rootfs"
 	"gamepanel/beacon/internal/runtime"
 )
 
@@ -143,7 +144,18 @@ func (s *Server) cleanupMount(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": false, "reason": "directory does not exist"})
 		return
 	}
-	info, statErr := os.Stat(canonical)
+	permittedRoot, relative, err := allowedMountRelative(canonical, allowed)
+	if err != nil || relative == "" || relative == "." {
+		http.Error(w, "refusing to remove an allowed mount root", http.StatusBadRequest)
+		return
+	}
+	confined, err := rootfs.New(permittedRoot)
+	if err != nil {
+		http.Error(w, "failed to open mount root", http.StatusInternalServerError)
+		return
+	}
+	defer confined.Close()
+	info, statErr := confined.Stat(filepath.ToSlash(relative))
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": false, "reason": "directory does not exist"})
@@ -152,15 +164,8 @@ func (s *Server) cleanupMount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, statErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	if !info.IsDir() {
-		if err := os.Remove(canonical); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": true})
-		return
-	}
-	if err := os.RemoveAll(canonical); err != nil {
+	_ = info // RemoveAll safely handles regular files and directories.
+	if err := confined.RemoveAll(filepath.ToSlash(relative)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -174,7 +179,21 @@ func isPathNotExist(err error) bool {
 	if errors.Is(err, os.ErrNotExist) {
 		return true
 	}
-	return strings.Contains(err.Error(), "no such file or directory")
+	return false
+}
+
+func allowedMountRelative(source string, allowed []string) (string, string, error) {
+	for _, permitted := range allowed {
+		canonicalPermitted, err := filepath.EvalSymlinks(filepath.Clean(permitted))
+		if err != nil {
+			continue
+		}
+		relative, err := filepath.Rel(canonicalPermitted, source)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return canonicalPermitted, relative, nil
+		}
+	}
+	return "", "", errors.New("mount source is outside allowed roots")
 }
 
 func mountSourceWithinAllowed(source string, allowed []string) bool {

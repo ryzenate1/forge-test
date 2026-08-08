@@ -231,7 +231,7 @@ func DeleteMyOAuthClient(cfg Config) fiber.Handler {
 			return fiber.NewError(fiber.StatusForbidden, "you do not own this oauth client")
 		}
 		if err := cfg.Store.DeleteOAuthClient(ctx, c.Params("id")); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"ok": true})
 	}
@@ -313,7 +313,7 @@ func AdminDeleteOAuthClient(cfg Config) fiber.Handler {
 // Store access is mandatory: revocation checks fail closed when persistence is
 // unavailable or returns an error.
 func VerifyOAuthToken(cfg Config, tokenString string) (jwt.MapClaims, []string, error) {
-	parser := jwt.NewParser(jwt.WithValidMethods([]string{"HS256"}))
+	parser := jwt.NewParser(jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired(), jwt.WithIssuedAt())
 	token, err := parser.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
 		return oauthSigningKey(cfg.AuthSecret), nil
 	})
@@ -327,15 +327,25 @@ func VerifyOAuthToken(cfg Config, tokenString string) (jwt.MapClaims, []string, 
 	if claims["iss"] != "forge-panel" {
 		return nil, nil, errors.New("invalid issuer")
 	}
-	jti, _ := claims["jti"].(string)
-	if jti == "" {
-		return nil, nil, errors.New("missing token id")
-	}
+	// Audience must be either the session audience ("forge-api") or a client
+	// ID that still exists in the database. This binds tokens to their
+	// issuing client and prevents a token minted for one client from being
+	// replayed against the panel as a session.
 	if cfg.Store == nil {
 		return nil, nil, errors.New("token revocation store is unavailable")
 	}
 	ctx, cancel := requestContext()
 	defer cancel()
+	aud := claimAudience(claims["aud"])
+	if aud != "" && aud != "forge-api" {
+		if _, err := cfg.Store.GetOAuthClientByClientID(ctx, aud); err != nil {
+			return nil, nil, errors.New("invalid audience")
+		}
+	}
+	jti, _ := claims["jti"].(string)
+	if jti == "" {
+		return nil, nil, errors.New("missing token id")
+	}
 	revoked, err := cfg.Store.IsJWTRevoked(ctx, jti)
 	if err != nil {
 		return nil, nil, errors.New("token revocation check failed")
@@ -383,6 +393,26 @@ func splitScopes(s string) []string {
 		}
 	}
 	return out
+}
+
+// claimAudience extracts a single string audience from a JWT "aud" claim,
+// which may be encoded as a string or an array.
+func claimAudience(v any) string {
+	switch aud := v.(type) {
+	case string:
+		return aud
+	case []string:
+		if len(aud) > 0 {
+			return aud[0]
+		}
+	case []any:
+		if len(aud) > 0 {
+			if s, ok := aud[0].(string); ok {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 func contains(haystack []string, needle string) bool {

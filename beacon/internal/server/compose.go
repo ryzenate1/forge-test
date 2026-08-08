@@ -10,15 +10,18 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	pathpkg "path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 type composeLockEntry struct {
-	mu     sync.Mutex
-	active bool
+	mu sync.Mutex
 }
 
 type composeStack struct {
@@ -42,7 +45,6 @@ func (cs *composeStack) lock(stackID string) {
 	}
 	cs.mu.Unlock()
 	entry.mu.Lock()
-	entry.active = true
 }
 
 func (cs *composeStack) unlock(stackID string) {
@@ -50,7 +52,6 @@ func (cs *composeStack) unlock(stackID string) {
 	entry := cs.stacks[stackID]
 	cs.mu.RUnlock()
 	if entry != nil {
-		entry.active = false
 		entry.mu.Unlock()
 	}
 }
@@ -69,39 +70,195 @@ func validStackID(stackID string) bool {
 	return true
 }
 
+// validateComposePolicy parses the compose file as YAML and enforces a strict
+// schema. Substring matching is not used: values like "privileged: yes" or
+// "network_mode: host" must be caught regardless of quoting or YAML scalar
+// type, and only real compose keys are validated.
 func validateComposePolicy(yamlContent string) error {
-	if strings.Contains(yamlContent, "privileged: true") || strings.Contains(yamlContent, "privileged: True") {
-		return errors.New("privileged mode is not allowed in compose deployments")
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(yamlContent), &doc); err != nil {
+		return fmt.Errorf("compose YAML is invalid: %w", err)
 	}
-	if strings.Contains(yamlContent, "network_mode: \"host\"") || strings.Contains(yamlContent, "network_mode: host") {
-		return errors.New("host network mode is not allowed")
+	services, ok := doc["services"].(map[string]any)
+	if !ok {
+		return errors.New("compose file must define a 'services' map")
 	}
-	if strings.Contains(yamlContent, "pid: \"host\"") || strings.Contains(yamlContent, "pid: host") {
-		return errors.New("host pid namespace is not allowed")
-	}
-	if strings.Contains(yamlContent, "userns_mode: \"host\"") || strings.Contains(yamlContent, "userns_mode: host") {
-		return errors.New("host userns mode is not allowed")
-	}
-	lines := strings.Split(yamlContent, "\n")
-	inVolumes := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "volumes:") {
-			inVolumes = true
-			continue
+	for name, raw := range services {
+		svc, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("service %q must be a mapping", name)
 		}
-		if inVolumes && strings.HasPrefix(trimmed, "services:") {
-			inVolumes = false
-			continue
-		}
-		if inVolumes && strings.HasPrefix(trimmed, "- ") {
-			volPath := strings.TrimPrefix(trimmed, "- ")
-			if strings.HasPrefix(volPath, "/") {
-				return errors.New("host bind mounts are not allowed in compose deployments")
+		for key, value := range svc {
+			switch key {
+			case "privileged":
+				if composeTruthy(value) {
+					return fmt.Errorf("service %q: privileged mode is not allowed in compose deployments", name)
+				}
+			case "network_mode":
+				mode := composeString(value)
+				if mode == "host" || strings.HasPrefix(mode, "service:") {
+					return fmt.Errorf("service %q: host or shared-service network mode is not allowed", name)
+				}
+			case "pid":
+				if composeString(value) == "host" {
+					return fmt.Errorf("service %q: host pid namespace is not allowed", name)
+				}
+			case "userns_mode":
+				if composeString(value) == "host" {
+					return fmt.Errorf("service %q: host userns mode is not allowed", name)
+				}
+			case "cap_add":
+				if composeNonEmpty(value) {
+					return fmt.Errorf("service %q: cap_add is not allowed in compose deployments", name)
+				}
+			case "devices":
+				if composeNonEmpty(value) {
+					return fmt.Errorf("service %q: device passthrough is not allowed in compose deployments", name)
+				}
+			case "security_opt":
+				if composeNonEmpty(value) {
+					return fmt.Errorf("service %q: security_opt is not allowed in compose deployments", name)
+				}
+			case "ports":
+				if err := validateComposePorts(name, value); err != nil {
+					return err
+				}
+			case "volumes":
+				if err := validateComposeVolumes(name, value); err != nil {
+					return err
+				}
 			}
 		}
 	}
 	return nil
+}
+
+// composeTruthy reports whether a YAML scalar is truthy, including the YAML
+// boolean spellings yes/on/true/1 and their quoted string forms.
+func composeTruthy(value any) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "yes", "on", "1":
+			return true
+		}
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
+	case float64:
+		return v != 0
+	}
+	return false
+}
+
+func composeString(value any) string {
+	if s, ok := value.(string); ok {
+		return strings.ToLower(strings.TrimSpace(s))
+	}
+	return ""
+}
+
+func composeNonEmpty(value any) bool {
+	switch v := value.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(v) != ""
+	case []any:
+		return len(v) > 0
+	case []string:
+		return len(v) > 0
+	case map[string]any:
+		return len(v) > 0
+	default:
+		return true
+	}
+}
+
+func validateComposePorts(service string, value any) error {
+	entries, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	for _, entry := range entries {
+		var published string
+		switch v := entry.(type) {
+		case string:
+			published = shortFormHostPort(v)
+		case map[string]any:
+			if raw, ok := v["published"]; ok {
+				published = fmt.Sprint(raw)
+			}
+		default:
+			continue
+		}
+		if published == "" {
+			continue
+		}
+		port, err := strconv.Atoi(strings.TrimSpace(published))
+		if err != nil || port <= 0 {
+			continue
+		}
+		if port < 1024 {
+			return fmt.Errorf("service %q: publishing privileged host port %d is not allowed in compose deployments", service, port)
+		}
+	}
+	return nil
+}
+
+// shortFormHostPort extracts the host-side port from a short-form ports
+// entry ("80", "8080:80", "127.0.0.1:8080:80").
+func shortFormHostPort(entry string) string {
+	parts := strings.Split(entry, ":")
+	switch len(parts) {
+	case 2:
+		return parts[0]
+	case 3:
+		return parts[1]
+	default:
+		return ""
+	}
+}
+
+func validateComposeVolumes(service string, value any) error {
+	entries, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	for _, entry := range entries {
+		switch v := entry.(type) {
+		case map[string]any:
+			if composeString(v["type"]) == "bind" {
+				return fmt.Errorf("service %q: long-form bind mounts are not allowed in compose deployments", service)
+			}
+		case string:
+			source, _, hasSource := strings.Cut(v, ":")
+			if !hasSource || source == "" {
+				// Anonymous volume ("/data") or a bare container target.
+				continue
+			}
+			if strings.HasPrefix(source, "/") || isPathTraversal(source) {
+				return fmt.Errorf("service %q: host bind mount source %q is not allowed in compose deployments", service, source)
+			}
+		}
+	}
+	return nil
+}
+
+func isPathTraversal(source string) bool {
+	clean := pathpkg.Clean(strings.ReplaceAll(source, "\\", "/"))
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return true
+	}
+	for _, part := range strings.Split(clean, "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func encodeComposeEnv(envVars map[string]string) ([]byte, error) {
@@ -513,6 +670,9 @@ func (s *Server) handleComposeLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cs := s.composeStackManager()
+	cs.lock(stackID)
+	defer cs.unlock(stackID)
+
 	stackDir := cs.dirForID(stackID)
 	composePath := filepath.Join(stackDir, "compose.yaml")
 	if _, err := os.Stat(composePath); os.IsNotExist(err) {

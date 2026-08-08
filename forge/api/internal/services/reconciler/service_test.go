@@ -115,6 +115,11 @@ func (m *mockStore) GetComposeStack(ctx context.Context, stackID string) (store.
 	return args.Get(0).(store.ComposeStack), args.Error(1)
 }
 
+func (m *mockStore) ExpireStaleReconcilePlans(ctx context.Context, olderThan time.Duration) (int64, error) {
+	args := m.Called(ctx, olderThan)
+	return int64(args.Int(0)), args.Error(1)
+}
+
 type mockClusterManager struct {
 	mock.Mock
 }

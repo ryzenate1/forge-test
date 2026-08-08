@@ -63,7 +63,7 @@ func handleCreateNotificationChannel(svc *notificationsvc.Service) fiber.Handler
 			Enabled: req.Enabled,
 		})
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(ch)
 	}
@@ -101,7 +101,7 @@ func handleUpdateNotificationChannel(svc *notificationsvc.Service) fiber.Handler
 			Enabled: req.Enabled,
 		})
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(ch)
 	}
@@ -161,7 +161,7 @@ func handleCreateSubscription(svc *notificationsvc.Service) fiber.Handler {
 		}
 		sub, err := svc.CreateSubscription(ctx, c.Params("id"), req.EventType, req.Template)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(sub)
 	}

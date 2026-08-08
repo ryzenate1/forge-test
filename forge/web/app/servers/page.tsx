@@ -71,12 +71,16 @@ export default function ServersPage() {
 
   const isAdmin = currentUser?.role === "admin" || userQuery.data?.role === "admin";
   const [showAdmin, setShowAdmin] = useState(false);
+  const mode = showAdmin && isAdmin ? "admin" : "user";
 
   const serversQuery = useQuery({
-    queryKey: ["servers", showAdmin && isAdmin ? "admin" : "user"],
+    queryKey: ["servers", mode],
     queryFn: fetchServers,
     enabled: Boolean(userQuery.data),
-    refetchInterval: (query) => query.state.error ? false : 15_000,
+    // Every authenticated user lands here and fetchServers fetches the full
+    // dataset (admins receive every server), so keep the poll rate modest to
+    // avoid a polling storm against the API.
+    refetchInterval: (query) => query.state.error ? false : 30_000,
     retry: 1,
   });
   const { data, isLoading, isError } = serversQuery;
@@ -90,7 +94,15 @@ export default function ServersPage() {
   };
 
   const sessionPending = userQuery.isPending || userQuery.data === undefined;
-  const servers = useMemo(() => (Array.isArray(data) ? data : []), [data]);
+  const servers = useMemo(() => {
+    const all = Array.isArray(data) ? data : [];
+    // The /servers endpoint already scopes to the current user for non-admins,
+    // but admins receive every server and the API has no "owned" filter param.
+    // In "user" mode, narrow the list to servers owned by the current user.
+    if (mode === "admin" || !isAdmin) return all;
+    const email = userQuery.data?.email;
+    return email ? all.filter((server) => server.owner === email) : all;
+  }, [data, mode, isAdmin, userQuery.data?.email]);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const pageSize = 12;
@@ -198,7 +210,7 @@ export default function ServersPage() {
                 <Link
                   key={server.id}
                   href={`/server/${server.id}`}
-                  className="group flex flex-col rounded-xl border border-white/[0.06] bg-surface-card p-5 transition hover:border-white/[0.12] hover:bg-surface-elevated"
+                  className="group relative flex flex-col rounded-xl border border-white/[0.06] bg-surface-card p-5 transition hover:border-white/[0.12] hover:bg-surface-elevated"
                 >
                   {/* Status bar indicator */}
                   <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-1 rounded-r-xl opacity-50 group-hover:opacity-75 transition-opacity" style={{
@@ -237,9 +249,12 @@ export default function ServersPage() {
                   {/* Resource usage bars */}
                   {!server.suspended && server.status !== "installing" && !server.transferring && (
                     <div className="mt-3 space-y-1 border-t border-white/[0.06] pt-3">
-                      <ResourceBar icon={Cpu} label={t("server.cpu")} current={server.cpuShares ?? server.cpuLimit} limit={server.cpuLimit ?? server.cpuShares} unit="%" />
-                      <ResourceBar icon={MemoryStick} label={t("server.memory")} current={server.memoryMb} limit={server.memoryMb} unit=" MB" />
-                      <ResourceBar icon={HardDrive} label={t("server.disk")} current={server.diskMb} limit={server.diskMb} unit=" MB" />
+                      {/* The servers list API only reports configured limits, not live
+                          usage, so pass no current/limit values: ResourceBar renders
+                          its "Unavailable" state instead of a misleading 100% bar. */}
+                      <ResourceBar icon={Cpu} label={t("server.cpu")} />
+                      <ResourceBar icon={MemoryStick} label={t("server.memory")} />
+                      <ResourceBar icon={HardDrive} label={t("server.disk")} />
                     </div>
                   )}
                 </Link>

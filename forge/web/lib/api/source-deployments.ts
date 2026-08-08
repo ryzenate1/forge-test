@@ -1,4 +1,4 @@
-import { fetchJSON, postJSON, patchJSON, deleteJSON, ApiError } from './http';
+import { fetchJSON, postJSON, patchJSON, deleteJSON } from './http';
 
 export interface GitProvider {
   id: string;

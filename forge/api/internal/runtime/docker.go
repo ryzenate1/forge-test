@@ -94,7 +94,7 @@ func (r *DockerAdapter) SyncServerConfiguration(ctx context.Context, target Targ
 		UUID: config.UUID, Name: config.Name, Suspended: config.Suspended, Environment: config.Environment,
 		Invocation: config.Invocation, DockerImage: config.DockerImage, Egg: config.Egg, Build: config.Build,
 		Allocations: config.Allocations, Config: config.Config, Mounts: daemonMounts(config.Mounts),
-		Provider: DockerProvider,
+		UID: config.UID, GID: config.GID, Provider: DockerProvider,
 	})
 }
 

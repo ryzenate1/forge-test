@@ -61,4 +61,32 @@ describe("useTranslation", () => {
 
     expect(result.current.t("welcome")).toBe("welcome");
   });
+
+  it("falls back to the bundled en.json when the loaded locale misses a key", async () => {
+    mockFetch(
+      jsonResponse({ welcome: "Hello {name}!" }),
+    );
+
+    const { result } = renderHook(() => useTranslation());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.t("auth.login")).toBe("Sign In");
+  });
+
+  it("returns the raw key when a key is missing from both the locale and en.json", async () => {
+    mockFetch(
+      jsonResponse({ welcome: "Hello" }),
+    );
+
+    const { result } = renderHook(() => useTranslation());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.t("no.such.key")).toBe("no.such.key");
+  });
 });

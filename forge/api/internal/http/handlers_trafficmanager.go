@@ -15,7 +15,7 @@ func registerTrafficManagerRoutes(protected fiber.Router, cfg Config, svc *traff
 	tm.Get("/rules", requireRole("admin"), requireAdminScope("traffic.read"), func(c *fiber.Ctx) error {
 		rules, err := svc.ListRoutingRules(c.Context())
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": rules})
 	})
@@ -26,7 +26,7 @@ func registerTrafficManagerRoutes(protected fiber.Router, cfg Config, svc *traff
 			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 		if err := svc.CreateRoutingRule(c.Context(), &rule); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(201).JSON(fiber.Map{"data": rule})
 	})
@@ -46,14 +46,14 @@ func registerTrafficManagerRoutes(protected fiber.Router, cfg Config, svc *traff
 		}
 		rule.ID = c.Params("id")
 		if err := svc.UpdateRoutingRule(c.Context(), &rule); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": rule})
 	})
 
 	tm.Delete("/rules/:id", mutationLimiter, requireRole("admin"), requireAdminScope("traffic.write"), func(c *fiber.Ctx) error {
 		if err := svc.DeleteRoutingRule(c.Context(), c.Params("id")); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.SendStatus(204)
 	})
@@ -61,7 +61,7 @@ func registerTrafficManagerRoutes(protected fiber.Router, cfg Config, svc *traff
 	tm.Get("/rules/server/:serverId", requireRole("admin"), requireAdminScope("traffic.read"), func(c *fiber.Ctx) error {
 		rules, err := svc.ListRoutingRulesByServer(c.Context(), c.Params("serverId"))
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": rules})
 	})
@@ -72,7 +72,7 @@ func registerTrafficManagerRoutes(protected fiber.Router, cfg Config, svc *traff
 			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 		if err := svc.CreateTrafficPolicy(c.Context(), &policy); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(201).JSON(fiber.Map{"data": policy})
 	})
@@ -92,21 +92,21 @@ func registerTrafficManagerRoutes(protected fiber.Router, cfg Config, svc *traff
 		}
 		policy.ID = c.Params("id")
 		if err := svc.UpdateTrafficPolicy(c.Context(), &policy); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": policy})
 	})
 
 	tm.Delete("/policies/:id", mutationLimiter, requireRole("admin"), requireAdminScope("traffic.write"), func(c *fiber.Ctx) error {
 		if err := svc.DeleteTrafficPolicy(c.Context(), c.Params("id")); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.SendStatus(204)
 	})
 
 	tm.Post("/sync", mutationLimiter, requireRole("admin"), requireAdminScope("traffic.write"), func(c *fiber.Ctx) error {
 		if err := svc.SyncRoutes(c.Context()); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"message": "routes synced"})
 	})

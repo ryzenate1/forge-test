@@ -6,6 +6,7 @@ import { AlertCircle, Cloud, Loader2, Plus, Server, Trash2 } from "lucide-react"
 import { deleteJSON, fetchJSON, fetchNodes, postJSON, type ApiNode } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
 import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type CloudProvider = {
   kind: string;
@@ -34,6 +35,7 @@ type CloudNodeLink = {
 type DataResponse<T> = { data: T };
 
 export default function AdminCloudPage() {
+  const [confirm, renderConfirm] = useConfirm();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [showProvision, setShowProvision] = useState(false);
@@ -130,7 +132,7 @@ export default function AdminCloudPage() {
         <CardHeader title="Provider Instances" icon={Server} />
         {!selectedProvider ? <EmptyState icon={Server} message="Select a configured provider to load its instances." /> : instancesQuery.isLoading ? <Loading /> : instancesQuery.isError ? <ApiError message={`Could not load instances: ${instancesQuery.error.message}`} /> : !Array.isArray(instances) || instances.length === 0 ? <EmptyState icon={Server} message="No instances returned by this provider." /> : (
           <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-white/[0.06] text-left text-[10px] uppercase tracking-widest text-slate-500"><th className="px-4 py-3">Name</th><th className="px-4 py-3">Instance ID</th><th className="px-4 py-3">Type</th><th className="px-4 py-3">Region</th><th className="px-4 py-3">IP</th><th className="px-4 py-3">Panel node</th><th className="px-4 py-3">Status</th><th className="px-4 py-3" /></tr></thead><tbody className="divide-y divide-white/[0.04]">
-            {Array.isArray(instances) && instances.map((instance) => { const node = linkedNode(instance); return <tr key={instance.id} className="hover:bg-white/[0.02]"><td className="px-4 py-3 font-medium text-slate-200">{instance.name || "—"}</td><td className="px-4 py-3 font-mono text-xs text-slate-400">{instance.id}</td><td className="px-4 py-3 text-xs text-slate-400">{instance.instanceType}</td><td className="px-4 py-3 text-xs text-slate-400">{instance.region}</td><td className="px-4 py-3 font-mono text-xs text-slate-400">{instance.publicIp || instance.privateIp || "—"}</td><td className="px-4 py-3 text-xs text-slate-400">{node?.name ?? "Not linked"}</td><td className="px-4 py-3"><Pill tone={instance.status === "running" ? "green" : "yellow"}>{instance.status}</Pill></td><td className="px-4 py-3"><Btn size="sm" tone="danger" disabled={terminateMutation.isPending} onClick={() => { if (confirm(`Terminate ${instance.id}? This cannot be undone.`)) terminateMutation.mutate(instance); }}><Trash2 size={12} /> Terminate</Btn></td></tr>; })}
+            {Array.isArray(instances) && instances.map((instance) => { const node = linkedNode(instance); return <tr key={instance.id} className="hover:bg-white/[0.02]"><td className="px-4 py-3 font-medium text-slate-200">{instance.name || "—"}</td><td className="px-4 py-3 font-mono text-xs text-slate-400">{instance.id}</td><td className="px-4 py-3 text-xs text-slate-400">{instance.instanceType}</td><td className="px-4 py-3 text-xs text-slate-400">{instance.region}</td><td className="px-4 py-3 font-mono text-xs text-slate-400">{instance.publicIp || instance.privateIp || "—"}</td><td className="px-4 py-3 text-xs text-slate-400">{node?.name ?? "Not linked"}</td><td className="px-4 py-3"><Pill tone={instance.status === "running" ? "green" : "yellow"}>{instance.status}</Pill></td><td className="px-4 py-3"><Btn size="sm" tone="danger" disabled={terminateMutation.isPending} onClick={() => { void (async () => { if (await confirm({ title: `Terminate ${instance.name || instance.id}?`, description: "The cloud instance will be permanently destroyed. This cannot be undone.", danger: true, confirmLabel: "Terminate" })) terminateMutation.mutate(instance); })(); }}><Trash2 size={12} /> Terminate</Btn></td></tr>; })}
           </tbody></table></div>
         )}
       </Card>
@@ -150,9 +152,11 @@ export default function AdminCloudPage() {
         <p className="text-xs text-slate-500">When linked, Ubuntu cloud-init installs Docker and starts Beacon with the selected node credential. Use a private panel API URL and an IAM role for shared backup access.</p>
         {provisionMutation.isError ? <ApiError message={`Provisioning failed: ${provisionMutation.error.message}`} /> : null}
       </div><ModalFooter onCancel={() => setShowProvision(false)} onConfirm={() => provisionMutation.mutate()} confirmLabel={provisionMutation.isPending ? "Provisioning…" : "Provision"} disabled={!Array.isArray(providers) || providers.length === 0 || provisionMutation.isPending || !canProvision} /></Modal> : null}
+      {renderConfirm()}
     </div>
   );
 }
+
 
 function Loading() { return <div className="p-8 text-center text-sm text-slate-500"><Loader2 size={16} className="mr-2 inline animate-spin" />Loading…</div>; }
 function ApiError({ message }: { message: string }) { return <div className="m-4 flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-200"><AlertCircle size={16} className="mt-0.5 shrink-0" />{message}</div>; }

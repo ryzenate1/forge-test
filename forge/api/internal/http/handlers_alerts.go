@@ -106,14 +106,14 @@ func handleNodeMetrics(svc *observabilitysvc.Service) fiber.Handler {
 		if nodeID != "" {
 			metrics, err := svc.ListNodeMetrics(ctx, nodeID, limit, since)
 			if err != nil {
-				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+				return respondInternalError(c, err)
 			}
 			return c.JSON(fiber.Map{"data": metrics})
 		}
 
 		all, err := svc.ListAllNodeMetricsLatest(ctx)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": all})
 	}

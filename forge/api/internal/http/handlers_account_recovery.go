@@ -1,6 +1,8 @@
 package http
 
 import (
+	"net/url"
+
 	"gamepanel/forge/internal/services/recovery"
 	"gamepanel/forge/internal/store"
 
@@ -46,7 +48,7 @@ func registerAccountRecoveryRoutes(v1 fiber.Router, cfg Config, authLimiter fibe
 		}
 
 		if cfg.MailTriggerService != nil {
-			resetURL := cfg.PanelURL + "/account/recovery?token=" + token + "&email=" + req.Email
+			resetURL := cfg.PanelURL + "/account/recovery#token=" + url.QueryEscape(token) + "&email=" + url.QueryEscape(req.Email)
 			cfg.MailTriggerService.SendPasswordReset(ctx, req.Email, resetURL, user.Email)
 		}
 

@@ -15,13 +15,15 @@ import {
   removeBuildpackFromServer,
 } from "@/lib/api/builds";
 import { formatDate } from "@/lib/utils";
+import { EmptyState, StatusPill } from "@/components/ui/primitives";
+import { CardSkeleton } from "@/components/ui/loading-skeleton";
 
-const statusColors: Record<string, string> = {
-  pending: "text-amber-400",
-  running: "text-blue-400",
-  succeeded: "text-emerald-400",
-  failed: "text-red-400",
-  canceled: "text-slate-400",
+const statusTone: Record<string, "neutral" | "success" | "warning" | "danger" | "info"> = {
+  pending: "warning",
+  running: "info",
+  succeeded: "success",
+  failed: "danger",
+  canceled: "neutral",
 };
 
 function errorText(error: unknown, fallback: string) {
@@ -94,7 +96,7 @@ export function BuildsView({ server }: { server?: ApiServer }) {
         <h2 className="text-lg font-bold text-white">Builds</h2>
         <div className="flex items-center gap-2">
           <select
-            className="rounded-lg border border-white/[0.08] bg-[#1e2536] px-3 py-1.5 text-sm text-slate-300"
+            className="ui-input min-h-9 w-52 px-3 py-1.5"
             value={selectedBuildpackId}
             onChange={(e) => setSelectedBuildpackId(e.target.value)}
           >
@@ -106,7 +108,7 @@ export function BuildsView({ server }: { server?: ApiServer }) {
             ))}
           </select>
           <button
-            className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
+            className="ui-button ui-button-primary"
             disabled
             title="Buildpack builds are not implemented yet. Deploy this application from a git source or a compose stack instead."
             type="button"
@@ -115,7 +117,7 @@ export function BuildsView({ server }: { server?: ApiServer }) {
             Build
           </button>
           <button
-            className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-[#1e2536] px-3 py-1.5 text-sm text-slate-300 hover:bg-white/[0.05]"
+            className="ui-button ui-button-secondary"
             onClick={() => setShowBuildpackPanel((v) => !v)}
             type="button"
           >
@@ -126,31 +128,31 @@ export function BuildsView({ server }: { server?: ApiServer }) {
       </div>
 
       {actionError ? (
-        <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200" role="alert">
-          {errorText(actionError, "Build action failed.")}
+        <div className="ui-alert ui-alert-error" role="alert">
+          <p className="text-sm">{errorText(actionError, "Build action failed.")}</p>
         </div>
       ) : null}
 
       {showBuildpackPanel ? (
-        <div className="rounded-xl border border-white/[0.08] bg-[#1e2536] p-4">
+        <div className="ui-card">
           <h3 className="mb-3 text-sm font-semibold text-slate-300">Assigned Buildpacks</h3>
           {bpAssignments.length === 0 ? (
             <p className="text-sm text-slate-500">No buildpacks assigned.</p>
           ) : (
             <div className="mb-3 space-y-2">
               {bpAssignments.map((sb: ApiServerBuildpack) => (
-                <div key={sb.id} className="flex items-center justify-between rounded-lg bg-white/[0.04] px-3 py-2">
-                  <div>
+                <div key={sb.id} className="flex items-center justify-between gap-3 rounded-lg bg-white/[0.03] px-3 py-2">
+                  <div className="min-w-0">
                     <span className="text-sm text-slate-200">{sb.buildpack?.name ?? sb.buildpackId}</span>
                     <span className="ml-2 text-xs text-slate-500">priority {sb.priority}</span>
                   </div>
                   <button
-                    className="text-xs text-red-400 hover:text-red-300"
+                    className="ui-button ui-button-danger"
                     disabled={removeMutation.isPending}
                     onClick={() => removeMutation.mutate(sb.buildpackId)}
                     type="button"
                   >
-                    Remove
+                    Remove {sb.buildpack?.name ?? sb.buildpackId}
                   </button>
                 </div>
               ))}
@@ -158,7 +160,7 @@ export function BuildsView({ server }: { server?: ApiServer }) {
           )}
           <div className="flex gap-2">
             <select
-              className="flex-1 rounded-lg border border-white/[0.08] bg-[#0f1419] px-3 py-1.5 text-sm text-slate-300"
+              className="ui-input min-h-9 flex-1 px-3 py-1.5"
               value={newBpInput}
               onChange={(e) => setNewBpInput(e.target.value)}
             >
@@ -172,7 +174,7 @@ export function BuildsView({ server }: { server?: ApiServer }) {
                 ))}
             </select>
             <button
-              className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
+              className="ui-button ui-button-primary"
               disabled={!newBpInput || assignMutation.isPending}
               onClick={() => {
                 assignMutation.mutate(newBpInput);
@@ -187,34 +189,30 @@ export function BuildsView({ server }: { server?: ApiServer }) {
       ) : null}
 
       {builds.isLoading ? (
-        <div className="rounded-xl bg-[#1e2536] px-4 py-5 text-sm text-slate-400">Loading builds…</div>
+        <CardSkeleton />
       ) : builds.isError ? (
-        <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">
-          {errorText(builds.error, "Failed to load builds.")}
+        <div className="ui-alert ui-alert-error" role="alert">
+          <p className="text-sm">{errorText(builds.error, "Failed to load builds. Check the API connection and your permissions, then retry.")}</p>
         </div>
       ) : buildList.length === 0 ? (
-        <div className="rounded-xl bg-[#1e2536] px-4 py-5 text-sm text-slate-400">
-          No builds have been triggered yet.
-        </div>
+        <EmptyState icon={<Code2 size={20} />} title="No builds yet" description="No builds have been triggered yet. Deploy this application from a git source or a compose stack to see builds here." />
       ) : (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <div className="lg:col-span-1 space-y-2">
+          <div className="space-y-2 lg:col-span-1">
             {buildList.map((build) => (
               <button
                 key={build.id}
                 className={`w-full rounded-lg border px-4 py-3 text-left transition ${
                   selectedBuildId === build.id
                     ? "border-red-500/40 bg-red-500/10"
-                    : "border-white/[0.06] bg-[#1e2536] hover:bg-white/[0.04]"
+                    : "border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04]"
                 }`}
                 onClick={() => setSelectedBuildId(build.id)}
                 type="button"
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-slate-400">{formatDate(build.createdAt)}</span>
-                  <span className={`text-xs font-medium ${statusColors[build.status] ?? "text-slate-400"}`}>
-                    {build.status}
-                  </span>
+                  <span className="font-mono text-xs text-slate-400">{formatDate(build.createdAt)}</span>
+                  <StatusPill tone={statusTone[build.status] ?? "neutral"}>{build.status}</StatusPill>
                 </div>
                 <div className="mt-1 truncate text-xs text-slate-500">
                   {build.buildpack?.name ?? "auto-detect"}
@@ -225,31 +223,23 @@ export function BuildsView({ server }: { server?: ApiServer }) {
 
           <div className="lg:col-span-2">
             {buildDetail ? (
-              <div className="rounded-xl border border-white/[0.08] bg-[#1e2536]">
-                <div className="border-b border-white/[0.06] px-4 py-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-slate-200">
-                      Build {buildDetail.id.slice(0, 8)}
-                    </span>
-                    <span
-                      className={`text-sm font-medium ${statusColors[buildDetail.status] ?? "text-slate-400"}`}
-                    >
-                      {buildDetail.status}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-xs text-slate-500">
-                    {formatDate(buildDetail.createdAt)}
-                    {buildDetail.imageTag ? ` · ${buildDetail.imageTag}` : ""}
-                  </p>
+              <div className="ui-card">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-slate-200">
+                    Build <span className="font-mono">{buildDetail.id.slice(0, 8)}</span>
+                  </span>
+                  <StatusPill tone={statusTone[buildDetail.status] ?? "neutral"}>{buildDetail.status}</StatusPill>
                 </div>
-                <div className="p-4">
-                  <pre className="overflow-auto rounded-lg bg-[#0f1419] p-4 font-mono text-xs leading-relaxed text-slate-300">
-                    {buildDetail.buildLog || "No build log available."}
-                  </pre>
-                </div>
+                <p className="mt-1 font-mono text-xs text-slate-500">
+                  {formatDate(buildDetail.createdAt)}
+                  {buildDetail.imageTag ? ` · ${buildDetail.imageTag}` : ""}
+                </p>
+                <pre className="mt-3 overflow-auto rounded-lg bg-surface-input p-4 font-mono text-xs leading-relaxed text-slate-300">
+                  {buildDetail.buildLog || "No build log available."}
+                </pre>
               </div>
             ) : (
-              <div className="flex items-center justify-center rounded-xl border border-white/[0.06] bg-[#1e2536] p-12">
+              <div className="flex items-center justify-center rounded-xl border border-dashed border-white/10 bg-black/10 p-12">
                 <div className="text-center">
                   <Code2 className="mx-auto mb-2 h-8 w-8 text-slate-500" />
                   <p className="text-sm text-slate-400">Select a build to view details</p>

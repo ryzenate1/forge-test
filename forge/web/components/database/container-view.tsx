@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Database, RotateCcw, Trash2, Archive, Plus } from "lucide-react";
 import { type DBContainer, listDBContainers, backupDBContainer, restartDBContainer, deprovisionDBContainer } from "@/lib/api/database-containers";
-import { Btn, Card, CardHeader, EmptyState, SectionHeader, Pill } from "@/components/admin/admin-ui";
+import { Btn, Card, CardHeader, EmptyState, SectionHeader, Pill, AdminConfirmDialog } from "@/components/admin/admin-ui";
 import { useToast } from "@/components/ui/toast";
 import { DBContainerCreateModal } from "./container-create-modal";
 import { DBContainerCredentialsModal } from "./container-credentials-modal";
@@ -115,9 +115,11 @@ function DBContainerRow({ db, onRestart, onBackup, onDelete, onShowCreds, isPend
   onShowCreds: (id: string) => void;
   isPending: boolean;
 }) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const statusTone = db.status === "running" ? "green" : db.status === "stopped" ? "red" : "yellow";
 
   return (
+    <>
     <tr className="transition-colors hover:bg-white/[0.02]">
       <td className="px-4 py-3">
         <span className="font-mono text-xs text-slate-400">{db.id.slice(0, 8)}</span>
@@ -164,7 +166,7 @@ function DBContainerRow({ db, onRestart, onBackup, onDelete, onShowCreds, isPend
           <button
             className="grid h-8 w-8 place-items-center rounded text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-red-200 disabled:opacity-40"
             disabled={isPending || db.status === "provisioning"}
-            onClick={() => { if (window.confirm(`Delete DB container ${db.id.slice(0, 8)}?`)) onDelete(db.id); }}
+            onClick={() => setConfirmDelete(true)}
             title="Delete"
             type="button"
           >
@@ -173,5 +175,15 @@ function DBContainerRow({ db, onRestart, onBackup, onDelete, onShowCreds, isPend
         </div>
       </td>
     </tr>
+    <AdminConfirmDialog
+      destructive
+      loading={isPending}
+      onCancel={() => setConfirmDelete(false)}
+      onConfirm={() => { onDelete(db.id); setConfirmDelete(false); }}
+      open={confirmDelete}
+      title={`Delete DB container ${db.id.slice(0, 8)}?`}
+      description="The database container and its data will be permanently removed. This cannot be undone."
+    />
+    </>
   );
 }

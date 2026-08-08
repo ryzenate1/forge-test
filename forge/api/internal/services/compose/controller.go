@@ -223,8 +223,7 @@ func (c *GitOpsController) deployStack(ctx context.Context, stack *ComposeStack)
 	prevCompose := stack.ComposeYAML
 	prevCommit := stack.GitCommitSHA
 
-	client := daemon.NewClient()
-	deployResp, deployErr := client.ComposeDeploy(ctx, node.BaseURL, nodeCredential, daemon.ComposeDeployRequest{
+	deployResp, deployErr := c.daemon.ComposeDeploy(ctx, node.BaseURL, nodeCredential, daemon.ComposeDeployRequest{
 		StackID:     stack.ID,
 		ComposeYAML: composeYAML,
 		EnvVars:     stack.EnvVars,
@@ -235,7 +234,7 @@ func (c *GitOpsController) deployStack(ctx context.Context, stack *ComposeStack)
 	}
 	_ = deployResp
 
-	statusResp, statusErr := client.ComposeStatus(ctx, node.BaseURL, nodeCredential, stack.ID)
+	statusResp, statusErr := c.daemon.ComposeStatus(ctx, node.BaseURL, nodeCredential, stack.ID)
 	if statusErr != nil {
 		_ = c.store.ReleaseComposeStackClaim(ctx, stack.ID, c.workerID)
 		return fmt.Errorf("health check after deploy failed: %w", statusErr)
@@ -298,20 +297,19 @@ func (c *GitOpsController) rollbackDeploy(ctx context.Context, stack *ComposeSta
 		return fmt.Errorf("rollback: node credential not found: %w (original: %v)", err, originalErr)
 	}
 
-	client := daemon.NewClient()
-	stopResp, stopErr := client.ComposeStop(ctx, node.BaseURL, nodeCredential, stack.ID)
+	stopResp, stopErr := c.daemon.ComposeStop(ctx, node.BaseURL, nodeCredential, stack.ID)
 	if stopErr != nil {
 		return fmt.Errorf("rollback stop failed: %w (original: %v)", stopErr, originalErr)
 	}
 	_ = stopResp
 
-	deleteResp, delErr := client.ComposeDelete(ctx, node.BaseURL, nodeCredential, stack.ID)
+	deleteResp, delErr := c.daemon.ComposeDelete(ctx, node.BaseURL, nodeCredential, stack.ID)
 	if delErr != nil && !isNotFoundError(delErr) {
 		return fmt.Errorf("rollback delete failed: %w (original: %v)", delErr, originalErr)
 	}
 	_ = deleteResp
 
-	deployResp, deployErr := client.ComposeDeploy(ctx, node.BaseURL, nodeCredential, daemon.ComposeDeployRequest{
+	deployResp, deployErr := c.daemon.ComposeDeploy(ctx, node.BaseURL, nodeCredential, daemon.ComposeDeployRequest{
 		StackID:     stack.ID,
 		ComposeYAML: prevCompose,
 		EnvVars:     stack.EnvVars,

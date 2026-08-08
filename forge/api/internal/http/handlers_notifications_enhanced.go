@@ -79,7 +79,7 @@ func handleListAlertRules(svc *notificationsvc.Service) fiber.Handler {
 
 		rules, err := svc.ListAlertRules(ctx, tenantPtr, userPtr, entityTypePtr)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"alertRules": rules})
 	}
@@ -128,7 +128,7 @@ func handleCreateAlertRule(svc *notificationsvc.Service) fiber.Handler {
 
 		rule, err := svc.CreateAlertRule(ctx, req)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(rule)
 	}
@@ -179,7 +179,7 @@ func handleUpdateAlertRule(svc *notificationsvc.Service) fiber.Handler {
 
 		rule, err := svc.UpdateAlertRule(ctx, c.Params("id"), req)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(rule)
 	}
@@ -210,7 +210,7 @@ func handleListAlertStates(svc *notificationsvc.Service) fiber.Handler {
 
 		states, err := svc.ListActiveAlertStates(ctx, tenantPtr)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"alertStates": states})
 	}
@@ -236,7 +236,7 @@ func handleListNotificationPreferences(svc *notificationsvc.Service) fiber.Handl
 
 		prefs, err := svc.ListNotificationPreferences(ctx, userID, tenantPtr)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"preferences": prefs})
 	}
@@ -267,7 +267,7 @@ func handleCreateNotificationPreference(svc *notificationsvc.Service) fiber.Hand
 
 		pref, err := svc.CreateNotificationPreference(ctx, req)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(pref)
 	}
@@ -313,7 +313,7 @@ func handleUpdateNotificationPreference(svc *notificationsvc.Service) fiber.Hand
 
 		pref, err := svc.UpdateNotificationPreference(ctx, c.Params("id"), req)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(pref)
 	}
@@ -367,7 +367,7 @@ func handleTestNotification(svc *notificationsvc.Service) fiber.Handler {
 		}
 
 		if err := svc.SendTest(ctx, storeChannel); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 
 		return c.JSON(fiber.Map{"status": "test message sent"})
@@ -482,7 +482,7 @@ func handleCreateNotificationChannelEnhanced(svc *notificationsvc.Service) fiber
 
 		ch, err := svc.CreateChannel(ctx, storeReq)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(ch)
 	}
@@ -524,7 +524,7 @@ func handleUpdateNotificationChannelEnhanced(svc *notificationsvc.Service) fiber
 
 		ch, err := svc.UpdateChannel(ctx, c.Params("id"), storeReq)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(ch)
 	}

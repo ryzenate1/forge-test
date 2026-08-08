@@ -13,6 +13,7 @@ import {
   type NotificationChannelType,
 } from "@/lib/api/notifications";
 import { Btn, Card, CardHeader, EmptyState, Input, Pill, SectionHeader, Modal, Badge } from "@/components/admin/admin-ui";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 const CHANNEL_ICONS: Record<NotificationChannelType, typeof Bell> = {
   slack: MessageSquare,
@@ -44,6 +45,7 @@ const CHANNEL_COLORS: Record<NotificationChannelType, string> = {
 };
 
 export function ChannelsList() {
+  const [confirm, renderConfirm] = useConfirm();
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -259,7 +261,7 @@ export function ChannelsList() {
                           <Send size={14} /> Test
                         </Btn>
                         <Btn size="sm" tone="ghost" onClick={() => { 
-                          if (confirm("Delete this channel?")) deleteMut.mutate(ch.id); 
+                          void (async () => { if (await confirm({ title: `Delete notification channel ${ch.name}?`, description: "Notifications for this channel will stop. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMut.mutate(ch.id); })(); 
                         }}>
                           <Trash2 size={14} /> Delete
                         </Btn>
@@ -296,6 +298,7 @@ export function ChannelsList() {
           </div>
         </Modal>
       ) : null}
+      {renderConfirm()}
     </div>
   );
 }

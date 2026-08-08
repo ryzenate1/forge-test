@@ -19,11 +19,11 @@ import (
 type EnrollmentState string
 
 const (
-	EnrollmentPending    EnrollmentState = "pending"
-	EnrollmentApproved   EnrollmentState = "approved"
-	EnrollmentRejected   EnrollmentState = "rejected"
-	EnrollmentRevoked    EnrollmentState = "revoked"
-	EnrollmentExpired    EnrollmentState = "expired"
+	EnrollmentPending  EnrollmentState = "pending"
+	EnrollmentApproved EnrollmentState = "approved"
+	EnrollmentRejected EnrollmentState = "rejected"
+	EnrollmentRevoked  EnrollmentState = "revoked"
+	EnrollmentExpired  EnrollmentState = "expired"
 )
 
 // EnrollmentToken represents a single enrollment token's lifecycle state.
@@ -287,8 +287,8 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Token      string `json:"token"`
-		NodeID     string `json:"nodeId"`
+		Token         string `json:"token"`
+		NodeID        string `json:"nodeId"`
 		BeaconVersion string `json:"beaconVersion"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -334,9 +334,9 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enrolled":   true,
-		"nodeId":     body.NodeID,
-		"compatible": true,
+		"enrolled":     true,
+		"nodeId":       body.NodeID,
+		"compatible":   true,
 		"capabilities": s.collectCapabilities(),
 	})
 }

@@ -102,7 +102,7 @@ func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *c
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
 		if err := cronJobService.RescheduleJob(ctx, job); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(job)
 	})
@@ -167,7 +167,7 @@ func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *c
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
 		if err := cronJobService.RescheduleJob(ctx, job); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(job)
 	})
@@ -209,7 +209,7 @@ func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *c
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
 		if err := cronJobService.RescheduleJob(ctx, job); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(job)
 	})

@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { GanttChart, HeartPulse, Network, Plus, Target, Trash2, Zap, type LucideIcon } from "lucide-react";
 import { deleteJSON, fetchJSON, patchJSON, postJSON, putJSON } from "@/lib/api";
 import { AdminPageLayout, AdminSelect, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type Algorithm = "round_robin" | "least_connections" | "ip_hash" | "weighted_round_robin";
 type TargetStatus = "healthy" | "unhealthy" | "draining";
@@ -60,6 +61,7 @@ function formatAlgorithm(algorithm: Algorithm): string {
 
 export default function AdminLoadBalancerPage() {
   const queryClient = useQueryClient();
+  const [confirm, renderConfirm] = useConfirm();
   const [search, setSearch] = useState("");
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [editingGroup, setEditingGroup] = useState<TargetGroup | null>(null);
@@ -182,7 +184,7 @@ export default function AdminLoadBalancerPage() {
                   <div className="flex items-center gap-2">
                     <Pill tone={group.algorithm === "round_robin" ? "blue" : group.algorithm === "least_connections" ? "green" : group.algorithm === "ip_hash" ? "yellow" : "neutral"}>{formatAlgorithm(group.algorithm)}</Pill>
                     <div onClick={(event) => event.stopPropagation()}><Btn size="sm" tone="ghost" onClick={() => { setEditingGroup(group); setGroupForm({ name: group.name, algorithm: group.algorithm, port: group.port, protocol: group.protocol }); }}>Edit</Btn></div>
-                    <div onClick={(event) => event.stopPropagation()}><Btn size="sm" tone="danger" disabled={deleteGroupMutation.isPending} onClick={() => { if (confirm(`Delete target group ${group.name}?`)) deleteGroupMutation.mutate(group.id); }}><Trash2 size={12} /></Btn></div>
+                    <div onClick={(event) => event.stopPropagation()}><Btn size="sm" tone="danger" disabled={deleteGroupMutation.isPending} onClick={() => { void (async () => { if (await confirm({ title: `Delete target group ${group.name}?`, description: "Traffic will stop being routed through this group. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteGroupMutation.mutate(group.id); })(); }}><Trash2 size={12} /></Btn></div>
                   </div>
                 </div>
               ))}
@@ -204,6 +206,7 @@ export default function AdminLoadBalancerPage() {
       {showCreateGroup && <TargetGroupFormModal title="Create Target Group" form={groupForm} onChange={setGroupForm} onSave={() => createGroupMutation.mutate(groupForm)} onClose={() => setShowCreateGroup(false)} saving={createGroupMutation.isPending} />}
       {editingGroup && <TargetGroupFormModal title="Edit Target Group" form={groupForm} onChange={setGroupForm} onSave={() => updateGroupMutation.mutate({ id: editingGroup.id, data: groupForm })} onClose={() => setEditingGroup(null)} saving={updateGroupMutation.isPending} />}
       {showAddTarget && selectedGroup && <TargetFormModal form={targetForm} onChange={setTargetForm} onSave={() => addTargetMutation.mutate({ groupId: selectedGroup.id, data: targetForm })} onClose={() => setShowAddTarget(false)} saving={addTargetMutation.isPending} />}
+      {renderConfirm()}
     </AdminPageLayout>
   );
 }

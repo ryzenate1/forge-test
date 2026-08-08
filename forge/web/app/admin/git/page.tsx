@@ -100,8 +100,10 @@ function ProviderIcon({ provider }: { provider: string }) {
 }
 
 import { AdminPageLayout, AdminPageHeader, AdminTabs } from "@/components/admin/admin-ui";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 export default function GitPage() {
+  const [confirm, renderConfirm] = useConfirm();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [tab, setTab] = useState<Tab>("credentials");
@@ -271,7 +273,7 @@ export default function GitPage() {
                     </button>
                   )}
                   <button
-                    onClick={() => { if (confirm("Delete this credential?")) deleteCredential.mutate(cred.id); }}
+                    onClick={() => { void (async () => { if (await confirm({ title: "Delete this git credential?", description: "The stored credential will be removed. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteCredential.mutate(cred.id); })(); }}
                     className="inline-flex items-center gap-1 px-2 py-1 text-xs border rounded text-red-500 hover:bg-red-500/10"
                   >
                     <Trash2 className="w-3 h-3" /> Delete
@@ -341,7 +343,7 @@ export default function GitPage() {
                     <RefreshCw className={`w-3 h-3 ${loadingRepos === pt.id ? "animate-spin" : ""}`} /> Repos
                   </button>
                   <button
-                    onClick={() => { if (confirm("Disconnect this provider?")) disconnectProvider.mutate(pt.id); }}
+                    onClick={() => { void (async () => { if (await confirm({ title: "Disconnect this git provider?", description: "The provider connection will be removed from the panel. This cannot be undone.", danger: true, confirmLabel: "Disconnect" })) disconnectProvider.mutate(pt.id); })(); }}
                     className="inline-flex items-center gap-1 px-2 py-1 text-xs border rounded text-red-500 hover:bg-red-500/10"
                   >
                     <Trash2 className="w-3 h-3" /> Disconnect
@@ -428,7 +430,7 @@ export default function GitPage() {
                   )}
                 </div>
                 <button
-                  onClick={() => { if (confirm("Remove this git source?")) deleteSource.mutate(src.id); }}
+                  onClick={() => { void (async () => { if (await confirm({ title: "Remove this git source?", description: "The source deployment and its history will be removed. This cannot be undone.", danger: true, confirmLabel: "Remove" })) deleteSource.mutate(src.id); })(); }}
                   className="inline-flex items-center gap-1 px-2 py-1 text-xs border rounded text-red-500 hover:bg-red-500/10"
                 >
                   <Trash2 className="w-3 h-3" /> Remove
@@ -460,6 +462,7 @@ export default function GitPage() {
           )}
         </div>
       )}
+      {renderConfirm()}
     </AdminPageLayout>
   );
 }
@@ -576,6 +579,7 @@ function ProviderForm({
         onChange={(e) => setAccessToken(e.target.value)}
         className="w-full p-2 border rounded text-sm"
         type="password"
+        autoComplete="off"
       />
       {provider === "gitea" && (
         <input
@@ -591,6 +595,7 @@ function ProviderForm({
         onChange={(e) => setRefreshToken(e.target.value)}
         className="w-full p-2 border rounded text-sm"
         type="password"
+        autoComplete="off"
       />
       <input
         placeholder="Username (optional)"

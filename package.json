@@ -20,17 +20,32 @@
     "packages/*"
   ],
   "overrides": {
+    "brace-expansion": "5.0.8",
+    "dompurify": "$dompurify",
     "monaco-editor": {
-      "dompurify": "3.4.12"
+      "dompurify": "$dompurify"
     },
     "next": {
-      "postcss": "8.5.20"
-    }
+      "postcss": "$postcss",
+      "sharp": "$sharp"
+    },
+    "postcss": "$postcss",
+    "sharp": "$sharp"
+  },
+  "resolutions": {
+    "dompurify": "3.4.12",
+    "postcss": "8.5.22",
+    "sharp": "0.35.3"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
     "vite": "^8.1.5"
+  },
+  "devDependencies": {
+    "dompurify": "3.4.12",
+    "postcss": "8.5.22",
+    "sharp": "0.35.3"
   }
 }

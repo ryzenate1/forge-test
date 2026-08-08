@@ -18,6 +18,7 @@ import (
 	"gamepanel/forge/internal/auth"
 	"gamepanel/forge/internal/cloud"
 	"gamepanel/forge/internal/daemon"
+	"gamepanel/forge/internal/events"
 	"gamepanel/forge/internal/eventstore"
 	"gamepanel/forge/internal/services"
 	acmesvc "gamepanel/forge/internal/services/acme"
@@ -136,6 +137,7 @@ type Config struct {
 	RuntimeRegistry      *runtimesvc.Registry
 	WebAuthnService      *webauthn.Service
 	EventRelay           *eventstore.Relay
+	EventRegistry        *events.Registry
 
 	BackupSvc                  *backup.Service
 	AutoScaler                 *autoscaler.Service
@@ -217,6 +219,45 @@ func loginRateLimitKey(prefix, value string) string {
 var (
 	inMemLoginMu    sync.Mutex
 	inMemLoginCount = map[string]int{}
+)
+
+// nodeHeartbeatNonces is a shared replay-protection cache for node heartbeat
+// requests. It mirrors the /api/remote HMAC nonce store.
+var nodeHeartbeatNonces = newRemoteNonceStore()
+
+// verifyNodeTokenWithHMAC authenticates a v1 node-scoped request the way
+// /nodes/:id/heartbeat does: the bearer node token is verified against the
+// store, then the request must carry a fresh one-time HMAC signature.
+func verifyNodeTokenWithHMAC(ctx context.Context, cfg Config, c *fiber.Ctx, nodeID, token string) error {
+	if strings.TrimSpace(token) == "" {
+		return fiber.NewError(fiber.StatusUnauthorized, "invalid node token")
+	}
+	ok, err := cfg.Store.VerifyNodeToken(ctx, nodeID, token)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "token verification failed")
+	}
+	if !ok {
+		return fiber.NewError(fiber.StatusUnauthorized, "invalid node token")
+	}
+	if err := verifyRemoteHMAC(c, token, nodeHeartbeatNonces); err != nil {
+		return fiber.NewError(fiber.StatusForbidden, err.Error())
+	}
+	return nil
+}
+
+// 2FA checkpoint hardening: per-account attempt counting with lockout and a
+// single-use consumed set for confirmation tokens.
+const (
+	twoFactorMaxAttempts = 10
+	twoFactorLockout     = 15 * time.Minute
+	twoFactorTokenTTL    = 5 * time.Minute
+)
+
+var (
+	inMem2FAMu        sync.Mutex
+	inMem2FACount     = map[string]int{}
+	inMem2FALockUntil = map[string]time.Time{}
+	inMem2FAConsumed  = map[string]time.Time{}
 )
 
 func checkLoginRateLimit(ctx context.Context, cfg Config, c *fiber.Ctx, email string) error {
@@ -306,6 +347,109 @@ func clearLoginFailures(ctx context.Context, cfg Config, c *fiber.Ctx, email str
 	for _, key := range keys {
 		delete(inMemLoginCount, key)
 	}
+}
+
+func twoFactorAttemptKey(userID string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(userID))))
+	return "2fa:attempts:" + hex.EncodeToString(sum[:])
+}
+
+func twoFactorLockKey(userID string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(userID))))
+	return "2fa:lock:" + hex.EncodeToString(sum[:])
+}
+
+// checkTwoFactorLockout rejects 2FA checkpoint attempts while the per-account
+// lockout (10 failures → 15 minutes) is active.
+func checkTwoFactorLockout(ctx context.Context, cfg Config, userID string) error {
+	if cfg.Redis != nil && cfg.RedisEnabled {
+		locked, err := cfg.Redis.Get(ctx, twoFactorLockKey(userID)).Int()
+		if err == nil && locked == 1 {
+			return fiber.NewError(fiber.StatusTooManyRequests, "too many verification attempts; try again later")
+		}
+		return nil
+	}
+	inMem2FAMu.Lock()
+	defer inMem2FAMu.Unlock()
+	if until, ok := inMem2FALockUntil[userID]; ok && time.Now().Before(until) {
+		return fiber.NewError(fiber.StatusTooManyRequests, "too many verification attempts; try again later")
+	}
+	return nil
+}
+
+func recordTwoFactorFailure(ctx context.Context, cfg Config, userID string) {
+	now := time.Now()
+	if cfg.Redis != nil && cfg.RedisEnabled {
+		key := twoFactorAttemptKey(userID)
+		count, err := cfg.Redis.Incr(ctx, key).Result()
+		if err != nil {
+			return
+		}
+		if count == 1 {
+			_ = cfg.Redis.Expire(ctx, key, twoFactorLockout).Err()
+		}
+		if count >= twoFactorMaxAttempts {
+			_ = cfg.Redis.Set(ctx, twoFactorLockKey(userID), 1, twoFactorLockout).Err()
+			_ = cfg.Redis.Del(ctx, key).Err()
+		}
+		return
+	}
+	inMem2FAMu.Lock()
+	defer inMem2FAMu.Unlock()
+	inMem2FACount[userID]++
+	if inMem2FACount[userID] >= twoFactorMaxAttempts {
+		inMem2FALockUntil[userID] = now.Add(twoFactorLockout)
+		delete(inMem2FACount, userID)
+	}
+}
+
+func clearTwoFactorFailures(ctx context.Context, cfg Config, userID string) {
+	if cfg.Redis != nil && cfg.RedisEnabled {
+		_ = cfg.Redis.Del(ctx, twoFactorAttemptKey(userID), twoFactorLockKey(userID)).Err()
+		return
+	}
+	inMem2FAMu.Lock()
+	defer inMem2FAMu.Unlock()
+	delete(inMem2FACount, userID)
+	delete(inMem2FALockUntil, userID)
+}
+
+// consume2FAConfirmation atomically marks a confirmation-token jti as used so
+// the token cannot be replayed. Returns false when it was already consumed.
+func consume2FAConfirmation(ctx context.Context, cfg Config, jti string, ttl time.Duration) bool {
+	if cfg.Redis != nil && cfg.RedisEnabled {
+		key := "2fa:consumed:" + jti
+		set, err := cfg.Redis.SetNX(ctx, key, 1, ttl).Result()
+		return err == nil && set
+	}
+	inMem2FAMu.Lock()
+	defer inMem2FAMu.Unlock()
+	now := time.Now()
+	for value, expiry := range inMem2FAConsumed {
+		if !expiry.After(now) {
+			delete(inMem2FAConsumed, value)
+		}
+	}
+	if _, ok := inMem2FAConsumed[jti]; ok {
+		return false
+	}
+	inMem2FAConsumed[jti] = now.Add(ttl)
+	return true
+}
+
+// recordUserSession persists a JWT session row so /account/sessions listing
+// and revocation operate on real JWT sessions. session_token_hash holds the
+// SHA-256 of the JWT's jti claim.
+func recordUserSession(ctx context.Context, cfg Config, c *fiber.Ctx, token string) {
+	if cfg.Store == nil {
+		return
+	}
+	claims, err := parseToken(cfg.AuthSecret, token)
+	if err != nil || claims.Sub == "" || claims.JTI == "" {
+		return
+	}
+	sum := sha256.Sum256([]byte(claims.JTI))
+	_, _ = cfg.Store.CreateUserSession(ctx, claims.Sub, hex.EncodeToString(sum[:]), c.IP(), c.Get("User-Agent"), configuredTokenTTL(cfg))
 }
 
 type CreateServerRequest struct {
@@ -733,7 +877,10 @@ func NewServer(cfg Config) *fiber.App {
 				code = e.Code
 			}
 			msg := err.Error()
-			if cfg.AppEnv == "production" && code == fiber.StatusInternalServerError {
+			// Sanitize every 5xx in production. 4xx messages may legitimately
+			// carry validation details, but 5xx bodies must never echo internal
+			// error text (SQL errors, host paths, provider responses).
+			if cfg.AppEnv == "production" && code >= fiber.StatusInternalServerError {
 				msg = "an internal error occurred"
 			}
 			return c.Status(code).JSON(fiber.Map{"error": msg})
@@ -743,6 +890,14 @@ func NewServer(cfg Config) *fiber.App {
 	// Panic recovery middleware - catches panics and returns 500
 	// Stack traces are only enabled in non-production for debugging
 	app.Use(fiberrecover.New(fiberrecover.Config{EnableStackTrace: cfg.AppEnv != "production"}))
+
+	// Attach the Config to every request so request-scoped helpers
+	// (respondInternalError, logInternalError, isProductionEnv) can log
+	// internal failures and decide whether error details may be exposed.
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals(configLocalKey, cfg)
+		return c.Next()
+	})
 
 	// CORS middleware — registered before any route-specific middleware so that
 	// preflight (OPTIONS) requests and CORS headers are applied to every route
@@ -810,6 +965,14 @@ func NewServer(cfg Config) *fiber.App {
 	mtlsMw := MTLSAuthMiddleware(mtlsCfg)
 
 	v1 := app.Group("/api/v1", apiIPAccess, mtlsMw)
+	// Panel origin is set before any route so public mutations (login, setup,
+	// password reset, session exchange/refresh) can run origin validation.
+	v1.Use(func(c *fiber.Ctx) error {
+		if cfg.PanelURL != "" {
+			c.Locals("panelOrigin", cfg.PanelURL)
+		}
+		return c.Next()
+	})
 	v1.Post("/csp-report", authLimiter, func(c *fiber.Ctx) error {
 		contentType := strings.ToLower(strings.TrimSpace(strings.SplitN(c.Get(fiber.HeaderContentType), ";", 2)[0]))
 		switch contentType {
@@ -924,11 +1087,11 @@ func NewServer(cfg Config) *fiber.App {
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		var jsonData map[string]any
 		if err := json.Unmarshal(data, &jsonData); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(jsonData)
 	})
@@ -999,15 +1162,72 @@ func NewServer(cfg Config) *fiber.App {
 		if token == "" || subtle.ConstantTimeCompare([]byte(c.Get("Authorization")), []byte(expected)) != 1 {
 			return fiber.NewError(fiber.StatusUnauthorized, "authentication required")
 		}
+		var body strings.Builder
+		body.WriteString("# HELP game_panel_api_up API process is serving the metrics endpoint, 1 when available.\n")
+		body.WriteString("# TYPE game_panel_api_up gauge\n")
+		body.WriteString("game_panel_api_up 1\n")
+		body.WriteString("# HELP game_panel_api_uptime_seconds API process uptime.\n")
+		body.WriteString("# TYPE game_panel_api_uptime_seconds gauge\n")
+		body.WriteString("game_panel_api_uptime_seconds " + strconv.FormatFloat(time.Since(started).Seconds(), 'f', 3, 64) + "\n")
+
+		// Reconciliation counters tracked by the reconciler service. Emitted
+		// only when the reconciler is wired so alert rules referencing them
+		// never see a missing series from a partially configured API.
+		if cfg.Reconciler != nil {
+			metrics := cfg.Reconciler.Metrics()
+			counters := []struct {
+				name  string
+				help  string
+				value uint64
+			}{
+				{"game_panel_api_reconciliation_total", "Cumulative reconciliation runs.", metrics.ReconciliationCount},
+				{"game_panel_api_reconciliation_failures_total", "Cumulative reconciliation runs that failed.", metrics.ReconciliationFailures},
+				{"game_panel_api_node_refresh_failures_total", "Cumulative node refresh failures.", metrics.NodeRefreshFailures},
+				{"game_panel_api_server_sync_failures_total", "Cumulative server sync failures.", metrics.ServerSyncFailures},
+				{"game_panel_api_server_reconciliation_total", "Cumulative reconciled servers.", metrics.ServerReconciliationTotal},
+				{"game_panel_api_node_reconciliation_total", "Cumulative reconciled nodes.", metrics.NodeReconciliationTotal},
+				{"game_panel_api_health_recovery_attempts_total", "Cumulative unhealthy target recovery attempts.", metrics.HealthRecoveryAttempts},
+				{"game_panel_api_health_recovery_failures_total", "Cumulative unhealthy target recovery failures.", metrics.HealthRecoveryFailures},
+				{"game_panel_api_drifts_detected_total", "Cumulative drifts detected.", metrics.DriftsDetected},
+				{"game_panel_api_plans_generated_total", "Cumulative reconcile plans generated.", metrics.PlansGenerated},
+				{"game_panel_api_auto_reconcile_runs_total", "Cumulative automatic reconcile runs.", metrics.AutoReconcileRuns},
+			}
+			for _, counter := range counters {
+				body.WriteString("# HELP " + counter.name + " " + counter.help + "\n")
+				body.WriteString("# TYPE " + counter.name + " counter\n")
+				body.WriteString(counter.name + " " + strconv.FormatUint(counter.value, 10) + "\n")
+			}
+		}
+
+		if cfg.EventRegistry != nil {
+			em := cfg.EventRegistry.Metrics()
+			eventCounters := []struct {
+				name  string
+				help  string
+				value uint64
+			}{
+				{"game_panel_api_events_published_total", "Cumulative events published to the event registry.", em.EventsPublishedTotal},
+				{"game_panel_api_events_delivered_total", "Cumulative events delivered to subscribers.", em.EventsDeliveredTotal},
+				{"game_panel_api_event_handler_failures_total", "Cumulative event handler failures.", em.EventHandlerFailuresTotal},
+				{"game_panel_api_events_dead_lettered_total", "Cumulative events moved to the dead-letter queue.", em.EventsDeadLetteredTotal},
+			}
+			for _, counter := range eventCounters {
+				body.WriteString("# HELP " + counter.name + " " + counter.help + "\n")
+				body.WriteString("# TYPE " + counter.name + " counter\n")
+				body.WriteString(counter.name + " " + strconv.FormatUint(counter.value, 10) + "\n")
+			}
+			if len(em.EventsByType) > 0 {
+				body.WriteString("# HELP game_panel_api_events_by_type_total Events published per event type.\n")
+				body.WriteString("# TYPE game_panel_api_events_by_type_total counter\n")
+				for eventType, count := range em.EventsByType {
+					labels := "event_type=\"" + strings.ReplaceAll(eventType, `"`, `\"`) + "\""
+					body.WriteString("game_panel_api_events_by_type_total{" + labels + "} " + strconv.FormatUint(count, 10) + "\n")
+				}
+			}
+		}
+
 		c.Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		return c.SendString(
-			"# HELP game_panel_api_up API process is serving the metrics endpoint, 1 when available.\n" +
-				"# TYPE game_panel_api_up gauge\n" +
-				"game_panel_api_up 1\n" +
-				"# HELP game_panel_api_uptime_seconds API process uptime.\n" +
-				"# TYPE game_panel_api_uptime_seconds gauge\n" +
-				"game_panel_api_uptime_seconds " + strconv.FormatFloat(time.Since(started).Seconds(), 'f', 3, 64) + "\n",
-		)
+		return c.SendString(body.String())
 	})
 
 	v1.Post("/nodes/:id/heartbeat", func(c *fiber.Ctx) error {
@@ -1026,6 +1246,13 @@ func NewServer(cfg Config) *fiber.App {
 		}
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "invalid node token")
+		}
+		// Replay protection: heartbeats must carry a fresh timestamp (within
+		// ±5 minutes), a one-time nonce, and an HMAC over method, URI,
+		// timestamp, nonce, and body keyed with the node token — the same
+		// scheme /api/remote endpoints use.
+		if err := verifyRemoteHMAC(c, token, nodeHeartbeatNonces); err != nil {
+			return fiber.NewError(fiber.StatusForbidden, err.Error())
 		}
 		var req NodeHeartbeatRequest
 		if err := c.BodyParser(&req); err != nil {
@@ -1058,13 +1285,129 @@ func NewServer(cfg Config) *fiber.App {
 		return c.JSON(fiber.Map{"ok": true, "node": node})
 	})
 
+	// POST /api/v1/nodes/capabilities — Beacon capability report webhook.
+	// Beacon signs the request with the same HMAC scheme as the heartbeat
+	// (method, URI, timestamp, nonce, body keyed with the node token), so the
+	// route authenticates with VerifyNodeToken + verifyRemoteHMAC instead of
+	// the panel JWT middleware.
+	v1.Post("/nodes/capabilities", func(c *fiber.Ctx) error {
+		if cfg.Store == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+		}
+		token := strings.TrimPrefix(c.Get("Authorization"), "Bearer ")
+		if token == c.Get("Authorization") {
+			token = c.Get("X-Node-Token")
+		}
+		ctx, cancel := requestContext()
+		defer cancel()
+		var report struct {
+			NodeID        string          `json:"nodeId"`
+			BeaconVersion string          `json:"beaconVersion"`
+			OS            string          `json:"os"`
+			Architecture  string          `json:"architecture"`
+			CPUThreads    int             `json:"cpuThreads"`
+			MemoryMB      uint64          `json:"memoryMb"`
+			DiskMB        uint64          `json:"diskMb"`
+			UptimeSeconds int64           `json:"uptimeSeconds"`
+			Capabilities  json.RawMessage `json:"capabilities"`
+			RuntimeInfo   *struct {
+				DockerVersion   string `json:"dockerVersion"`
+				DockerAvailable bool   `json:"dockerAvailable"`
+				DockerStatus    string `json:"dockerStatus"`
+				RuntimeProvider string `json:"runtimeProvider"`
+			} `json:"runtimeInfo"`
+			BuildInfo *struct {
+				DockerBuildEnabled bool `json:"dockerBuildEnabled"`
+				NixpacksEnabled    bool `json:"nixpacksEnabled"`
+			} `json:"buildInfo"`
+			ComposeInfo *struct {
+				ComposeVersion string `json:"composeVersion"`
+				ComposeEnabled bool   `json:"composeEnabled"`
+				StackCount     int    `json:"stackCount"`
+			} `json:"composeInfo"`
+			StorageInfo *struct {
+				LocalBackups    bool `json:"localBackups"`
+				S3Backups       bool `json:"s3Backups"`
+				TransferEnabled bool `json:"transferEnabled"`
+			} `json:"storageInfo"`
+			GatewayInfo *struct {
+				SFTPEnabled      bool `json:"sftpEnabled"`
+				WebSocketEnabled bool `json:"webSocketEnabled"`
+				ConsoleEnabled   bool `json:"consoleEnabled"`
+			} `json:"gatewayInfo"`
+			DatabaseInfo *struct {
+				ProvisioningEnabled bool `json:"provisioningEnabled"`
+			} `json:"databaseInfo"`
+			FetchedAt string `json:"fetchedAt"`
+		}
+		if err := c.BodyParser(&report); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid report")
+		}
+		if strings.TrimSpace(report.NodeID) == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "nodeId is required")
+		}
+		// Auth checks mirror /nodes/:id/heartbeat: node token first, then HMAC.
+		if err := verifyNodeTokenWithHMAC(ctx, cfg, c, report.NodeID, token); err != nil {
+			return err
+		}
+		fetchedAt := time.Now().UTC()
+		if report.FetchedAt != "" {
+			if t, err := time.Parse(time.RFC3339, report.FetchedAt); err == nil {
+				fetchedAt = t
+			}
+		}
+		var runtimeStatus, runtimeVersion, runtimeProvider, composeVersion string
+		var stackCount int
+		if report.RuntimeInfo != nil {
+			runtimeStatus = report.RuntimeInfo.DockerStatus
+			runtimeVersion = report.RuntimeInfo.DockerVersion
+			runtimeProvider = report.RuntimeInfo.RuntimeProvider
+		}
+		if report.ComposeInfo != nil {
+			composeVersion = report.ComposeInfo.ComposeVersion
+			stackCount = report.ComposeInfo.StackCount
+		}
+		nc := &store.NodeCapability{
+			NodeID:                      report.NodeID,
+			BeaconVersion:               report.BeaconVersion,
+			OS:                          report.OS,
+			Architecture:                report.Architecture,
+			CPUThreads:                  report.CPUThreads,
+			MemoryMB:                    int64(report.MemoryMB),
+			DiskMB:                      int64(report.DiskMB),
+			UptimeSeconds:               report.UptimeSeconds,
+			RawReport:                   report.Capabilities,
+			FetchedAt:                   fetchedAt,
+			RuntimeAvailable:            report.RuntimeInfo != nil && report.RuntimeInfo.DockerAvailable,
+			RuntimeStatus:               runtimeStatus,
+			RuntimeVersion:              runtimeVersion,
+			RuntimeProvider:             runtimeProvider,
+			DockerBuildEnabled:          report.BuildInfo != nil && report.BuildInfo.DockerBuildEnabled,
+			NixpacksEnabled:             report.BuildInfo != nil && report.BuildInfo.NixpacksEnabled,
+			ComposeEnabled:              report.ComposeInfo != nil && report.ComposeInfo.ComposeEnabled,
+			ComposeVersion:              composeVersion,
+			StackCount:                  stackCount,
+			LocalBackups:                report.StorageInfo != nil && report.StorageInfo.LocalBackups,
+			S3Backups:                   report.StorageInfo != nil && report.StorageInfo.S3Backups,
+			TransferEnabled:             report.StorageInfo != nil && report.StorageInfo.TransferEnabled,
+			SFTPEnabled:                 report.GatewayInfo != nil && report.GatewayInfo.SFTPEnabled,
+			WebSocketEnabled:            report.GatewayInfo != nil && report.GatewayInfo.WebSocketEnabled,
+			ConsoleEnabled:              report.GatewayInfo != nil && report.GatewayInfo.ConsoleEnabled,
+			DatabaseProvisioningEnabled: report.DatabaseInfo != nil && report.DatabaseInfo.ProvisioningEnabled,
+		}
+		if err := cfg.Store.UpsertNodeCapability(ctx, nc); err != nil {
+			return respondInternalError(c, err)
+		}
+		return c.JSON(fiber.Map{"accepted": true})
+	})
+
 	type CheckpointRequest struct {
 		ConfirmationToken string `json:"confirmationToken"`
 		Code              string `json:"code"`
 		RecoveryToken     string `json:"recoveryToken"`
 	}
 
-	v1.Post("/auth/login", authLimiter, CaptchaMiddleware(cfg), func(c *fiber.Ctx) error {
+	v1.Post("/auth/login", publicMutationOriginCheck(LoadSessionCookieConfig()), authLimiter, CaptchaMiddleware(cfg), func(c *fiber.Ctx) error {
 		var req LoginRequest
 		if err := c.BodyParser(&req); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
@@ -1088,7 +1431,7 @@ func NewServer(cfg Config) *fiber.App {
 		}
 
 		if user.UseTOTP {
-			confToken, err := issue2FAConfirmationToken(cfg.AuthSecret, user.ID)
+			confToken, err := issue2FAConfirmationToken(cfg.AuthSecret, user.ID, c.IP(), c.Get("User-Agent"))
 			if err != nil {
 				return fiber.NewError(fiber.StatusInternalServerError, "could not issue confirmation token")
 			}
@@ -1102,6 +1445,7 @@ func NewServer(cfg Config) *fiber.App {
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not issue token")
 		}
+		recordUserSession(ctx, cfg, c, token)
 
 		// Always set HttpOnly session and CSRF cookies for browser clients
 		csrfToken, err := generateCSRFToken()
@@ -1117,7 +1461,7 @@ func NewServer(cfg Config) *fiber.App {
 		})
 	})
 
-	v1.Post("/auth/login/checkpoint", authLimiter, func(c *fiber.Ctx) error {
+	v1.Post("/auth/login/checkpoint", publicMutationOriginCheck(LoadSessionCookieConfig()), authLimiter, func(c *fiber.Ctx) error {
 		var req CheckpointRequest
 		if err := c.BodyParser(&req); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
@@ -1129,20 +1473,48 @@ func NewServer(cfg Config) *fiber.App {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
 
-		userID, err := parse2FAConfirmationToken(cfg.AuthSecret, req.ConfirmationToken)
+		claims, err := parse2FAConfirmationToken(cfg.AuthSecret, req.ConfirmationToken)
 		if err != nil {
 			return fiber.NewError(fiber.StatusUnauthorized, err.Error())
+		}
+
+		// The confirmation token is bound to the IP/user agent it was issued
+		// to; replaying it from another client is rejected.
+		if claims.IP != "" && claims.IP != c.IP() {
+			return fiber.NewError(fiber.StatusUnauthorized, "confirmation token was issued to a different client")
+		}
+		if claims.UA != "" && claims.UA != truncateUserAgent(c.Get("User-Agent")) {
+			return fiber.NewError(fiber.StatusUnauthorized, "confirmation token was issued to a different client")
+		}
+
+		// Per-account brute-force lockout (10 failures → 15 minutes).
+		if err := checkTwoFactorLockout(c.Context(), cfg, claims.Sub); err != nil {
+			return err
+		}
+
+		// Single-use: consume the token's jti before verification so the same
+		// token cannot be replayed to brute force the code.
+		if !consume2FAConfirmation(c.Context(), cfg, claims.JTI, twoFactorTokenTTL) {
+			return fiber.NewError(fiber.StatusUnauthorized, "confirmation token has already been used")
 		}
 
 		ctx, cancel := requestContext()
 		defer cancel()
 
-		err = cfg.Store.VerifyTwoFactorCheckpoint(ctx, userID, req.Code, req.RecoveryToken)
-		if err != nil {
+		// The confirmation token alone proves nothing beyond knowledge of the
+		// password: it is handed to the client by /auth/login. The actual 2FA
+		// factor (TOTP code or single-use recovery/backup code) must be
+		// verified here before a session can be minted.
+		if req.Code == "" && req.RecoveryToken == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "verification code is required")
+		}
+		if err := cfg.Store.VerifyTwoFactorCheckpoint(ctx, claims.Sub, req.Code, req.RecoveryToken); err != nil {
+			recordTwoFactorFailure(c.Context(), cfg, claims.Sub)
 			return fiber.NewError(fiber.StatusUnauthorized, err.Error())
 		}
+		clearTwoFactorFailures(ctx, cfg, claims.Sub)
 
-		user, err := cfg.Store.GetUserByID(ctx, userID)
+		user, err := cfg.Store.GetUserByID(ctx, claims.Sub)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not retrieve user details")
 		}
@@ -1151,6 +1523,7 @@ func NewServer(cfg Config) *fiber.App {
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not issue token")
 		}
+		recordUserSession(ctx, cfg, c, token)
 
 		// Always set HttpOnly session and CSRF cookies for browser clients
 		csrfToken, err := generateCSRFToken()
@@ -1232,7 +1605,52 @@ func NewServer(cfg Config) *fiber.App {
 		Origins: getWebSocketAllowedOrigins(cfg),
 	}))
 
-	remote := app.Group("/api/remote", remoteNodeMiddleware(cfg, nodeRegistry))
+	// POST /api/edge/connect — Beacon edge-agent registration. The beacon
+	// posts here (Bearer node token, no HMAC) when it wants a live edge
+	// channel for console/control-plane events.
+	app.Post("/api/edge/connect", apiIPAccess, mtlsMw, func(c *fiber.Ctx) error {
+		if cfg.Store == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+		}
+		token := strings.TrimPrefix(c.Get("Authorization"), "Bearer ")
+		if token == c.Get("Authorization") {
+			token = c.Get("X-Node-Token")
+		}
+		var req struct {
+			NodeID string `json:"nodeId"`
+		}
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"connected": false,
+				"message":   "invalid request body",
+			})
+		}
+		if strings.TrimSpace(req.NodeID) == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"connected": false,
+				"message":   "nodeId is required",
+			})
+		}
+		ctx, cancel := requestContext()
+		defer cancel()
+		ok, err := cfg.Store.VerifyNodeToken(ctx, req.NodeID, token)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "token verification failed")
+		}
+		if !ok {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"connected": false,
+				"message":   "invalid node token",
+			})
+		}
+		return c.JSON(fiber.Map{
+			"connected": true,
+			"nodeId":    req.NodeID,
+			"message":   "connected",
+		})
+	})
+
+	remote := app.Group("/api/remote", apiIPAccess, mtlsMw, remoteNodeMiddleware(cfg, nodeRegistry))
 	remote.Get("/servers", func(c *fiber.Ctx) error {
 		node, ok := c.Locals("remoteNode").(store.Node)
 		if !ok {
@@ -1528,10 +1946,10 @@ func NewServer(cfg Config) *fiber.App {
 		}
 		_, err := cfg.Store.Exec(crashCtx, `INSERT INTO server_crash_events
 			(id, server_id, node_id, exit_code, oom_killed, auto_restarted, created_at)
-			VALUES ($1, $2, '', $3, $4, $5, NOW())`,
+			SELECT $1, s.id, s.node_id, $3, $4, $5, NOW() FROM servers s WHERE s.id = $2`,
 			crashID, c.Params("id"), req.ExitCode, req.OOMKilled, req.AutoRestart)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"ok": true, "id": crashID})
 	})
@@ -1565,7 +1983,17 @@ func NewServer(cfg Config) *fiber.App {
 
 	var sessMw fiber.Handler
 	if cfg.SessionStore != nil {
-		sessMw = auth.SessionMiddleware(cfg.SessionStore)
+		// Dual-session-model guard: the panel issues JWT session cookies signed
+		// with AuthSecret. Opaque sessions are only consulted when the cookie
+		// does NOT parse as a panel JWT, so the JWT model keeps working and the
+		// opaque middleware no longer 401s every authenticated request.
+		sessMw = auth.SessionMiddleware(cfg.SessionStore, func(token string) bool {
+			if cfg.AuthSecret == "" {
+				return false
+			}
+			_, err := parseToken(cfg.AuthSecret, token)
+			return err == nil
+		})
 	} else {
 		sessMw = func(c *fiber.Ctx) error { return c.Next() }
 	}

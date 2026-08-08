@@ -286,7 +286,7 @@ func registerAppHostingRoutes(protected fiber.Router, cfg Config, appSvc *apphos
 		}
 		services, err := appSvc.ListServices(ctx, c.Params("id"), app.OrgID)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": services})
 	})
@@ -656,7 +656,7 @@ func registerAppHostingRoutes(protected fiber.Router, cfg Config, appSvc *apphos
 		}
 		completed, err := appBackupSvc.GetBackupJob(ctx, job.ID)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(completed)
 	})

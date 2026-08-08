@@ -130,6 +130,7 @@ export default function GitProvidersPage() {
               <input
                 className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
                 type="password"
+                autoComplete="off"
                 placeholder="Personal access token"
                 value={connectForm.accessToken}
                 onChange={(e) => setConnectForm({ ...connectForm, accessToken: e.target.value })}

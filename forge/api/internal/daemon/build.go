@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -272,6 +273,56 @@ type BuildCapability struct {
 	NixpacksEnabled    bool `json:"nixpacksEnabled"`
 }
 
+const MinBeaconVersion = "1.0.0"
+
+func CheckBeaconVersionCompatibility(beaconVersion string) error {
+	if beaconVersion == "" {
+		return fmt.Errorf("beacon version is empty")
+	}
+	if cmp := compareVersions(beaconVersion, MinBeaconVersion); cmp < 0 {
+		return fmt.Errorf("beacon version %s is below minimum required version %s", beaconVersion, MinBeaconVersion)
+	}
+	return nil
+}
+
+func compareVersions(left, right string) int {
+	parse := func(value string) ([3]int, error) {
+		var result [3]int
+		value = strings.TrimPrefix(strings.TrimSpace(value), "v")
+		value = strings.SplitN(value, "+", 2)[0]
+		value = strings.SplitN(value, "-", 2)[0]
+		parts := strings.Split(value, ".")
+		if len(parts) != 3 {
+			return result, fmt.Errorf("version must contain three numeric components")
+		}
+		for i, part := range parts {
+			n, err := strconv.Atoi(part)
+			if err != nil || n < 0 || part == "" || (len(part) > 1 && part[0] == '0') {
+				return result, fmt.Errorf("invalid version component")
+			}
+			result[i] = n
+		}
+		return result, nil
+	}
+	a, err := parse(left)
+	if err != nil {
+		return -2
+	}
+	b, err := parse(right)
+	if err != nil {
+		return -2
+	}
+	for i := range a {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	return 0
+}
+
 func (c *Client) GetNodeCapabilities(ctx context.Context, baseURL, nodeToken string) (*CapabilitiesResponse, error) {
 	url := strings.TrimRight(baseURL, "/") + "/api/capabilities"
 	request, err := c.newRequest(ctx, nodeToken, http.MethodGet, url, nil)
@@ -289,6 +340,9 @@ func (c *Client) GetNodeCapabilities(ctx context.Context, baseURL, nodeToken str
 	var result CapabilitiesResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode capabilities response: %w", err)
+	}
+	if err := CheckBeaconVersionCompatibility(result.BeaconVersion); err != nil {
+		return nil, fmt.Errorf("beacon version check failed: %w", err)
 	}
 	return &result, nil
 }

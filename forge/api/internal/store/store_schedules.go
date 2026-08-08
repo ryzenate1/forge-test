@@ -283,7 +283,31 @@ func (s *Store) CreateScheduleTask(ctx context.Context, serverID, scheduleID str
 		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
 	`, taskID, scheduleID, req.Sequence, strings.TrimSpace(req.Action), string(payloadRaw), req.TimeOffsetSeconds, req.ContinueOnFailure)
 	if err != nil {
-		return ScheduleTask{}, err
+		// Retry on a unique-violation race: another caller computed the same
+		// next sequence. Bump the sequence and try again.
+		if isUniqueViolation(err) != nil {
+			for attempt := 0; attempt < 5; attempt++ {
+				if req.Sequence <= 0 {
+					req.Sequence = 1
+				}
+				req.Sequence++
+				_, err = s.db.Exec(ctx, `
+					INSERT INTO schedule_tasks (id, schedule_id, sequence, action, payload, time_offset_seconds, continue_on_failure)
+					VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+				`, taskID, scheduleID, req.Sequence, strings.TrimSpace(req.Action), string(payloadRaw), req.TimeOffsetSeconds, req.ContinueOnFailure)
+				if err == nil {
+					break
+				}
+				if isUniqueViolation(err) == nil {
+					return ScheduleTask{}, err
+				}
+			}
+			if err != nil {
+				return ScheduleTask{}, err
+			}
+		} else {
+			return ScheduleTask{}, err
+		}
 	}
 	_ = s.AppendAudit(ctx, actorID, "schedule task created", "server", &serverID, fmt.Sprintf(`{"scheduleId":"%s","taskId":"%s"}`, scheduleID, taskID))
 

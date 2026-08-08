@@ -126,7 +126,7 @@ func registerAdminExtras(protected fiber.Router, cfg Config, probe *nodeprobe.Se
 		// existing secret. Consumers receive the complete credential exactly once.
 		token, err := cfg.Store.RotateNodeToken(ctx, node.ID, actorID)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{
 			"token":  token,

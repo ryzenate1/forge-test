@@ -18,7 +18,10 @@ func TestEdgeAgentInitialState(t *testing.T) {
 }
 
 func TestEdgeAgentStartStop(t *testing.T) {
-	agent := NewEdgeAgent("http://panel:8080", "token", "node-1", "1.0.0")
+	server := newEdgeConnectServer(t)
+	defer server.Close()
+	agent := NewEdgeAgent(server.URL, "token", "node-1", "1.0.0")
+	agent.httpClient = server.Client()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -35,6 +38,44 @@ func TestEdgeAgentStartStop(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("agent did not stop")
 	}
+}
+
+func TestEdgeAgentStaysDisabledWithoutEdgeEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	agent := NewEdgeAgent(server.URL, "token", "node-1", "1.0.0")
+	agent.httpClient = server.Client()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		agent.Start(ctx)
+		close(done)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if state := agent.State(); state != EdgeStateDisconnected {
+		t.Fatalf("expected honest disconnected state without an edge endpoint, got %s", state)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("agent did not stop")
+	}
+}
+
+func newEdgeConnectServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/edge/connect" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(connectResponse{Connected: true, NodeID: "node-1"})
+	}))
+	return server
 }
 
 func TestEdgeAgentReconnectTriggers(t *testing.T) {
@@ -79,7 +120,10 @@ func TestEdgeAgentConnectNow(t *testing.T) {
 }
 
 func TestEdgeAgentCallbacks(t *testing.T) {
-	agent := NewEdgeAgent("http://panel:8080", "token", "node-1", "1.0.0")
+	server := newEdgeConnectServer(t)
+	defer server.Close()
+	agent := NewEdgeAgent(server.URL, "token", "node-1", "1.0.0")
+	agent.httpClient = server.Client()
 	var connectCount int32
 	var disconnectCount int32
 	agent.onConnect = func() {
@@ -89,12 +133,20 @@ func TestEdgeAgentCallbacks(t *testing.T) {
 		atomic.AddInt32(&disconnectCount, 1)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	go agent.Start(ctx)
-	time.Sleep(50 * time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		agent.Start(ctx)
+		close(done)
+	}()
+	time.Sleep(100 * time.Millisecond)
 	cancel()
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("agent did not stop")
+	}
 	if c := atomic.LoadInt32(&connectCount); c != 1 {
-		t.Fatalf("expected 1 connect callback, got %d", c)
+		t.Fatalf("expected 1 connect callback after real round-trip, got %d", c)
 	}
 	if d := atomic.LoadInt32(&disconnectCount); d != 1 {
 		t.Fatalf("expected 1 disconnect callback, got %d", d)

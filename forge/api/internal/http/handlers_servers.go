@@ -39,6 +39,37 @@ func safeAuditMeta(kv map[string]string) string {
 	return string(b)
 }
 
+// backupNameCandidates returns the stored-name forms a client identifier may
+// reference. Backups are stored on the daemon as "<name>.zip" while some
+// legacy and pending records use the bare name, so both forms are tried in
+// order of exactness.
+func backupNameCandidates(identifier string) []string {
+	if strings.HasSuffix(identifier, ".zip") {
+		return []string{identifier, strings.TrimSuffix(identifier, ".zip")}
+	}
+	return []string{identifier, identifier + ".zip"}
+}
+
+// resolveBackupName resolves a client-supplied backup identifier to the
+// stored backup record. Identifiers may arrive with or without the ".zip"
+// suffix (the daemon stores archives under "<name>.zip" while some legacy and
+// pending records use a bare name), so the stored row is the source of truth
+// that callers forward to the daemon.
+func resolveBackupName(ctx context.Context, st *store.Store, serverID, identifier string) (store.Backup, error) {
+	var lastErr error
+	for _, name := range backupNameCandidates(identifier) {
+		if name == "" {
+			continue
+		}
+		backup, err := st.GetBackupByName(ctx, serverID, name)
+		if err == nil {
+			return backup, nil
+		}
+		lastErr = err
+	}
+	return store.Backup{}, lastErr
+}
+
 func validFileMode(mode string) bool {
 	if len(mode) != 3 && len(mode) != 4 {
 		return false
@@ -338,7 +369,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 			}
 			server, err = cfg.Store.GetServer(ctx, server.ID)
 			if err != nil {
-				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+				return respondInternalError(c, err)
 			}
 		}
 		return c.JSON(server)
@@ -468,7 +499,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 				if store.IsUserLimitError(err) {
 					return fiber.NewError(fiber.StatusUnprocessableEntity, err.Error())
 				}
-				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+				return respondInternalError(c, err)
 			}
 		}
 		var actorEmail string
@@ -566,7 +597,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 				if store.IsUserLimitError(err) {
 					return fiber.NewError(fiber.StatusUnprocessableEntity, err.Error())
 				}
-				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+				return respondInternalError(c, err)
 			}
 		}
 		var actorID *string
@@ -734,7 +765,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 			if store.IsUserLimitError(err) {
 				return fiber.NewError(fiber.StatusUnprocessableEntity, err.Error())
 			}
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		server, _, err := clusterManager.CreateServer(ctx, store.CreateServerRequest{
 			Name:                    req.Name,
@@ -884,7 +915,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		}
 		job, err := cfg.QueueService.Get(ctx, c.Params("id"))
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		if job == nil {
 			return fiber.NewError(fiber.StatusNotFound, "operation not found")
@@ -997,7 +1028,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 				if store.IsUserLimitError(err) {
 					return fiber.NewError(fiber.StatusUnprocessableEntity, err.Error())
 				}
-				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+				return respondInternalError(c, err)
 			}
 		}
 		var actorID *string
@@ -1473,7 +1504,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 				if store.IsUserLimitError(err) {
 					return fiber.NewError(fiber.StatusUnprocessableEntity, err.Error())
 				}
-				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+				return respondInternalError(c, err)
 			}
 		}
 		var actorID *string
@@ -1711,7 +1742,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		}
 		total, err := cfg.Store.CountBackups(ctx, c.Params("id"))
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{
 			"data": backups,
@@ -1753,7 +1784,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 				if store.IsUserLimitError(err) {
 					return fiber.NewError(fiber.StatusUnprocessableEntity, err.Error())
 				}
-				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+				return respondInternalError(c, err)
 			}
 		}
 		// Enforce backup rate limit per server
@@ -1770,7 +1801,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		if limit > 0 {
 			count, err := cfg.Store.CountCompletedBackups(ctx, c.Params("id"))
 			if err != nil {
-				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+				return respondInternalError(c, err)
 			}
 			if count >= limit {
 				return fiber.NewError(fiber.StatusConflict, "backup limit reached")
@@ -1802,45 +1833,39 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 			return fiber.NewError(fiber.StatusInternalServerError, storeErr.Error())
 		}
 
-		// Initiate the backup on the daemon. The daemon will call back via
-		// /api/remote/backups/:backup when the operation completes.
-		backupCtx, backupCancel := context.WithTimeout(context.Background(), 15*time.Minute)
-		defer backupCancel()
-		backup, daemonErr := cfg.Daemon.CreateBackup(backupCtx, target.NodeURL, target.NodeToken, target.ServerID, req.IgnoredFiles)
-		if daemonErr != nil {
-			// Mark the pending record as failed so it does not hang indefinitely.
-			now := time.Now().UTC()
-			if _, upsertErr := cfg.Store.UpsertBackup(ctx, target.ServerID, store.UpsertBackupRequest{
-				UUID:        stored.UUID,
-				Name:        stored.Name,
-				Status:      "failed",
-				CompletedAt: &now,
-			}, actorID); upsertErr != nil {
-				slog.Error("failed to mark backup as failed", "server", target.ServerID, "error", upsertErr)
+		// Backups can legitimately run for many minutes. Return the durable
+		// pending record immediately and reconcile completion asynchronously;
+		// Beacon's signed callback remains the second reconciliation path.
+		ignoredFiles := append([]string(nil), req.IgnoredFiles...)
+		go func() {
+			backupCtx, backupCancel := context.WithTimeout(context.Background(), 15*time.Minute)
+			defer backupCancel()
+			backup, daemonErr := cfg.Daemon.CreateBackup(backupCtx, target.NodeURL, target.NodeToken, target.ServerID, ignoredFiles)
+			persistCtx, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer persistCancel()
+			if daemonErr != nil {
+				now := time.Now().UTC()
+				if _, upsertErr := cfg.Store.UpsertBackup(persistCtx, target.ServerID, store.UpsertBackupRequest{
+					UUID: stored.UUID, Name: stored.Name, Status: "failed", CompletedAt: &now,
+				}, actorID); upsertErr != nil {
+					slog.Error("failed to mark backup as failed", "server", target.ServerID, "error", upsertErr)
+				}
+				return
 			}
-			return fiber.NewError(fiber.StatusBadGateway, daemonErr.Error())
-		}
-		completedAt := time.Now().UTC()
-		if backup.Completed != "" {
-			if parsed, parseErr := time.Parse(time.RFC3339, backup.Completed); parseErr == nil {
-				completedAt = parsed
+			completedAt := time.Now().UTC()
+			if backup.Completed != "" {
+				if parsed, parseErr := time.Parse(time.RFC3339, backup.Completed); parseErr == nil {
+					completedAt = parsed
+				}
 			}
-		}
-		// Update the pending record with the daemon result.
-		updated, updateErr := cfg.Store.UpsertBackup(ctx, target.ServerID, store.UpsertBackupRequest{
-			UUID:        backup.UUID,
-			Name:        backup.Name,
-			Checksum:    backup.Checksum,
-			Size:        backup.Size,
-			Status:      "completed",
-			CompletedAt: &completedAt,
-		}, actorID)
-		if updateErr != nil {
-			// The backup was created on the daemon but we failed to persist.
-			// The daemon callback will reconcile this on retry.
-			return c.Status(fiber.StatusCreated).JSON(stored)
-		}
-		return c.Status(fiber.StatusCreated).JSON(updated)
+			if _, updateErr := cfg.Store.UpsertBackup(persistCtx, target.ServerID, store.UpsertBackupRequest{
+				UUID: backup.UUID, Name: backup.Name, Checksum: backup.Checksum, Size: backup.Size,
+				Status: "completed", CompletedAt: &completedAt,
+			}, actorID); updateErr != nil {
+				slog.Error("failed to persist completed backup", "server", target.ServerID, "error", updateErr)
+			}
+		}()
+		return c.Status(fiber.StatusAccepted).JSON(stored)
 	})
 
 	protected.Get("/servers/:id/backups/download", requireServerPermission(cfg, store.PermBackupDownload), func(c *fiber.Ctx) error {
@@ -1889,20 +1914,24 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		if claims, ok := c.Locals("user").(tokenClaims); ok {
 			actorID = &claims.Sub
 		}
-		if _, err := cfg.Store.GetBackupByName(ctx, target.ServerID, body.Name); err != nil {
+		backup, err := resolveBackupName(ctx, cfg.Store, target.ServerID, body.Name)
+		if err != nil {
 			return fiber.NewError(fiber.StatusNotFound, "backup not found")
 		}
-		_ = cfg.Store.MarkBackupStatus(ctx, target.ServerID, body.Name, "restoring", actorID)
+		if backup.Status != "completed" {
+			return fiber.NewError(fiber.StatusPreconditionFailed, "backup status is %s, cannot restore", backup.Status)
+		}
+		_ = cfg.Store.MarkBackupStatus(ctx, target.ServerID, backup.Name, "restoring", actorID)
 		restoreCtx, restoreCancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer restoreCancel()
-		if err := cfg.Daemon.RestoreBackup(restoreCtx, target.NodeURL, target.NodeToken, target.ServerID, body.Name, body.Truncate); err != nil {
-			_ = cfg.Store.MarkBackupStatus(ctx, target.ServerID, body.Name, "restore_failed", actorID)
+		if err := cfg.Daemon.RestoreBackup(restoreCtx, target.NodeURL, target.NodeToken, target.ServerID, backup.Name, body.Truncate); err != nil {
+			_ = cfg.Store.MarkBackupStatus(ctx, target.ServerID, backup.Name, "restore_failed", actorID)
 			return fiber.NewError(fiber.StatusBadGateway, err.Error())
 		}
-		if err := cfg.Store.MarkBackupStatus(ctx, target.ServerID, body.Name, "restored", actorID); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		if err := cfg.Store.MarkBackupStatus(ctx, target.ServerID, backup.Name, "restored", actorID); err != nil {
+			return respondInternalError(c, err)
 		}
-		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"ok": true, "name": body.Name, "status": "restored"})
+		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"ok": true, "name": backup.Name, "status": "restored"})
 	})
 
 	protected.Get("/servers/:id/backups/verify", requireServerPermission(cfg, store.PermBackupRead), func(c *fiber.Ctx) error {
@@ -2025,7 +2054,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		}
 		downloadCtx, downloadCancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer downloadCancel()
-		storagePath := "backups/" + serverID + "/" + body.Name
+		storagePath := "backups/" + serverID + "/" + b.Name
 		data, err := cfg.BackupSvc.DownloadFromStorage(downloadCtx, "", storagePath)
 		if err != nil {
 			return fiber.NewError(fiber.StatusBadGateway, fmt.Sprintf("download from storage: %v", err))
@@ -2033,19 +2062,19 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		if err := cfg.BackupSvc.VerifyChecksum(data, b.Checksum); err != nil {
 			return fiber.NewError(fiber.StatusPreconditionFailed, fmt.Sprintf("checksum verification failed: %v", err))
 		}
-		_ = cfg.Store.MarkBackupStatus(ctx, serverID, body.Name, "restoring", actorID)
+		_ = cfg.Store.MarkBackupStatus(ctx, serverID, b.Name, "restoring", actorID)
 		restoreCtx, restoreCancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer restoreCancel()
-		if err := cfg.Daemon.RestoreBackup(restoreCtx, target.NodeURL, target.NodeToken, target.ServerID, body.Name, body.Truncate); err != nil {
-			_ = cfg.Store.MarkBackupStatus(ctx, serverID, body.Name, "restore_failed", actorID)
+		if err := cfg.Daemon.RestoreBackup(restoreCtx, target.NodeURL, target.NodeToken, target.ServerID, b.Name, body.Truncate); err != nil {
+			_ = cfg.Store.MarkBackupStatus(ctx, serverID, b.Name, "restore_failed", actorID)
 			return fiber.NewError(fiber.StatusBadGateway, err.Error())
 		}
-		if err := cfg.Store.MarkBackupStatus(ctx, serverID, body.Name, "restored", actorID); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		if err := cfg.Store.MarkBackupStatus(ctx, serverID, b.Name, "restored", actorID); err != nil {
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
 			"ok":       true,
-			"name":     body.Name,
+			"name":     b.Name,
 			"status":   "restored",
 			"verified": true,
 			"size":     len(data),
@@ -2070,19 +2099,30 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		if claims, ok := c.Locals("user").(tokenClaims); ok {
 			actorID = &claims.Sub
 		}
-		if _, err := cfg.Store.GetBackupByName(ctx, target.ServerID, name); err != nil {
+		backup, err := resolveBackupName(ctx, cfg.Store, target.ServerID, name)
+		if err != nil {
 			return fiber.NewError(fiber.StatusNotFound, "backup not found")
 		}
-		if err := cfg.Daemon.DeleteBackup(ctx, target.NodeURL, target.NodeToken, target.ServerID, name); err != nil {
-			return fiber.NewError(fiber.StatusBadGateway, err.Error())
+		// Only completed backups have an archive on the daemon; pending or
+		// failed records exist solely in the database and are removed below.
+		if backup.Status == "completed" {
+			if err := cfg.Daemon.DeleteBackup(ctx, target.NodeURL, target.NodeToken, target.ServerID, backup.Name); err != nil {
+				return fiber.NewError(fiber.StatusBadGateway, err.Error())
+			}
 		}
-		if err := cfg.Store.DeleteBackup(ctx, target.ServerID, name, actorID); err != nil {
+		if err := cfg.Store.DeleteBackup(ctx, target.ServerID, backup.Name, actorID); err != nil {
 			if err.Error() == "backup is locked and cannot be deleted" {
 				return fiber.NewError(fiber.StatusForbidden, err.Error())
 			}
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
-		return c.JSON(fiber.Map{"ok": true, "name": name})
+		// The client identifier may reference a legacy row that stores the
+		// same backup under the other suffix form; drop it so no ghost row
+		// lingers after the archive is gone.
+		if name != backup.Name {
+			_ = cfg.Store.DeleteBackup(ctx, target.ServerID, name, actorID)
+		}
+		return c.JSON(fiber.Map{"ok": true, "name": backup.Name})
 	})
 
 	// Backup lock/unlock endpoints
@@ -2105,7 +2145,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 			actorID = &claims.Sub
 		}
 		if err := cfg.Store.LockBackup(ctx, target.ServerID, name, actorID); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"ok": true, "name": name, "locked": true})
 	})
@@ -2129,7 +2169,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 			actorID = &claims.Sub
 		}
 		if err := cfg.Store.UnlockBackup(ctx, target.ServerID, name, actorID); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"ok": true, "name": name, "locked": false})
 	})
@@ -2169,7 +2209,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 			if err.Error() == "a backup with the new name already exists" {
 				return fiber.NewError(fiber.StatusConflict, err.Error())
 			}
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"ok": true, "name": req.Name, "previousName": name})
 	})
@@ -2202,7 +2242,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		// Perform cleanup
 		deleted, err := cfg.Store.CleanupOldBackupsForServer(ctx, target.ServerID, settings.BackupRetentionDays, backupLimit)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 
 		return c.JSON(fiber.Map{"ok": true, "deleted": deleted})
@@ -2223,7 +2263,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 
 		invitations, err := cfg.Store.ListSubuserInvitations(ctx, target.ServerID)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 
 		return c.JSON(invitations)
@@ -2254,7 +2294,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		// Create invitation with 7-day expiration
 		invitation, err := cfg.Store.CreateSubuserInvitation(ctx, target.ServerID, req, actorID, 7*24*time.Hour)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 
 		return c.Status(fiber.StatusCreated).JSON(invitation)
@@ -2914,19 +2954,30 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		if claims, ok := c.Locals("user").(tokenClaims); ok {
 			actorID = &claims.Sub
 		}
-		if _, err := cfg.Store.GetBackupByName(ctx, target.ServerID, name); err != nil {
+		backup, err := resolveBackupName(ctx, cfg.Store, target.ServerID, name)
+		if err != nil {
 			return fiber.NewError(fiber.StatusNotFound, "backup not found")
 		}
-		if err := cfg.Daemon.DeleteBackup(ctx, target.NodeURL, target.NodeToken, target.ServerID, name); err != nil {
-			return fiber.NewError(fiber.StatusBadGateway, err.Error())
+		// Only completed backups have an archive on the daemon; pending or
+		// failed records exist solely in the database and are removed below.
+		if backup.Status == "completed" {
+			if err := cfg.Daemon.DeleteBackup(ctx, target.NodeURL, target.NodeToken, target.ServerID, backup.Name); err != nil {
+				return fiber.NewError(fiber.StatusBadGateway, err.Error())
+			}
 		}
-		if err := cfg.Store.DeleteBackup(ctx, target.ServerID, name, actorID); err != nil {
+		if err := cfg.Store.DeleteBackup(ctx, target.ServerID, backup.Name, actorID); err != nil {
 			if err.Error() == "backup is locked and cannot be deleted" {
 				return fiber.NewError(fiber.StatusForbidden, err.Error())
 			}
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
-		return c.JSON(fiber.Map{"ok": true, "name": name})
+		// The client identifier may reference a legacy row that stores the
+		// same backup under the other suffix form; drop it so no ghost row
+		// lingers after the archive is gone.
+		if name != backup.Name {
+			_ = cfg.Store.DeleteBackup(ctx, target.ServerID, name, actorID)
+		}
+		return c.JSON(fiber.Map{"ok": true, "name": backup.Name})
 	})
 
 	protected.Get("/admin/audit", requireRole("admin"), requireAdminScope("audit.read"), func(c *fiber.Ctx) error {
@@ -2976,7 +3027,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 		}
 		users, _, err := cfg.Store.SearchUsers(ctx, query, page, perPage)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(ToPublicUsers(users))
 	})
@@ -3287,7 +3338,7 @@ func registerServerRoutes(protected fiber.Router, cfg Config, runner *scheduleRu
 			}
 			op, err := cfg.OperationService.DispatchPower(ctx, c.Params("id"), action, key)
 			if err != nil {
-				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+				return respondInternalError(c, err)
 			}
 			operations = append(operations, op)
 		}

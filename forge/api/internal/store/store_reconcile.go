@@ -149,6 +149,51 @@ func (s *Store) ConfirmReconcilePlan(ctx context.Context, id string) error {
 	return err
 }
 
+// ListPendingReconcilePlans returns plans that have not reached a terminal
+// state, used for deduplication and stale-plan expiry.
+func (s *Store) ListPendingReconcilePlans(ctx context.Context) ([]ReconcilePlanRow, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, resource_id, resource_kind, state, destructive, confirmed, diff_count, drift_count, diff_data, drift_data,
+		       COALESCE(error, ''), created_at, executed_at
+		FROM reconcile_plans
+		WHERE state IN ('pending', 'confirmed', 'queued')
+		ORDER BY created_at ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var plans []ReconcilePlanRow
+	for rows.Next() {
+		var row ReconcilePlanRow
+		var diffData, driftData []byte
+		if err := rows.Scan(&row.ID, &row.ResourceID, &row.ResourceKind, &row.State, &row.Destructive, &row.Confirmed,
+			&row.DiffCount, &row.DriftCount, &diffData, &driftData, &row.Error, &row.CreatedAt, &row.ExecutedAt); err != nil {
+			return nil, err
+		}
+		row.DiffData = diffData
+		row.DriftData = driftData
+		plans = append(plans, row)
+	}
+	return plans, rows.Err()
+}
+
+// ExpireStaleReconcilePlans marks plans stuck in a pending state past the
+// given age as expired.
+func (s *Store) ExpireStaleReconcilePlans(ctx context.Context, olderThan time.Duration) (int64, error) {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE reconcile_plans
+		SET state = 'expired', error = 'plan expired after TTL', executed_at = now()
+		WHERE state IN ('pending', 'confirmed', 'queued')
+		  AND created_at < now() - $1::interval
+	`, olderThan.String())
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 func (s *Store) RecordReconcileEvent(ctx context.Context, event *ReconcileEventRow) error {
 	if event.ID == "" {
 		event.ID = uuid.NewString()

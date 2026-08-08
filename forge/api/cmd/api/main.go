@@ -11,6 +11,7 @@ import (
 	"log"
 	"log/slog"
 	nethttp "net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
@@ -122,6 +123,13 @@ func run() error {
 
 	appEnv := env("APP_ENV", "development")
 	production := strings.EqualFold(strings.TrimSpace(appEnv), "production")
+	panelURL := strings.TrimSpace(env("PANEL_URL", "http://localhost:3000"))
+	if production {
+		parsedPanelURL, parseErr := url.Parse(panelURL)
+		if parseErr != nil || parsedPanelURL.Scheme != "https" || parsedPanelURL.Hostname() == "" || parsedPanelURL.User != nil {
+			return errors.New("PANEL_URL must be an absolute HTTPS URL without credentials in production")
+		}
+	}
 	seedDemo, err := demoSeedEnabled(appEnv, os.Getenv("API_SEED_DEMO"))
 	if err != nil {
 		return err
@@ -138,6 +146,12 @@ func run() error {
 	}
 	if production && len(authSecret) < 32 {
 		return errors.New("API_AUTH_SECRET must be at least 32 characters")
+	}
+	if production && strings.Contains(authSecret, "CHANGE_ME") {
+		return errors.New("API_AUTH_SECRET must not contain a deployment placeholder")
+	}
+	if production && strings.Contains(os.Getenv("APP_KEY"), "CHANGE_ME") {
+		return errors.New("APP_KEY must not contain a deployment placeholder")
 	}
 
 	slogLogger := logger.New(logger.Config{
@@ -214,14 +228,21 @@ func run() error {
 		}
 	}
 
-	daemonClient := daemon.NewClient()
-	if production && os.Getenv("DAEMON_NODE_TOKEN") == "" {
-		return errors.New("DAEMON_NODE_TOKEN must be set in production")
-	}
-	if !production && strings.TrimSpace(os.Getenv("DAEMON_NODE_TOKEN")) != "" {
-		// Backward-compatible Phase 0 fallback for development only. Normal
-		// outbound requests always pass the current target node credential.
-		daemonClient = daemon.NewClientWithDevelopmentFallback(strings.TrimSpace(os.Getenv("DAEMON_NODE_TOKEN")))
+	baseURL := env("BEACON_BASE_URL", "http://127.0.0.1:9090")
+	nodeToken := strings.TrimSpace(os.Getenv("DAEMON_NODE_TOKEN"))
+	daemonClient, err := daemon.NewClient(baseURL, nodeToken)
+	if err != nil {
+		if !production && nodeToken == "" {
+			// Dev mode without a token: create a client with loopback URL
+			// and a placeholder. Outbound API calls always pass the actual
+			// target node credential at call time.
+			daemonClient, err = daemon.NewClient("http://127.0.0.1:9090", "dev-placeholder")
+			if err != nil {
+				return fmt.Errorf("create dev daemon client: %w", err)
+			}
+		} else {
+			return fmt.Errorf("create daemon client: %w", err)
+		}
 	}
 
 	// Build the service graph. All services are nil-safe when db == nil;
@@ -298,6 +319,7 @@ func run() error {
 		certSvc           *services.CertService
 		mtlsMigrator      *services.MTLSMigrator
 		mtlsCfg           forgecfg.MTLS
+		eventRegistry     *events.Registry
 	)
 
 	appCtx, appCancel := context.WithCancel(context.Background())
@@ -322,7 +344,7 @@ func run() error {
 	var placeEngine *placement.Engine
 
 	if db != nil {
-		eventRegistry := events.NewRegistry("forge-api")
+		eventRegistry = events.NewRegistry("forge-api")
 
 		es := eventstore.New(db.GetDB())
 		eventRelay = eventstore.NewRelay(es, 5*time.Second)
@@ -340,6 +362,33 @@ func run() error {
 			WithReservations(resMgr)
 		dockerRT := gpruntime.NewDockerAdapter(daemonClient)
 		cm = clustermanager.New(db, dockerRT, sched, resMgr, outboxPub)
+
+		// Dev/demo: the seeded demo server is inserted directly into the
+		// database, bypassing the normal create-provision flow, so its
+		// workload would never exist at the beacon. Provision it here so the
+		// demo server can actually start (idempotent: beacon Create treats an
+		// existing workload as a no-op). The beacon may still be starting, so
+		// retry briefly.
+		if seedDemo {
+			const demoServerID = "44444444-4444-4444-8444-444444444444"
+			var provisionErr error
+			for attempt := 1; attempt <= 15; attempt++ {
+				if provisionErr = cm.ProvisionRecoveredServer(appCtx, demoServerID); provisionErr == nil {
+					slogLogger.Info("demo seed: workload provisioned", slog.String("server_id", demoServerID))
+					break
+				}
+				select {
+				case <-appCtx.Done():
+					provisionErr = appCtx.Err()
+				case <-time.After(2 * time.Second):
+				}
+			}
+			if provisionErr != nil {
+				slogLogger.Warn("demo seed: workload provision skipped",
+					slog.String("server_id", demoServerID),
+					slog.String("error", provisionErr.Error()))
+			}
+		}
 
 		// Initialize Beacon HTTP client for replicamanager
 		beaconHTTPClient := replicamanager.NewBeaconHTTPClient(db, daemonClient, slogLogger)
@@ -360,7 +409,7 @@ func run() error {
 		obs = observability.New(db)
 		obs.StartMetricsCollection(appCtx, 30*time.Second)
 		nr = noderegistry.New(db)
-		np = nodeprobe.NewService(db)
+		np = nodeprobe.NewService(db, daemonClient)
 		dbProv = dbprovisioner.NewService(db)
 		whSvc = webhook.NewService(db)
 		mailWorker = mailservice.NewWorker(db)
@@ -398,7 +447,7 @@ func run() error {
 		registerPowerJob(queue.JobServerStop, "stop")
 		registerPowerJob(queue.JobServerRestart, "restart")
 		registerPowerJob(queue.JobServerKill, "kill")
-		composeLifecycle, err = composesvc.New(db, outboxPub)
+		composeLifecycle, err = composesvc.New(db, daemonClient, outboxPub)
 		if err != nil {
 			return fmt.Errorf("create compose service: %w", err)
 		}
@@ -696,7 +745,7 @@ func run() error {
 		domainNodeResolver := &domainNodeResolver{store: db}
 		domainSvc = domains.New(store.NewDomainAdapter(db), caddyProxy, env("PANEL_IP", ""), outboxPub)
 		domainSvc.SetNodeResolver(domainNodeResolver)
-		buildSvc = buildsvc.NewService(db, slogLogger)
+		buildSvc = buildsvc.NewService(db, daemonClient, slogLogger)
 		tenancySvc = tenancy.New(db)
 		procedureSvc = proceduresvc.New(db, outboxPub, slogLogger, db)
 		apphostingSvc = apphostingsvc.New(db, tenancySvc)
@@ -1047,6 +1096,7 @@ func run() error {
 		HeartbeatMonitor:           hbm,
 		Observability:              obs,
 		Reconciler:                 rec,
+		EventRegistry:              eventRegistry,
 		DBProvisioner:              dbProv,
 		HealthService:              healthSvc,
 		SessionStore:               sessionStore,
@@ -1309,6 +1359,9 @@ func envInt(key string, fallback int) int {
 
 func masterKeyringFromEnvironment(production bool) (*secrets.Keyring, bool, error) {
 	activeKey := strings.TrimSpace(os.Getenv("FORGE_MASTER_KEY"))
+	if production && strings.Contains(activeKey, "CHANGE_ME") {
+		return nil, false, errors.New("FORGE_MASTER_KEY must not contain a deployment placeholder")
+	}
 	ephemeral := false
 	if activeKey == "" {
 		allowEphemeral, err := strconv.ParseBool(env("FORGE_ALLOW_EPHEMERAL_MASTER_KEY", "false"))

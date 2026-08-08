@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"regexp"
+	stdruntime "runtime"
 	"strings"
 	"sync"
 	"time"
@@ -95,4 +96,41 @@ func normalizeMetricPath(value string) string {
 		return "/other"
 	}
 	return value
+}
+
+// ProcessMetrics captures process-level resource usage for the beacon daemon.
+// The fields are consumed by the /metrics endpoint and rendered as Prometheus
+// gauges and counters.
+type ProcessMetrics struct {
+	// StartTime is when the daemon process started; uptime is derived from it.
+	StartTime time.Time
+	// UserCPUSeconds and SystemCPUSeconds are cumulative process CPU times
+	// reported by the operating system (getrusage).
+	UserCPUSeconds   float64
+	SystemCPUSeconds float64
+	// MemAllocBytes is the currently allocated Go heap memory.
+	MemAllocBytes uint64
+	// MemHeapBytes is the heap bytes reserved by the Go runtime.
+	MemHeapBytes uint64
+	// Goroutines is the current number of goroutines.
+	Goroutines int
+	// NumGC is the number of completed garbage collection cycles.
+	NumGC uint64
+}
+
+// CollectProcess samples the current process state. It is safe to call from
+// the /metrics handler on every scrape.
+func CollectProcess(started time.Time) ProcessMetrics {
+	var mem stdruntime.MemStats
+	stdruntime.ReadMemStats(&mem)
+	userSeconds, systemSeconds := processCPUTimes()
+	return ProcessMetrics{
+		StartTime:        started,
+		UserCPUSeconds:   userSeconds,
+		SystemCPUSeconds: systemSeconds,
+		MemAllocBytes:    mem.Alloc,
+		MemHeapBytes:     mem.HeapSys,
+		Goroutines:       stdruntime.NumGoroutine(),
+		NumGC:            uint64(mem.NumGC),
+	}
 }

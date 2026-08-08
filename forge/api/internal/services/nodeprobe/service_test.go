@@ -90,7 +90,8 @@ func seedNode(t *testing.T, s *store.Store, ctx context.Context, baseURL string)
 }
 
 func TestProbeNodeStoreIsNil(t *testing.T) {
-	svc := &Service{client: &http.Client{Timeout: time.Second}, signer: daemon.NewClient()}
+	signer, _ := daemon.NewClient("http://localhost", "test-token")
+	svc := &Service{client: &http.Client{Timeout: time.Second}, signer: signer}
 	info, err := svc.ProbeNode(context.Background(), "test-id")
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -105,7 +106,8 @@ func TestProbeNodeStoreIsNil(t *testing.T) {
 
 func TestProbeNodeNotFound(t *testing.T) {
 	s := testStore(t)
-	svc := NewService(s)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewService(s, dc)
 	info, err := svc.ProbeNode(context.Background(), uuid.NewString())
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -129,7 +131,8 @@ func TestProbeNodeNoFQDN(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := NewService(s)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewService(s, dc)
 	info, err := svc.ProbeNode(ctx, nodeID)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -170,7 +173,8 @@ func TestProbeNodeDaemonSuccess(t *testing.T) {
 
 	nodeID, _ := seedNode(t, s, ctx, server.URL)
 
-	svc := NewService(s)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewService(s, dc)
 	info, err := svc.ProbeNode(ctx, nodeID)
 	if err != nil {
 		t.Fatalf("ProbeNode: %v", err)
@@ -215,7 +219,8 @@ func TestProbeNodeDaemonNonOKStatus(t *testing.T) {
 
 	nodeID, _ := seedNode(t, s, ctx, server.URL)
 
-	svc := NewService(s)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewService(s, dc)
 	info, err := svc.ProbeNode(ctx, nodeID)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -240,7 +245,8 @@ func TestProbeNodeDaemonInvalidJSON(t *testing.T) {
 
 	nodeID, _ := seedNode(t, s, ctx, server.URL)
 
-	svc := NewService(s)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewService(s, dc)
 	info, err := svc.ProbeNode(ctx, nodeID)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -278,7 +284,8 @@ func TestProbeNodeNetworkError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := NewService(s)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewService(s, dc)
 	info, err := svc.ProbeNode(ctx, nodeID)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -308,7 +315,8 @@ func TestProbeNodeNoDaemonToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := NewService(s)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewService(s, dc)
 	info, err := svc.ProbeNode(ctx, nodeID)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -342,7 +350,8 @@ func TestProbeNodeDaemonEmptyDockerStatus(t *testing.T) {
 
 	nodeID, _ := seedNode(t, s, ctx, server.URL)
 
-	svc := NewService(s)
+	dc, _ := daemon.NewClient("http://127.0.0.1:9090", "test-token")
+	svc := NewService(s, dc)
 	info, err := svc.ProbeNode(ctx, nodeID)
 	if err != nil {
 		t.Fatalf("ProbeNode: %v", err)

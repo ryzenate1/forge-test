@@ -295,12 +295,12 @@ func (s *Store) UpdateGitSourceLastDeployment(ctx context.Context, gitSourceID, 
 
 // GitDeploymentHook represents a webhook for git deployment triggers
 type GitDeploymentHook struct {
-	ID         string    `json:"id"`
+	ID          string    `json:"id"`
 	GitSourceID string    `json:"gitSourceId"`
-	Secret     string    `json:"secret,omitempty"`
-	Events     []string  `json:"events"`
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+	Secret      string    `json:"-"` // never serialized; returned one-time from create/regenerate responses
+	Events      []string  `json:"events"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 func (s *Store) ListGitDeploymentHooks(ctx context.Context, gitSourceID string) ([]GitDeploymentHook, error) {
@@ -369,6 +369,25 @@ func (s *Store) DeleteGitDeploymentHook(ctx context.Context, hookID string) erro
 	query := `DELETE FROM git_deployment_hooks WHERE id = $1`
 	_, err := s.db.Exec(ctx, query, hookID)
 	return err
+}
+
+// GetGitDeploymentHook retrieves a single hook by ID, including its git
+// source association so callers can enforce ownership before mutating it.
+func (s *Store) GetGitDeploymentHook(ctx context.Context, hookID string) (*GitDeploymentHook, error) {
+	if s.db == nil {
+		return nil, nil
+	}
+
+	var hook GitDeploymentHook
+	err := s.db.QueryRow(ctx, `
+		SELECT id, git_source_id, secret, events, created_at, updated_at
+		FROM git_deployment_hooks WHERE id = $1
+	`, hookID).Scan(
+		&hook.ID, &hook.GitSourceID, &hook.Secret, &hook.Events, &hook.CreatedAt, &hook.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &hook, nil
 }
 
 func (s *Store) RegenerateGitDeploymentHookSecret(ctx context.Context, hookID, secret string) (*GitDeploymentHook, error) {

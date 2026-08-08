@@ -6,7 +6,7 @@ import { Box, ChevronRight, Copy, ExternalLink, Plus, Settings, Tag, Trash2, Dow
 import { type ApiNest, type ApiEgg, createEgg, createNest, deleteEgg, deleteNest, fetchEggs, fetchNests, updateEgg, updateNest } from "@/lib/api";
 import { useRouter } from "next/navigation";
 import { useToast } from "@/components/ui/toast";
-import { AdminFormSection, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, SectionHeader, Textarea, cn } from "./admin-ui";
+import { AdminConfirmDialog, AdminFormSection, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, SectionHeader, Textarea, cn } from "./admin-ui";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -39,7 +39,9 @@ export function AdminNestsEggs() {
  const [nestModal, setNestModal] = useState<null | "create" | ApiNest>(null);
  const [eggModal, setEggModal] = useState<null | "create" | ApiEgg>(null);
   const [importExportModal, setImportExportModal] = useState(false);
- const [importJson, setImportJson] = useState("");
+  const [importJson, setImportJson] = useState("");
+  const [deleteNestTarget, setDeleteNestTarget] = useState<ApiNest | null>(null);
+  const [deleteEggTarget, setDeleteEggTarget] = useState<ApiEgg | null>(null);
 
  // Nest form state
  const [nestName, setNestName] = useState("");
@@ -253,7 +255,7 @@ export function AdminNestsEggs() {
   >
   <button
   aria-pressed={isSelected}
-  className="min-w-0 flex-1 px-4 py-3 text-left focus-visible:outline-none"
+  className="min-w-0 flex-1 rounded-md px-4 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/40"
   onClick={() => setSelectedNest(nest)}
   type="button"
   >
@@ -263,7 +265,7 @@ export function AdminNestsEggs() {
    <div aria-label={`${nest.name} actions`} className="flex shrink-0 items-center gap-1 px-4 opacity-0 transition-opacity group-hover:opacity-100" role="group">
    <button aria-label={`Open ${nest.name}`} className="rounded p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-sky-400" onClick={(e) => { e.stopPropagation(); router.push(`/admin/nests/${nest.id}/eggs`); }} type="button"><ExternalLink size={12} /></button>
    <button aria-label={`Edit ${nest.name}`} className="rounded p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200" onClick={(e) => { e.stopPropagation(); openNestEdit(nest); }} type="button"><Settings size={12} /></button>
-   <button aria-label={`Delete ${nest.name}`} className="rounded p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-red-400" onClick={(e) => { e.stopPropagation(); deleteNestMut.mutate(nest.id); }} type="button"><Trash2 size={12} /></button>
+   <button aria-label={`Delete ${nest.name}`} className="rounded p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-red-400" onClick={(e) => { e.stopPropagation(); setDeleteNestTarget(nest); }} type="button"><Trash2 size={12} /></button>
    </div>
   </li>
  );
@@ -328,7 +330,7 @@ export function AdminNestsEggs() {
   <Btn size="sm" tone="ghost" onClick={() => openEggEdit(egg)}>Edit</Btn>
   <Btn size="sm" tone="ghost" onClick={() => cloneEggMut.mutate(egg)}><Copy size={12} /></Btn>
   <Btn size="sm" tone="ghost" onClick={() => exportEgg(egg)}><Download size={12} /></Btn>
-  <Btn size="sm" tone="danger" onClick={() => deleteEggMut.mutate(egg.id)}><Trash2 size={12} /></Btn>
+   <Btn size="sm" tone="danger" onClick={() => setDeleteEggTarget(egg)}><Trash2 size={12} /></Btn>
   </div>
   </td>
  </tr>
@@ -419,6 +421,27 @@ export function AdminNestsEggs() {
   />
   </Modal>
   ) : null}
+
+  <AdminConfirmDialog
+    title={`Delete nest "${deleteNestTarget?.name ?? ""}"?`}
+    description="The nest and its eggs will be permanently removed. Servers using eggs from this nest are not deleted, but may need to be reconfigured."
+    confirmLabel="Delete"
+    destructive
+    loading={deleteNestMut.isPending}
+    onCancel={() => { if (!deleteNestMut.isPending) setDeleteNestTarget(null); }}
+    onConfirm={() => { if (deleteNestTarget) deleteNestMut.mutate(deleteNestTarget.id); }}
+    open={Boolean(deleteNestTarget)}
+  />
+  <AdminConfirmDialog
+    title={`Delete egg "${deleteEggTarget?.name ?? ""}"?`}
+    description="The egg definition will be permanently removed. Existing servers that were created from this egg keep running but can no longer be recreated from it."
+    confirmLabel="Delete"
+    destructive
+    loading={deleteEggMut.isPending}
+    onCancel={() => { if (!deleteEggMut.isPending) setDeleteEggTarget(null); }}
+    onConfirm={() => { if (deleteEggTarget) deleteEggMut.mutate(deleteEggTarget.id); }}
+    open={Boolean(deleteEggTarget)}
+  />
 
   </div>
   );

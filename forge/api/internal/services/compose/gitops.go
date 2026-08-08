@@ -48,6 +48,7 @@ type GitOpsService struct {
 	tempDir    string
 	mu         sync.Mutex
 	webhookMu  sync.Mutex
+	daemonCli  *daemon.Client
 }
 
 type GitCloneService interface {
@@ -151,7 +152,7 @@ var (
 	ErrNoPreviousDeployment    = errors.New("no previous deployment to roll back to")
 )
 
-func NewGitOpsService(s GitOpsStore, cs *Service, gitSvc GitCloneService, publisher events.Publisher, logger *slog.Logger) *GitOpsService {
+func NewGitOpsService(s GitOpsStore, cs *Service, gitSvc GitCloneService, publisher events.Publisher, logger *slog.Logger, daemonCli *daemon.Client) *GitOpsService {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -163,6 +164,7 @@ func NewGitOpsService(s GitOpsStore, cs *Service, gitSvc GitCloneService, publis
 		logger:     logger,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		tempDir:    os.TempDir(),
+		daemonCli:  daemonCli,
 	}
 }
 
@@ -290,8 +292,8 @@ func readLimitedComposeFile(filePath string) ([]byte, error) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("compose file must be a regular non-symlink file")
 	}
-	if info.Size() > 5*1024*1024 {
-		return nil, fmt.Errorf("compose file exceeds 5 MiB")
+	if info.Size() > int64(MaxComposeYAMLBytes) {
+		return nil, fmt.Errorf("compose file exceeds maximum size of %d bytes", MaxComposeYAMLBytes)
 	}
 	return os.ReadFile(filePath)
 }
@@ -383,8 +385,7 @@ func (g *GitOpsService) DeployFromGit(ctx context.Context, req GitDeployFromGitR
 		_, _ = g.store.UpdatePlacementReservationStatus(ctx, reservation.ID, store.PlacementReservationStatusCancelled)
 		return nil, fmt.Errorf("create compose stack record: %w", err)
 	}
-	client := daemon.NewClient()
-	deployResp, deployErr := client.ComposeDeploy(ctx, node.BaseURL, nodeCredential, daemon.ComposeDeployRequest{
+	deployResp, deployErr := g.daemonCli.ComposeDeploy(ctx, node.BaseURL, nodeCredential, daemon.ComposeDeployRequest{
 		StackID:     stackID,
 		ComposeYAML: composeYAML,
 		EnvVars:     req.EnvVars,
@@ -619,7 +620,7 @@ func (g *GitOpsService) RollbackToPrevious(ctx context.Context, stackID string) 
 	}
 	stack.GitUpdateStatus = "deploying"
 	_ = g.store.UpdateComposeStack(ctx, toStoreComposeStack(stack))
-	stack.GitUpdateStatus = "rolling_back"
+		stack.GitUpdateStatus = "rolling_back"
 	_ = g.store.UpdateComposeStack(ctx, toStoreComposeStack(stack))
 	node, err := g.store.GetNode(ctx, stack.NodeID)
 	if err != nil {
@@ -629,8 +630,7 @@ func (g *GitOpsService) RollbackToPrevious(ctx context.Context, stackID string) 
 	if err != nil {
 		return nil, fmt.Errorf("node credential not found: %w", err)
 	}
-	client := daemon.NewClient()
-	deployResp, deployErr := client.ComposeDeploy(ctx, node.BaseURL, nodeCredential, daemon.ComposeDeployRequest{
+	deployResp, deployErr := g.daemonCli.ComposeDeploy(ctx, node.BaseURL, nodeCredential, daemon.ComposeDeployRequest{
 		StackID:     stackID,
 		ComposeYAML: prevCompose,
 		EnvVars:     stack.EnvVars,
@@ -767,8 +767,7 @@ func (g *GitOpsService) DetectRuntimeDrift(ctx context.Context, stackID string) 
 		return nil, fmt.Errorf("node credential not found: %w", err)
 	}
 
-	client := daemon.NewClient()
-	daemonStatus, err := client.ComposeStatus(ctx, node.BaseURL, nodeCredential, stackID)
+	daemonStatus, err := g.daemonCli.ComposeStatus(ctx, node.BaseURL, nodeCredential, stackID)
 	if err != nil {
 		return nil, fmt.Errorf("get compose status: %w", err)
 	}
@@ -1054,8 +1053,7 @@ func (g *GitOpsService) deployFromClone(ctx context.Context, stack *ComposeStack
 		g.compose.markFailed(ctx, stack, "deploy: credential not found: "+err.Error())
 		return nil, fmt.Errorf("node credential not found: %w", err)
 	}
-	client := daemon.NewClient()
-	deployResp, deployErr := client.ComposeDeploy(ctx, node.BaseURL, nodeCredential, daemon.ComposeDeployRequest{
+	deployResp, deployErr := g.daemonCli.ComposeDeploy(ctx, node.BaseURL, nodeCredential, daemon.ComposeDeployRequest{
 		StackID:     stackID,
 		ComposeYAML: composeYAML,
 		EnvVars:     stack.EnvVars,
@@ -1126,8 +1124,7 @@ func (g *GitOpsService) getPerServiceStatus(ctx context.Context, stack *ComposeS
 	if err != nil {
 		return nil, nil
 	}
-	client := daemon.NewClient()
-	statusResp, err := client.ComposeStatus(ctx, node.BaseURL, nodeCredential, stack.ID)
+	statusResp, err := g.daemonCli.ComposeStatus(ctx, node.BaseURL, nodeCredential, stack.ID)
 	if err != nil {
 		return nil, nil
 	}

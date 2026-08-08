@@ -1,137 +1,119 @@
-# Shared Types
+# @forge/shared-types
 
-Shared TypeScript type definitions for the GamePanel ecosystem.
+Shared TypeScript type definitions for the Forge control plane. This package is
+the cross-package type contract shared by `forge/web` and `packages/sdk`.
 
-## 📦 Installation
+## Installation
 
-```bash
-npm install @gamepanel/shared-types
+The package is a workspace package and is referenced by the other workspaces:
+
+```json
+{
+  "dependencies": {
+    "@forge/shared-types": "*"
+  }
+}
 ```
 
-## 🚀 Usage
-
-Import types directly in your TypeScript projects:
+## Usage
 
 ```typescript
 import type {
-  Server,
-  ServerStatus,
-  GameTemplate,
-  User,
-  Node,
-  Allocation,
-  Backup,
-  Database,
-  Egg,
-  Nest,
-  Location
-} from '@gamepanel/shared-types';
-
-// Use the types in your code
-interface MyComponentProps {
-  server: Server;
-  status: ServerStatus;
-}
+  ApiServer,
+  ApiNode,
+  ApiUser,
+  ApiAllocation,
+  ApiDatabase,
+  ApiBackup,
+  ApiSchedule,
+  ApiFileEntry,
+  PaginatedResponse,
+} from '@forge/shared-types';
 ```
 
-## 📁 Available Types
-
-### Core Types
-- `Server` - Game server instance
-- `Node` - Physical or virtual machine hosting servers
-- `User` - User account
-- `Location` - Geographic location for nodes
-
-### Game Server Types
-- `GameTemplate` - Game server template definition
-- `Egg` - Game server configuration preset
-- `Nest` - Collection of eggs
-- `Allocation` - Port allocation for servers
-- `Backup` - Server backup
-- `Database` - Game server database
-
-### Status Types
-- `ServerStatus` - Current state of a server
-- `NodeStatus` - Current state of a node
-- `BackupStatus` - Current state of a backup
-
-### Configuration Types
-- `ServerConfiguration` - Server-specific configuration
-- `NodeConfiguration` - Node-specific configuration
-- `StartupCommand` - Server startup command
-- `EnvironmentVariables` - Environment variable mapping
-
-### API Types
-- `Pagination` - Pagination metadata
-- `ApiResponse<T>` - Standard API response wrapper
-- `ErrorResponse` - Standard error response
-
-## 🔧 Type Definitions
-
-### Server Type Example
+`forge/web` re-exports the entire package from `lib/api/types.ts`, so web
+modules can import via `./types`:
 
 ```typescript
-interface Server {
-  id: string;
-  uuid: string;
-  name: string;
-  description: string | null;
-  status: ServerStatus;
-  nodeId: number;
-  nestId: number;
-  eggId: number;
-  dockerImage: string;
-  startup: string;
-  environment: EnvironmentVariables;
-  limits: ServerLimits;
-  featureLimits: FeatureLimits;
-  allocations: Allocation[];
-  createdAt: Date;
-  updatedAt: Date;
-}
+import type { ApiServer } from './types';
 ```
 
-### ServerStatus Enum
+## Available Types
 
-```typescript
-type ServerStatus = 
-  | 'installing'
-  | 'installed'
-  | 'starting'
-  | 'running'
-  | 'stopping'
-  | 'stopped'
-  | 'restarting'
-  | 'reinstalling'
-  | 'suspended'
-  | 'restoring'
-  | 'migrating'
-  | 'offline'
-  | 'crashed';
-```
+All types are exported from `src/index.ts` (i18n types + everything in
+`src/api.ts`).
 
-## 📦 Package Structure
+### Core API entities
+- `ApiUser` - user account as returned by `/auth/me`, `/users`, ...
+- `ApiServer` - server record as returned by `/servers` (fields include
+  `id`, `name`, `status`, `desiredState`, `actualState`, `node`, `nodeId`,
+  `owner`, `ownerId`, `template`, `dockerImage`, `startupCommand`, `cpuLimit`,
+  `cpuShares`, `memoryMb`, `diskMb`, `generation`, ...)
+- `ApiNode` - node record as returned by `/nodes`
+- `ApiAllocation`, `ApiDatabase`, `ApiBackup`, `ApiSchedule`,
+  `ApiScheduleTask`, `ApiDatabaseHost`, `ApiMount`, `ApiRegion`, `ApiLocation`,
+  `ApiEgg`, `ApiNest`, `ApiTemplate`, `ApiRole`, `ApiPlugin`, `ApiWebhook`,
+  `ApiSSHKey`, `ApiKey`, `ApiOAuthClient`, ...
+
+### Pagination
+- `PaginatedResponse<T>` - **canonical** paginated envelope:
+  `{ data: T[], meta?: { pagination?: PaginationMeta } }`
+- `PaginatedEnvelope<T>` - alias of `PaginatedResponse<T>` kept for backward
+  compatibility. Prefer `PaginatedResponse<T>` in new code.
+- `PaginationMeta` - `{ current, total, count, per_page, total_records }`
+
+### Inputs
+- `ServerCreateInput`, `ServerUpdateInput`, `DatabaseCreateInput`,
+  `ScheduleCreateInput`, `ScheduleUpdateInput`, `ScheduleTaskCreateInput`,
+  `ScheduleTaskUpdateInput`, `CreateAllocationInput`, `CreateNodeInput`,
+  `UpdateNodeInput`, `CreateDatabaseHostInput`, `CreateMountInput`,
+  `CreateEggInput`, `UpdateEggInput`, `CreateMigrationInput`, ...
+
+### File manager
+- `ApiFileEntry`, `ApiFileContent`, `ApiFileRead`, `RenameFileInput`
+
+### Operations / recovery
+- `ApiEvacuationPlan`, `ApiRecoveryPlan`, `ApiReservation`, `ApiMigration`,
+  `ApiMigrationHistory`, `ApiOrphanRemediations`, ...
+
+### Misc
+- `ApiStats`, `ApiActivityLog`, `ApiAuditEvent`, `ApiAdminAuditEvent`,
+  `ApiHealthReport`, `ApiHealthCheck`, `ApiNotification`, `ApiAlert`,
+  `ApiWSTicket`, `TwoFactorSetup`, `LoginResponse`, `ApiSetupStatus`,
+  `ApiPublicPanelSettings`, `ApiPanelSettings`, `CrashEvent`,
+  `ApiNodeHealth`, `ApiNodeHealthScore`, `ApiNodeCapacity`,
+  `ApiNodeLifecycle`, `ApiServerConfiguration`, `ApiNodeSystemInformation`,
+  `ApiWebhookDelivery`, `ApiWebhookStats`, `SocialProvider`, `ApiEndpoint`,
+  `ProcessType`, `OneOffTask`, `ProcfileEntry`, ...
+
+### i18n
+- `Locale`, `I18nConfig`, `DEFAULT_I18N_CONFIG`
+
+## Conventions
+
+- Types model the JSON payloads returned by the Forge API
+  (`forge/api/internal/store` / `forge/api/internal/http`). Response types are
+  supersets of the actual payload; required fields are only those the API
+  always returns.
+- `ApiScheduleTask.sequence` is the ordering field (the API and all consumers
+  use it). `sequenceOrder` is deprecated and only kept as an alias.
+
+## Package Structure
 
 ```
 shared-types/
 ├── src/
-│   ├── index.ts              # Main type exports
-│   ├── servers.ts            # Server-related types
-│   ├── nodes.ts              # Node-related types
-│   ├── users.ts              # User-related types
-│   ├── games.ts              # Game-related types
-│   ├── backups.ts            # Backup-related types
-│   ├── databases.ts          # Database-related types
-│   ├── allocations.ts        # Allocation-related types
-│   ├── api.ts                # API response types
-│   └── enums.ts              # TypeScript enums
-├── dist/                     # Compiled output
+│   ├── index.ts              # Re-exports i18n + api types
+│   ├── api.ts                # API entity/input/response types
+│   └── i18n.ts               # Locale + i18n config
+├── dist/                     # Compiled output (tsc)
 ├── package.json
 └── tsconfig.json
 ```
 
-## 🔗 Related Packages
+## Build
 
-- [@gamepanel/sdk](../sdk/) - GamePanel API client
-- [@gamepanel/ui](../ui/) - Shared UI components
-- [@gamepanel/game-templates](../game-templates/) - Game server templates
+```bash
+npm --workspace @forge/shared-types run build   # emits dist/
+npm --workspace @forge/shared-types run typecheck
+```

@@ -70,7 +70,7 @@ func registerCertificateRoutesExt(protected fiber.Router, cfg Config, adminIPAcc
 			Provider:    "manual",
 		})
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(201).JSON(fiber.Map{"data": cert})
 	})

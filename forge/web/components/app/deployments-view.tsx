@@ -78,7 +78,7 @@ export function DeploymentsView({ appId, action, canDeploy = true }: Deployments
                   {deploy.commitMessage ? ` — ${deploy.commitMessage}` : ""}
                 </p>
               ) : null}
-              <p className="text-xs text-slate-600">{formatDate(deploy.startedAt)}</p>
+              <p className="text-xs text-slate-400">{formatDate(deploy.startedAt)}</p>
             </div>
           </div>
         ))}

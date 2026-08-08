@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { Backup, BackupFormat, Server } from "@/lib/api";
+import type { Backup, Server } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { sanitizeError } from "@/lib/sanitize";
 import { getCSRFToken } from "@/lib/csrf";
+import { redirectOnUnauthorized } from "@/lib/client-auth";
 
 const POLL_INTERVAL_MS = 30000;
 
@@ -12,13 +13,11 @@ export function BackupManager() {
   const [servers, setServers] = useState<Server[]>([]);
   const [selectedServer, setSelectedServer] = useState<string>("");
   const [backups, setBackups] = useState<Backup[]>([]);
-  const [format, setFormat] = useState<BackupFormat>("zip");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [confirmRestore, setConfirmRestore] = useState<{ id: string; paths: string } | null>(null);
-  const [restorePathsInput, setRestorePathsInput] = useState("");
+  const [confirmRestore, setConfirmRestore] = useState<{ name: string } | null>(null);
   const [backupRefreshKey, setBackupRefreshKey] = useState(0);
   const [pollError, setPollError] = useState(false);
   const serverTokenRef = useRef(0);
@@ -31,6 +30,7 @@ export function BackupManager() {
     setLoading(true);
     fetch("/api/proxy/servers", { signal: controller.signal, credentials: "include" })
       .then((r) => {
+		redirectOnUnauthorized(r);
         if (!r.ok) throw new Error(`Failed to load: ${r.status}`);
         return r.json();
       })
@@ -57,6 +57,7 @@ export function BackupManager() {
     setLoading(true);
     fetch(`/api/proxy/servers/${encodeURIComponent(selectedServer)}/backups`, { signal: controller.signal, credentials: "include" })
       .then((r) => {
+		redirectOnUnauthorized(r);
         if (!r.ok) throw new Error(`Failed to load: ${r.status}`);
         return r.json();
       })
@@ -86,6 +87,7 @@ export function BackupManager() {
         credentials: "include",
       })
         .then((r) => {
+			redirectOnUnauthorized(r);
           if (!r.ok) throw new Error(`Failed to poll: ${r.status}`);
           return r.json();
         })
@@ -115,8 +117,9 @@ export function BackupManager() {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-CSRF-Token": getCSRFToken() },
         credentials: "include",
-        body: JSON.stringify({ format }),
+        body: JSON.stringify({ ignored: [] }),
       });
+		redirectOnUnauthorized(res);
       if (!res.ok) throw new Error(`Failed to create backup: ${res.status}`);
       const newBackup = await res.json();
       if (token === serverTokenRef.current) setBackups((prev) => [newBackup, ...prev]);
@@ -127,22 +130,12 @@ export function BackupManager() {
     }
   }
 
-  function initiateRestore(backupId: string) {
-    setRestorePathsInput("");
-    setConfirmRestore({ id: backupId, paths: "" });
+  function initiateRestore(backupName: string) {
+    setConfirmRestore({ name: backupName });
   }
 
   async function executeRestore() {
     if (!confirmRestore || !selectedServer) return;
-    const rawPaths = restorePathsInput.split(",").map((p) => p.trim()).filter(Boolean);
-    const isValidPath = (p: string) => /^[a-zA-Z0-9_\-\/\.]+$/.test(p) && !p.startsWith("/") && !p.includes("..");
-    const invalidPaths = rawPaths.filter((p) => !isValidPath(p));
-    if (invalidPaths.length > 0) {
-      setError(sanitizeError("One or more paths contain invalid characters"));
-      setConfirmRestore(null);
-      return;
-    }
-    const paths = rawPaths;
     setActionLoading(true);
     setError(null);
     setConfirmRestore(null);
@@ -152,8 +145,9 @@ export function BackupManager() {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-CSRF-Token": getCSRFToken() },
         credentials: "include",
-        body: JSON.stringify({ name: confirmRestore.id, paths: paths.length > 0 ? paths : undefined }),
+        body: JSON.stringify({ name: confirmRestore.name, truncate: false }),
       });
+		redirectOnUnauthorized(res);
       if (!res.ok) throw new Error(`Restore failed: ${res.status}`);
       if (token === serverTokenRef.current) setBackupRefreshKey((k) => k + 1);
     } catch (e) {
@@ -174,8 +168,9 @@ export function BackupManager() {
         headers: { "X-CSRF-Token": getCSRFToken() },
         credentials: "include",
       });
+		redirectOnUnauthorized(res);
       if (!res.ok) throw new Error(`Delete failed: ${res.status}`);
-      if (token === serverTokenRef.current) setBackups((prev) => prev.filter((b) => b.uuid !== backupId));
+      if (token === serverTokenRef.current) setBackups((prev) => prev.filter((b) => b.name !== backupId));
     } catch (e) {
       if (token === serverTokenRef.current) setError(sanitizeError(e instanceof Error ? e.message : "Delete failed"));
     } finally {
@@ -201,18 +196,6 @@ export function BackupManager() {
                 <option key={s.id} value={s.id}>{s.name} ({s.node})</option>
               ))
             )}
-          </select>
-        </div>
-        <div className="w-32">
-          <label htmlFor="backup-format" className="text-xs font-bold uppercase text-muted">Format</label>
-          <select
-            id="backup-format"
-            className="mt-1 block w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink"
-            value={format}
-            onChange={(e) => setFormat(e.target.value as BackupFormat)}
-          >
-            <option value="zip">ZIP</option>
-            <option value="tar.gz">TAR.GZ</option>
           </select>
         </div>
         <button
@@ -249,16 +232,8 @@ export function BackupManager() {
 
       {confirmRestore && (
         <div role="dialog" aria-label="Confirm restore" className="rounded-xl border border-line bg-paper p-5">
-          <p className="text-sm font-bold text-ink mb-3">Restore backup {confirmRestore.id}</p>
-          <label htmlFor="restore-paths" className="text-xs text-muted">Optional paths (comma-separated, blank = full restore)</label>
-          <input
-            id="restore-paths"
-            type="text"
-            className="mt-1 block w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink"
-            placeholder="e.g. world/data, plugins/config.yml"
-            value={restorePathsInput}
-            onChange={(e) => setRestorePathsInput(e.target.value)}
-          />
+          <p className="text-sm font-bold text-ink mb-2">Restore backup {confirmRestore.name}</p>
+          <p className="text-xs text-muted">This restores the complete archive. Existing files not present in the archive are kept.</p>
           <div className="mt-3 flex gap-2">
             <button onClick={executeRestore} className="rounded-lg bg-red-600 hover:bg-red-700 px-4 py-1.5 text-xs font-bold text-white transition-colors">Confirm Restore</button>
             <button onClick={() => setConfirmRestore(null)} aria-label="Cancel restore" className="rounded-lg border border-line px-4 py-1.5 text-xs font-bold text-ink hover:bg-surface transition-colors">Cancel</button>
@@ -283,7 +258,7 @@ export function BackupManager() {
               <div className="flex-1">
                 <p className="font-bold text-ink">{backup.name}</p>
                 <p className="text-xs text-muted">
-                  {backup.format.toUpperCase()} &middot; {formatBytes(backup.size)} &middot;{" "}
+                  ZIP &middot; {formatBytes(backup.size)} &middot;{" "}
                   <span className={backup.status === "completed" ? "text-green-600" : "text-amber-600"}>
                     {backup.status}
                   </span>
@@ -298,16 +273,16 @@ export function BackupManager() {
                 <button
                   className="rounded-lg border border-line px-3 py-1.5 text-xs font-bold text-ink hover:bg-surface transition-colors disabled:opacity-40"
                   disabled={backup.status !== "completed" || actionLoading}
-                  onClick={() => initiateRestore(backup.uuid)}
+                  onClick={() => initiateRestore(backup.name)}
                   aria-label={`Restore backup ${backup.name}`}
                 >
                   Restore
                 </button>
-                {confirmDelete === backup.uuid ? (
+                {confirmDelete === backup.name ? (
                   <div className="flex items-center gap-1">
                     <span className="text-xs text-red-400">Confirm?</span>
                     <button
-                      onClick={() => { deleteBackup(backup.uuid); setConfirmDelete(null); }}
+                      onClick={() => { deleteBackup(backup.name); setConfirmDelete(null); }}
                       className="text-xs px-2 py-1 bg-red-500/20 text-red-300 rounded-lg hover:bg-red-500/30"
                       aria-label="Confirm delete"
                     >
@@ -325,7 +300,7 @@ export function BackupManager() {
                   <button
                     className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-bold text-red-dark hover:bg-red-wash transition-colors disabled:opacity-40"
                     disabled={backup.status !== "completed" || actionLoading || backup.isLocked}
-                    onClick={() => setConfirmDelete(backup.uuid)}
+                    onClick={() => setConfirmDelete(backup.name)}
                     aria-label={`Delete backup ${backup.name}`}
                   >
                     Delete

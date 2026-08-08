@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -115,14 +118,24 @@ func run() error {
 	}
 
 	allowInsecureNoAuth := env("DAEMON_ALLOW_INSECURE_NO_AUTH", "false") == "true"
-	if appEnv == "production" && (nodeToken == "" || nodeToken == "dev-node-token" || allowInsecureNoAuth) {
+	if appEnv == "production" && (strings.Contains(nodeToken, "CHANGE_ME") || strings.Contains(nodeID, "CHANGE_ME") || strings.Contains(panelAPIURL, "panel.example.com")) {
+		return errors.New("production Beacon configuration still contains placeholder values")
+	}
+	if appEnv == "production" && (nodeToken == "" || nodeToken == "dev-node-token" || nodeToken == "devnodetoken0001.dev-node-token" || allowInsecureNoAuth) {
 		return errors.New("DAEMON_NODE_TOKEN must be set to a production secret and unauthenticated mode must be disabled")
 	}
 	if nodeToken == "" && !allowInsecureNoAuth {
 		return errors.New("DAEMON_NODE_TOKEN is required; set DAEMON_ALLOW_INSECURE_NO_AUTH=true only for isolated development tests")
 	}
 	if allowInsecureNoAuth {
-		log.Print("WARNING: daemon API authentication is disabled by explicit development override")
+		if !isLoopbackListenAddress(addr) {
+			return errors.New("DAEMON_ALLOW_INSECURE_NO_AUTH requires DAEMON_ADDR to bind to loopback")
+		}
+		log.Print("==================================================================")
+		log.Print("WARNING: daemon API authentication is DISABLED (DAEMON_ALLOW_INSECURE_NO_AUTH=true).")
+		log.Print("This mode is for isolated development and tests ONLY.")
+		log.Print("The daemon API is reachable without any token; it must never be used in production.")
+		log.Print("==================================================================")
 	}
 
 	// Runtime provider selection
@@ -204,6 +217,13 @@ func run() error {
 	server.SetVersion(Version)
 	server.SetAllowedMounts(beaconConfig.AllowedMountsList())
 	metricsToken := strings.TrimSpace(os.Getenv("METRICS_TOKEN"))
+	if metricsToken == "" && strings.TrimSpace(os.Getenv("METRICS_TOKEN_FILE")) != "" {
+		var err error
+		metricsToken, err = readSingleLineSecret(os.Getenv("METRICS_TOKEN_FILE"))
+		if err != nil {
+			return fmt.Errorf("read METRICS_TOKEN_FILE: %w", err)
+		}
+	}
 	if appEnv == "production" && len(metricsToken) < 32 {
 		return errors.New("METRICS_TOKEN must contain at least 32 characters in production")
 	}
@@ -297,13 +317,20 @@ func run() error {
 	// SFTP server
 	sftpErr := make(chan error, 1)
 	go func() {
-		sftpAddr := env("DAEMON_SFTP_ADDR", ":2022")
+		// DAEMON_SFTP_ADDR is the advertised endpoint; the bind-specific value
+		// controls the listener when supplied by containerized deployments.
+		sftpAddr := env("DAEMON_SFTP_BIND_ADDR", env("DAEMON_SFTP_ADDR", ":2022"))
+		sftpPassphrase, passErr := sftpHostKeyPassphrase(dataDir, os.Getenv("DAEMON_SFTP_HOST_KEY_PASSPHRASE"))
+		if passErr != nil {
+			log.Printf("native sftp disabled: %v", passErr)
+			return
+		}
 		sftpSrv := &sftpserver.Server{
 			Addr: sftpAddr, DataDir: dataDir, PanelAPIURL: panelAPIURL, NodeToken: nodeToken,
 			ReadOnly: env("DAEMON_SFTP_READ_ONLY", "false") == "true", IdleTimeout: envDuration("DAEMON_SFTP_IDLE_TIMEOUT", 15*time.Minute),
 			MaxConnections: envInt("DAEMON_SFTP_MAX_CONNECTIONS", 128), MaxSessionsPerUser: envInt("DAEMON_SFTP_MAX_SESSIONS_PER_USER", 8),
 			MaxSessionLifetime: envDuration("DAEMON_SFTP_MAX_SESSION_LIFETIME", 24*time.Hour),
-			HostKeyPassphrase:  os.Getenv("DAEMON_SFTP_HOST_KEY_PASSPHRASE"),
+			HostKeyPassphrase:  sftpPassphrase,
 			Activity:           activity, Sessions: server,
 		}
 		if err := sftpSrv.Run(daemonCtx); err != nil {
@@ -395,9 +422,11 @@ waitForShutdown:
 			log.Printf("http server stopped: %v", serveErr)
 			break waitForShutdown
 		case err := <-sftpErr:
-			serveErr = fmt.Errorf("native sftp stopped: %w", err)
-			log.Printf("%v", serveErr)
-			break waitForShutdown
+			log.Printf("native sftp stopped: %v", err)
+			// The SFTP subsystem is auxiliary to the daemon's primary runtime
+			// API. A failure (bind address in use, host-key initialization
+			// problem, unexpected shutdown) must not take the whole control
+			// plane down; keep serving HTTP and let the operator investigate.
 		case sig := <-stop:
 			if sig == syscall.SIGHUP {
 				reloaded, err := config.LoadWithOptions(config.LoadOptions{Path: os.Getenv("DAEMON_CONFIG_FILE")})
@@ -430,6 +459,78 @@ waitForShutdown:
 		return serveErr
 	}
 	return nil
+}
+
+func isLoopbackListenAddress(address string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func readSingleLineSecret(path string) (string, error) {
+	info, err := os.Lstat(strings.TrimSpace(path))
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() <= 0 || info.Size() > 4096 {
+		return "", errors.New("secret file must be a non-empty regular file no larger than 4 KiB")
+	}
+	if info.Mode().Perm() != 0o600 {
+		return "", errors.New("secret file permissions must be 0600")
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	value := strings.TrimSuffix(string(body), "\n")
+	if value == "" || strings.ContainsAny(value, "\r\n") {
+		return "", errors.New("secret file must contain exactly one non-empty line")
+	}
+	return value, nil
+}
+
+// sftpHostKeyPassphrase resolves the passphrase used to encrypt the SFTP host
+// key at rest. An explicit DAEMON_SFTP_HOST_KEY_PASSPHRASE (16+ bytes) wins;
+// otherwise a stable per-install secret is loaded from (or generated into)
+// <dataDir>/.sftp/host-key-passphrase so first-run bootstrap completes without
+// extra configuration and the host key survives daemon restarts and
+// node-token rotation. The stored secret is created with 0600 permissions and
+// is never logged.
+func sftpHostKeyPassphrase(dataDir, envValue string) (string, error) {
+	if passphrase := strings.TrimSpace(envValue); passphrase != "" {
+		if len(passphrase) < 16 {
+			return "", errors.New("DAEMON_SFTP_HOST_KEY_PASSPHRASE must contain at least 16 bytes")
+		}
+		return passphrase, nil
+	}
+	path := filepath.Join(dataDir, ".sftp", "host-key-passphrase")
+	if body, err := os.ReadFile(path); err == nil {
+		value := strings.TrimSuffix(string(body), "\n")
+		if value == "" || len(value) < 16 || strings.ContainsAny(value, "\r\n") {
+			return "", fmt.Errorf("stored SFTP host-key passphrase is invalid; remove %s to regenerate it", path)
+		}
+		return value, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	secret := make([]byte, 24)
+	if _, err := rand.Read(secret); err != nil {
+		return "", fmt.Errorf("generate SFTP host-key passphrase: %w", err)
+	}
+	value := hex.EncodeToString(secret)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("create SFTP secret directory: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(value+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("persist SFTP host-key passphrase: %w", err)
+	}
+	return value, nil
 }
 
 func syncServersFromPanel(ctx context.Context, panelAPIURL, token, dataDir string, daemon *daemonhttp.Server) error {
@@ -594,7 +695,7 @@ func heartbeatLoop(ctx context.Context, panelAPIURL, nodeID, token, dataDir stri
 
 	send := func() {
 		runtimeStatus, errText := runtimeHeartbeatStatus(pinger, runtimeProvider)
-		loadAvg := float64(goruntime.NumGoroutine()) / float64(goruntime.NumCPU())
+		loadAvg := systemLoadAverage()
 
 		heartbeat := remote.NodeHeartbeat{
 			Version:         version,

@@ -7,6 +7,7 @@ metadata:
     app: gamepanel
     component: beacon
 spec:
+  type: ClusterIP
   ports:
     - port: 9090
       targetPort: 9090
@@ -68,16 +69,16 @@ spec:
           ports:
             - containerPort: 9090
               name: beacon-api
-              hostPort: 9090
             - containerPort: 2022
               name: beacon-sftp
-              hostPort: 2022
           env:
             - name: APP_ENV
               value: "production"
             - name: DAEMON_ADDR
               value: ":9090"
             - name: DAEMON_SFTP_ADDR
+              value: ":2022"
+            - name: DAEMON_SFTP_BIND_ADDR
               value: ":2022"
             - name: DAEMON_DATA_DIR
               value: "/srv/game-panel/servers"

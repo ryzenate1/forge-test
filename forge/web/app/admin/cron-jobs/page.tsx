@@ -16,6 +16,7 @@ import {
   type CronJob,
   type CreateCronJobInput,
 } from "@/lib/api/cron-jobs";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 function statusPill(status: string) {
   const tones: Record<string, "green" | "red" | "yellow" | "neutral"> = {
@@ -324,6 +325,7 @@ function ExecutionLog({ jobId }: { jobId: string }) {
 }
 
 export default function AdminCronJobs() {
+  const [confirm, renderConfirm] = useConfirm();
   const [showForm, setShowForm] = useState(false);
   const [editJob, setEditJob] = useState<CronJob | undefined>(undefined);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
@@ -423,7 +425,7 @@ export default function AdminCronJobs() {
                     </button>
                     <button
                       className="rounded p-1.5 text-slate-500 hover:bg-white/10 hover:text-red-400"
-                      onClick={(e) => { e.stopPropagation(); if (confirm("Delete this cron job?")) deleteMut.mutate(job.id); }}
+                      onClick={(e) => { e.stopPropagation(); void (async () => { if (await confirm({ title: `Delete cron job ${job.name}?`, description: "The job will stop running on its schedule. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMut.mutate(job.id); })(); }}
                       title="Delete"
                       type="button"
                     >
@@ -447,6 +449,8 @@ export default function AdminCronJobs() {
           <CronForm job={editJob} onClose={() => setShowForm(false)} />
         </Modal>
       )}
+      {renderConfirm()}
     </AdminPageLayout>
   );
 }
+

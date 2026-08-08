@@ -43,7 +43,7 @@ func registerMailSettingsRoutes(protected fiber.Router, cfg Config, mutationLimi
 			req.SMTPPassword = existing.SMTPPassword
 		}
 		if err := cfg.Store.UpdatePanelMailSettings(ctx, req); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"ok": true})
 	})

@@ -10,9 +10,9 @@ format: ## Format all code
 	./scripts/dev/format.sh
 
 test: ## Run all tests
-	cd forge/api && go test -race -timeout 10m -count=1 ./...; echo "forge/api: $$?"
-	cd beacon && go test -race -timeout 10m -count=1 ./...; echo "beacon: $$?"
-	cd forge/web && npm test; echo "forge/web: $$?"
+	@set -e; cd forge/api && go test -race -timeout 10m -count=1 ./...
+	@set -e; cd beacon && go test -race -timeout 10m -count=1 ./...
+	@set -e; cd forge/web && npm test
 
 build: ## Build all components
 	cd forge/api && go build ./cmd/api && cd ../..

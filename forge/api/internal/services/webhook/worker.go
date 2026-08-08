@@ -28,18 +28,20 @@ type deliveryResult struct {
 }
 
 func (s *Service) Start(ctx context.Context) {
-	if s != nil && s.store != nil {
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("webhook worker panic: %v", r)
-				}
-			}()
-			s.loop(ctx)
-		}()
+	if s == nil || s.store == nil {
+		return
 	}
+	s.startRateLimiterCleanup(ctx)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("webhook worker panic: %v", r)
+			}
+		}()
+		s.loop(ctx)
+	}()
 }
 func (s *Service) loop(ctx context.Context) {
 	workerID := "webhook-" + uuid.NewString()
@@ -86,6 +88,15 @@ func (s *Service) processOne(ctx context.Context, workerID string) bool {
 	if d == nil {
 		return false
 	}
+
+	if !s.rateLimiter.allow(d.TargetURL) {
+		log.Printf("webhook rate limited, re-queuing %s -> %s", d.ID, d.TargetURL)
+		finishCtx, finishCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		_ = s.store.FailWebhookDelivery(finishCtx, d.ID, workerID, nil, "", "rate limited", true, 5*time.Second)
+		finishCancel()
+		return true
+	}
+
 	sendCtx, sendCancel := context.WithTimeout(ctx, 15*time.Second)
 	result, err := sendDelivery(sendCtx, *d, netResolver{net.DefaultResolver})
 	sendCancel()

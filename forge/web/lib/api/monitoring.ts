@@ -1,4 +1,5 @@
 import { fetchJSON, postJSON } from './http';
+import type { ApiEndpointHealthRecord } from './types';
 
 export interface NodeMetrics {
   id: string;
@@ -23,17 +24,9 @@ export interface NodeMetrics {
 export interface SystemInfo {
   nodes: NodeMetrics[];
   unacknowledgedAlerts: number;
-  recentHealthChecks: any[];
+  recentHealthChecks: ApiEndpointHealthRecord[];
   totalServers?: number;
   totalUsers?: number;
-}
-
-export interface ProcessInfo {
-  pid: number;
-  name: string;
-  cpuPercent: number;
-  memoryPercent: number;
-  state: string;
 }
 
 export interface AlertEvent {
@@ -45,10 +38,12 @@ export interface AlertEvent {
   createdAt: string;
 }
 
-export async function getNodeMetrics(params?: { nodeId?: string; period?: string }): Promise<NodeMetrics[]> {
+export async function getNodeMetrics(params?: { nodeId?: string; period?: string; limit?: number; since?: string }): Promise<NodeMetrics[]> {
   const query = new URLSearchParams();
   if (params?.nodeId) query.set('nodeId', params.nodeId);
   if (params?.period) query.set('period', params.period);
+  if (params?.limit != null) query.set('limit', String(params.limit));
+  if (params?.since) query.set('since', params.since);
   const qs = query.toString();
   const res = await fetchJSON<{ data: NodeMetrics[] }>(`/monitoring/nodes/metrics${qs ? `?${qs}` : ''}`);
   return res.data ?? [];
@@ -56,11 +51,6 @@ export async function getNodeMetrics(params?: { nodeId?: string; period?: string
 
 export function getSystemInfo(): Promise<SystemInfo> {
   return fetchJSON<SystemInfo>('/monitoring/summary');
-}
-
-export function getProcessList(sort?: 'cpu' | 'mem'): Promise<ProcessInfo[]> {
-  const query = sort ? `?sort=${sort}` : '';
-  return fetchJSON<ProcessInfo[]>(`/monitoring/nodes/processes${query}`);
 }
 
 export async function getAlertHistory(params?: { page?: number; limit?: number }): Promise<AlertEvent[]> {

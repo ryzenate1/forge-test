@@ -8,7 +8,7 @@ import {
   RotateCcw, Server, XOctagon,
 } from "lucide-react";
 import { fetchJSON, postJSON } from "@/lib/api";
-import { rollbackToPrevious, cancelDeployment } from "@/lib/api/deployments";
+import { fetchDeployment, rollbackToPrevious, cancelDeployment } from "@/lib/api/deployments";
 import { Btn, Card, CardHeader, EmptyState, Pill, SectionHeader } from "@/components/admin/admin-ui";
 
 type Deployment = {
@@ -29,8 +29,9 @@ type Deployment = {
 
 type TimelineEvent = {
   id: string;
-  type: string;
-  message: string;
+  eventType: string;
+  source?: string;
+  payload?: Record<string, unknown>;
   timestamp: string;
 };
 
@@ -42,12 +43,12 @@ export default function AdminDeploymentDetailPage() {
 
   const depQuery = useQuery({
     queryKey: ["admin", "deployments", id],
-      queryFn: () => fetchJSON<Deployment>(`/admin/deployments/${encodeURIComponent(id)}`),
+      queryFn: () => fetchDeployment(id),
     });
 
     const timelineQuery = useQuery({
       queryKey: ["admin", "deployments", id, "timeline"],
-      queryFn: () => fetchJSON<TimelineEvent[]>(`/admin/deployments/${encodeURIComponent(id)}/timeline`),
+      queryFn: () => fetchJSON<TimelineEvent[]>(`/timeline/deployments/${encodeURIComponent(id)}`),
     });
 
     const rollbackMutation = useMutation({
@@ -158,16 +159,12 @@ export default function AdminDeploymentDetailPage() {
             <p className="mt-1 text-sm text-slate-200">{dep.strategy.replace("_", "-")}</p>
           </div>
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Rollout Strategy</p>
-            <p className="mt-1 text-sm text-slate-200">{dep.rolloutStrategy ? dep.rolloutStrategy.replace("_", "-") : "—"}</p>
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Active Target</p>
+            <p className="mt-1 text-sm text-slate-200">{dep.activeTarget ? dep.activeTarget.replace("_", "-") : "—"}</p>
           </div>
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Current Revision</p>
             <p className="mt-1 text-sm text-slate-200">{dep.currentRevisionId ? dep.currentRevisionId.slice(0, 8) + "..." : "—"}</p>
-          </div>
-          <div>
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Target Group</p>
-            <p className="mt-1 text-sm text-slate-200">{dep.targetGroup ?? "—"}</p>
           </div>
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Health Check Path</p>
@@ -208,8 +205,8 @@ export default function AdminDeploymentDetailPage() {
                 <div className="absolute -left-[19px] mt-1.5 h-2.5 w-2.5 rounded-full border-2 border-[#dc2626] bg-[#1e2536]" />
                 <div className="flex items-start justify-between">
                   <div>
-                    <p className="text-sm font-medium text-slate-200">{event.message}</p>
-                    <p className="text-xs text-slate-500">{event.type}</p>
+                    <p className="text-sm font-medium text-slate-200">{(event.payload && typeof event.payload.message === "string" ? event.payload.message : event.eventType)}</p>
+                    <p className="text-xs text-slate-500">{event.eventType}</p>
                   </div>
                   <span className="shrink-0 text-xs text-slate-500">{new Date(event.timestamp).toLocaleString()}</span>
                 </div>

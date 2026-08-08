@@ -2,13 +2,11 @@
 
 ## 📚 Documentation Structure
 
-- [Architecture](./architecture/) - System architecture and design
-- [Development](./development/) - Development guidelines and contribution
-- [Operations](./operations/) - Deployment and operations
-- [API](./api/) - API documentation
-- [Audits](./audits/) - Code audits and comparisons
-- [Deployment](./deployment/) - Deployment guides
-- [Reference](./reference/) - Reference materials
+- [Architecture](../README.md#architecture) - System architecture and design
+- [Development](./development/contributing.md) - Development guidelines and contribution
+- [Operations](../infra/README.md) - Deployment and operations
+- [API reference](../forge/api/docs/openapi.json) - API documentation
+- [Audits](./audits/docker-compose-audit.md) - Code audits and comparisons
 
 ## 🔗 Quick Links
 

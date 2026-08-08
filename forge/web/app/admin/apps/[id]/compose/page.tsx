@@ -14,7 +14,7 @@ import {
 import type { ComposeService } from "@/lib/api/apps";
 import { Btn, Card, CardHeader, EmptyState, Pill, SectionHeader, Modal } from "@/components/admin/admin-ui";
 import { LogViewer } from "@/components/admin/AdminAppsShared";
-import { toast, Toaster } from "@/components/ui/sonner";
+import { toast } from "@/components/ui/sonner";
 
 export default function ComposeStackPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -177,7 +177,6 @@ export default function ComposeStackPage({ params }: { params: Promise<{ id: str
           {redeployMut.error.message}
         </div>
       )}
-      <Toaster />
     </div>
   );
 }

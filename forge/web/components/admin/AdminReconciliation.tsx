@@ -16,6 +16,7 @@ import {
 } from "@/lib/api/reconciliation";
 import { useToast } from "@/components/ui/toast";
 import { AdminConfirmDialog, AdminPageHeader, Btn, Card, CardHeader, EmptyState, Pill } from "./admin-ui";
+import { TableSkeleton } from "@/components/ui/loading-skeleton";
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unknown error";
@@ -312,7 +313,7 @@ export function AdminReconciliation() {
       <Card>
         <CardHeader title="Reconciliation Plans" icon={FlaskConical} />
         {plans.isLoading ? (
-          <div className="py-10 text-center text-sm text-slate-500">Loading plans...</div>
+          <TableSkeleton rows={3} />
         ) : plans.isError ? (
           <div className="p-4">
             <div className="flex items-start justify-between gap-4 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-200">
@@ -335,7 +336,7 @@ export function AdminReconciliation() {
         <Card>
           <CardHeader title="Recent Events" icon={AlertTriangle} />
           {events.isLoading ? (
-            <div className="py-10 text-center text-sm text-slate-500">Loading events...</div>
+            <TableSkeleton rows={3} />
           ) : events.isError ? (
             <div className="p-4">
               <div className="rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-200">

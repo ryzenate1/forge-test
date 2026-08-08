@@ -91,6 +91,24 @@ func NewEdgeAgent(panelURL, nodeToken, nodeID, beaconVersion string) *EdgeAgent 
 
 func (a *EdgeAgent) Start(ctx context.Context) {
 	defer close(a.stopped)
+
+	// The edge channel is only considered connected after a real round-trip to
+	// the panel edge endpoint. Most panels do not implement /api/edge/connect,
+	// so the agent stays honestly disconnected instead of reporting a fake
+	// "connected" state.
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	connected := a.tryReconnect(probeCtx)
+	cancel()
+	if !connected {
+		a.setState(EdgeStateDisconnected)
+		log.Printf("[edge] edge channel unavailable on panel (no reachable /api/edge/connect endpoint); edge disabled")
+		select {
+		case <-ctx.Done():
+		case <-a.stopCh:
+		}
+		return
+	}
+
 	a.mu.Lock()
 	a.setStateLocked(EdgeStateConnected)
 	a.lastConnectTime = time.Now()
@@ -118,6 +136,18 @@ func (a *EdgeAgent) Start(ctx context.Context) {
 			}
 			return
 		case <-heartbeat.C:
+			// Real heartbeat: re-verify the edge connection is still alive.
+			if !a.tryReconnect(ctx) {
+				a.mu.Lock()
+				if !a.offlineDetected {
+					a.offlineDetected = true
+					a.setStateLocked(EdgeStateOffline)
+				}
+				a.mu.Unlock()
+				log.Printf("[edge] heartbeat lost; entering reconnect loop")
+				go a.reconnectLoop(ctx)
+				continue
+			}
 			a.mu.Lock()
 			a.lastHeartbeat = time.Now()
 			a.mu.Unlock()
@@ -225,7 +255,7 @@ func (a *EdgeAgent) tryReconnect(ctx context.Context) bool {
 		log.Printf("[edge] reconnect marshal error: %v", err)
 		return false
 	}
-	baseURL := strings.TrimRight(a.panelURL, "/")
+	baseURL := normalizePanelBaseURL(a.panelURL)
 	endpoint, err := url.Parse(baseURL + "/api/edge/connect")
 	if err != nil || !secureEdgeURL(endpoint) {
 		log.Printf("[edge] reconnect URL is invalid or insecure")
@@ -270,6 +300,13 @@ func secureJitter(limit time.Duration) time.Duration {
 		return 0
 	}
 	return time.Duration(value.Int64())
+}
+
+func normalizePanelBaseURL(value string) string {
+	value = strings.TrimRight(strings.TrimSpace(value), "/")
+	value = strings.TrimSuffix(value, "/api/remote")
+	value = strings.TrimSuffix(value, "/api/v1")
+	return strings.TrimRight(value, "/")
 }
 
 func secureEdgeURL(endpoint *url.URL) bool {

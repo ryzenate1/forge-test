@@ -3,19 +3,19 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/components/ui/toast";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import {
   AlertTriangle, Ban, Box, Cpu, Database, ExternalLink, HardDrive, Info,
   KeyRound, Layers, Network, Plus, RefreshCw, Server, Trash2, Zap,
 } from "lucide-react";
 import {
   type ApiServer, type ApiNode, type ApiAllocation, type ApiEgg,
-  type ApiUser, type ApiMount, type ApiRegion, type ApiTemplate,
+  type ApiUser, type ApiMount, type ApiRegion,
   fetchServer, fetchServers, fetchNodes, fetchEggs, fetchAllocations, fetchUsers,
   fetchTemplates, fetchRegions, fetchMounts, fetchServerMounts, fetchServerDatabases, fetchServerStartup,
   assignServerAllocation, assignServerMount, fetchServerAllocations, removeServerMount, searchUsers, createServer, createServerDatabase,
   rotateServerDatabasePasswordByBody, deleteServerDatabaseWithSuffix, setPrimaryServerAllocation, unassignServerAllocation, updateServerStartupVariable,
   cancelServerTransfer, deleteServer, fetchServerTransferStatus, suspendServer, transferServer, unsuspendServer, reinstallServer, updateServer,
-  ApiUserSearchResult,
 } from "@/lib/api";
 import { AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, Textarea, cn } from "./admin-ui";
 
@@ -352,7 +352,6 @@ function ServerDetailContent({ serverId, tab, setTab, users, nodes, allocations,
   const reinstallMut = useMutation({ mutationFn: () => reinstallServer(serverId), onSuccess: () => qc.invalidateQueries({ queryKey: ["server", serverId] }), onError: (error) => toast({ tone: "error", title: "Reinstall failed", message: error instanceof Error ? error.message : "Could not reinstall server" }) });
 
   if (isLoading || !server) return <div className="p-8 text-center text-sm text-slate-500">Loading…</div>;
-  const installed = server.status !== "installing";
 
   return (
     <div className="space-y-4">
@@ -698,11 +697,12 @@ function ServerAllocationsTab({ server, allocations }: { server: ApiServer; allo
   const [allocationId, setAllocationId] = useState("");
   const refresh = () => { void qc.invalidateQueries({ queryKey: ["server-allocations", server.id] }); void qc.invalidateQueries({ queryKey: ["allocations"] }); void qc.invalidateQueries({ queryKey: ["server", server.id] }); };
   const { toast } = useToast();
+  const [confirm, renderConfirm] = useConfirm();
   const assignMut = useMutation({ mutationFn: () => assignServerAllocation(server.id, allocationId), onSuccess: () => { setAllocationId(""); refresh(); }, onError: (error) => toast({ tone: "error", title: "Assign failed", message: error instanceof Error ? error.message : "Could not assign allocation" }) });
   const unassignMut = useMutation({ mutationFn: (id: string) => unassignServerAllocation(server.id, id), onSuccess: refresh, onError: (error) => toast({ tone: "error", title: "Unassign failed", message: error instanceof Error ? error.message : "Could not unassign allocation" }) });
   const primaryMut = useMutation({ mutationFn: (id: string) => setPrimaryServerAllocation(server.id, id), onSuccess: refresh, onError: (error) => toast({ tone: "error", title: "Set primary failed", message: error instanceof Error ? error.message : "Could not set primary allocation" }) });
   const primaryId = server.primaryAllocationId ?? server.allocationId;
-  return <div className="space-y-4"><Card><CardHeader title="Assigned Allocations" icon={Network}/>{assigned.length === 0 ? <EmptyState icon={Network} message="No allocations assigned."/> : <div className="overflow-x-auto"><table className="w-full text-sm"><tbody className="divide-y divide-white/[0.04]">{assigned.map((allocation) => { const primary = allocation.id === primaryId || allocation.primary || allocation.isPrimary; return <tr key={allocation.id}><td className="px-4 py-3 font-mono text-xs">{allocation.ip}:{allocation.port}</td><td className="px-4 py-3">{primary ? <Pill tone="green">Primary</Pill> : <Btn size="sm" tone="ghost" onClick={() => primaryMut.mutate(allocation.id)}>Make primary</Btn>}</td><td className="px-4 py-3 text-right"><Btn size="sm" tone="danger" disabled={Boolean(primary) || unassignMut.isPending} onClick={() => { if (confirm("Unassign this allocation?")) unassignMut.mutate(allocation.id); }}>Unassign</Btn></td></tr>; })}</tbody></table></div>}</Card><Card><CardHeader title="Assign Allocation" icon={Plus}/><div className="flex flex-col gap-3 p-4 sm:flex-row"><select className="h-9 flex-1 rounded border border-white/10 bg-[#161b28] px-3 text-sm" value={allocationId} onChange={(event) => setAllocationId(event.target.value)}><option value="">Select an unassigned allocation…</option>{available.map((allocation) => <option key={allocation.id} value={allocation.id}>{allocation.ip}:{allocation.port}</option>)}</select><Btn disabled={!allocationId || assignMut.isPending} onClick={() => assignMut.mutate()}>Assign</Btn></div></Card></div>;
+  return <div className="space-y-4"><Card><CardHeader title="Assigned Allocations" icon={Network}/>{assigned.length === 0 ? <EmptyState icon={Network} message="No allocations assigned."/> : <div className="overflow-x-auto"><table className="w-full text-sm"><tbody className="divide-y divide-white/[0.04]">{assigned.map((allocation) => { const primary = allocation.id === primaryId || allocation.primary || allocation.isPrimary; return <tr key={allocation.id}><td className="px-4 py-3 font-mono text-xs">{allocation.ip}:{allocation.port}</td><td className="px-4 py-3">{primary ? <Pill tone="green">Primary</Pill> : <Btn size="sm" tone="ghost" onClick={() => primaryMut.mutate(allocation.id)}>Make primary</Btn>}</td><td className="px-4 py-3 text-right"><Btn size="sm" tone="danger" disabled={Boolean(primary) || unassignMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: `Unassign ${allocation.ip}:${allocation.port}?`, description: "The allocation will be released from this server.", danger: true, confirmLabel: "Unassign" })) unassignMut.mutate(allocation.id); })(); }}>Unassign</Btn></td></tr>; })}</tbody></table></div>}</Card><Card><CardHeader title="Assign Allocation" icon={Plus}/><div className="flex flex-col gap-3 p-4 sm:flex-row"><select className="h-9 flex-1 rounded border border-white/10 bg-[#161b28] px-3 text-sm" value={allocationId} onChange={(event) => setAllocationId(event.target.value)}><option value="">Select an unassigned allocation…</option>{available.map((allocation) => <option key={allocation.id} value={allocation.id}>{allocation.ip}:{allocation.port}</option>)}</select><Btn disabled={!allocationId || assignMut.isPending} onClick={() => assignMut.mutate()}>Assign</Btn></div></Card>{renderConfirm()}</div>;
 }
 
 function ServerDatabaseTab({ serverId }: { serverId: string }) {
@@ -713,12 +713,13 @@ function ServerDatabaseTab({ serverId }: { serverId: string }) {
   const [dbName, setDbName] = useState("");
   const [remote, setRemote] = useState("%");
   const createMut = useMutation({
-    mutationFn: () => createServerDatabase(serverId, { database: dbName.trim(), remote: remote.trim() || "%" } as any),
+    mutationFn: () => createServerDatabase(serverId, { database: dbName.trim(), remote: remote.trim() || "%" }),
     onSuccess: () => { setDbName(""); void qc.invalidateQueries({ queryKey: ["server-dbs", serverId] }); },
     onError: (error) => toast({ tone: "error", title: "Create failed", message: error instanceof Error ? error.message : "Could not create database" }),
   });
   const rotateMut = useMutation({ mutationFn: (dbId: string) => rotateServerDatabasePasswordByBody(serverId, dbId), onSuccess: () => qc.invalidateQueries({ queryKey: ["server-dbs", serverId] }), onError: (error) => toast({ tone: "error", title: "Rotate failed", message: error instanceof Error ? error.message : "Could not rotate database password" }) });
   const deleteMut = useMutation({ mutationFn: (dbId: string) => deleteServerDatabaseWithSuffix(serverId, dbId), onSuccess: () => qc.invalidateQueries({ queryKey: ["server-dbs", serverId] }), onError: (error) => toast({ tone: "error", title: "Delete failed", message: error instanceof Error ? error.message : "Could not delete database" }) });
+  const [confirm, renderConfirm] = useConfirm();
   return (
     <div className="space-y-4">
       <Card>
@@ -744,10 +745,10 @@ function ServerDatabaseTab({ serverId }: { serverId: string }) {
                   <td className="px-4 py-2 font-mono text-xs">{d.host ?? "—"}</td>
                   <td className="px-4 py-2 text-xs">{d.remote}</td>
                   <td className="px-4 py-2 text-right space-x-2">
-                    <Btn tone="ghost" onClick={() => { if (confirm("Rotate password?")) rotateMut.mutate(d.id); }}>
+                    <Btn tone="ghost" onClick={() => { void (async () => { if (await confirm({ title: `Rotate password for ${d.database}?`, description: "Existing clients will stop connecting with the old password.", confirmLabel: "Rotate" })) rotateMut.mutate(d.id); })(); }}>
                       Rotate
                     </Btn>
-                    <Btn tone="danger" onClick={() => { if (confirm("Delete database?")) deleteMut.mutate(d.id); }}>
+                    <Btn tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Delete database ${d.database}?`, description: "The database and its data will be removed. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMut.mutate(d.id); })(); }}>
                       Delete
                     </Btn>
                   </td>
@@ -772,6 +773,7 @@ function ServerDatabaseTab({ serverId }: { serverId: string }) {
           </Btn>
         </form>
       </Card>
+      {renderConfirm()}
     </div>
   );
 }
@@ -815,7 +817,7 @@ function ServerMountsTab({ server, mounts }: { server: ApiServer; mounts: ApiMou
     <Card>
       <CardHeader title="Eligible Mounts" icon={HardDrive} />
       <div className="border-b border-white/[0.06] px-4 py-3 text-xs text-slate-400">
-        Only mounts attached to this server's node and egg are shown. Assignment makes the mount available to the server; it does not confirm a runtime mount.
+        Only mounts attached to this server&apos;s node and egg are shown. Assignment makes the mount available to the server; it does not confirm a runtime mount.
       </div>
       {server.configSyncPending ? <div className="m-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100" role="status">Mount configuration is pending runtime synchronization{server.configSyncError ? `: ${server.configSyncError}` : "."}</div> : null}
       {syncNotice ? <div className="m-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-100" role="status">{syncNotice}</div> : null}
@@ -870,11 +872,12 @@ function ServerMountsTab({ server, mounts }: { server: ApiServer; mounts: ApiMou
 function ServerManageTab({ server, reinstallMut, suspendMut, unsuspendMut, nodes, allocations }: { server: ApiServer; reinstallMut: { mutate: () => void; isPending: boolean }; suspendMut: { mutate: () => void; isPending: boolean }; unsuspendMut: { mutate: () => void; isPending: boolean }; nodes: ApiNode[]; allocations: ApiAllocation[] }) {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const [confirm, renderConfirm] = useConfirm();
   const transferQuery = useQuery({ queryKey: ["server-transfer", server.id], queryFn: () => fetchServerTransferStatus(server.id), retry: false, refetchInterval: server.transferring ? 5000 : false });
   const [targetNodeId, setTargetNodeId] = useState(server.transferTargetNodeId ?? "");
   const [primaryAllocationId, setPrimaryAllocationId] = useState("");
   const targetAllocations = allocations.filter((allocation) => allocation.node === targetNodeId && !allocation.server);
-  const transferMut = useMutation({ mutationFn: () => transferServer(server.id, targetNodeId), onSuccess: () => { void transferQuery.refetch(); void qc.invalidateQueries({ queryKey: ["server", server.id] }); }, onError: (error) => toast({ tone: "error", title: "Transfer failed", message: error instanceof Error ? error.message : "Could not transfer server" }) });
+  const transferMut = useMutation({ mutationFn: () => transferServer(server.id, targetNodeId, primaryAllocationId || undefined), onSuccess: () => { void transferQuery.refetch(); void qc.invalidateQueries({ queryKey: ["server", server.id] }); }, onError: (error) => toast({ tone: "error", title: "Transfer failed", message: error instanceof Error ? error.message : "Could not transfer server" }) });
   const cancelMut = useMutation({ mutationFn: () => cancelServerTransfer(server.id), onSuccess: () => { void transferQuery.refetch(); void qc.invalidateQueries({ queryKey: ["server", server.id] }); }, onError: (error) => toast({ tone: "error", title: "Cancel failed", message: error instanceof Error ? error.message : "Could not cancel transfer" }) });
   const transfer = transferQuery.data;
   return (
@@ -883,7 +886,7 @@ function ServerManageTab({ server, reinstallMut, suspendMut, unsuspendMut, nodes
         <CardHeader title="Reinstall Server" icon={RefreshCw} />
         <div className="space-y-3 p-4">
           <p className="text-xs text-slate-400">Re-runs the egg install script. Container will be destroyed and recreated.</p>
-          <Btn tone="danger" onClick={() => { if (confirm("Reinstall this server?")) reinstallMut.mutate(); }} disabled={reinstallMut.isPending}>
+          <Btn tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Reinstall ${server.name ?? server.id.slice(0, 8)}?`, description: "The container will be destroyed and recreated, and the egg install script will re-run. This can overwrite server files.", danger: true, confirmLabel: "Reinstall" })) reinstallMut.mutate(); })(); }} disabled={reinstallMut.isPending}>
             {reinstallMut.isPending ? "Reinstalling…" : "Reinstall Server"}
           </Btn>
         </div>
@@ -909,21 +912,23 @@ function ServerManageTab({ server, reinstallMut, suspendMut, unsuspendMut, nodes
           {transfer?.error ? <p className="text-xs text-red-300">{transfer.error}</p> : null}
           <label className="block text-xs text-slate-400">Target node<select className="mt-1 h-9 w-full rounded border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100" value={targetNodeId} onChange={(event) => { setTargetNodeId(event.target.value); setPrimaryAllocationId(""); }}><option value="">Select…</option>{nodes.filter((node) => node.id !== server.nodeId && node.name !== server.node).map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}</select></label>
           <label className="block text-xs text-slate-400">Primary allocation<select className="mt-1 h-9 w-full rounded border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100" value={primaryAllocationId} onChange={(event) => setPrimaryAllocationId(event.target.value)}><option value="">Select…</option>{targetAllocations.map((allocation) => <option key={allocation.id} value={allocation.id}>{allocation.ip}:{allocation.port}</option>)}</select></label>
-          {transfer?.transferring ? <Btn tone="danger" disabled={cancelMut.isPending} onClick={() => { if (confirm("Cancel this transfer?")) cancelMut.mutate(); }}>Cancel Transfer</Btn> : <Btn disabled={!targetNodeId || !primaryAllocationId || transferMut.isPending} onClick={() => { if (confirm("Start this server transfer?")) transferMut.mutate(); }}>Start Transfer</Btn>}
+          {transfer?.transferring ? <Btn tone="danger" disabled={cancelMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: "Cancel this transfer?", description: "The in-progress server transfer will be aborted.", danger: true, confirmLabel: "Cancel Transfer" })) cancelMut.mutate(); })(); }}>Cancel Transfer</Btn> : <Btn disabled={!targetNodeId || !primaryAllocationId || transferMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: "Start this server transfer?", description: `The server will move to the selected node. Services may be interrupted.`, confirmLabel: "Start Transfer" })) transferMut.mutate(); })(); }}>Start Transfer</Btn>}
         </div>
       </Card>
+      {renderConfirm()}
     </div>
   );
 }
 
 function ServerDeleteTab({ deleteMut, forceDeleteMut, serverName }: { deleteMut: { mutate: () => void; isPending: boolean }; forceDeleteMut: { mutate: () => void; isPending: boolean }; serverName: string }) {
+  const [confirm, renderConfirm] = useConfirm();
   return (
     <div className="grid gap-4 md:grid-cols-2">
       <Card>
         <CardHeader title="Safely Delete" icon={Trash2} />
         <div className="space-y-3 p-4">
           <p className="text-xs text-slate-400">Removes the server record. Container and files are cleaned up by the daemon asynchronously.</p>
-          <Btn tone="danger" onClick={() => { if (confirm(`Safely delete ${serverName}?`)) deleteMut.mutate(); }} disabled={deleteMut.isPending}>
+          <Btn tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Safely delete ${serverName}?`, description: "The server record will be removed and the container cleaned up by the daemon. This cannot be undone.", danger: true, confirmLabel: "Safely Delete" })) deleteMut.mutate(); })(); }} disabled={deleteMut.isPending}>
             {deleteMut.isPending ? "Deleting…" : "Safely Delete"}
           </Btn>
         </div>
@@ -932,11 +937,12 @@ function ServerDeleteTab({ deleteMut, forceDeleteMut, serverName }: { deleteMut:
         <CardHeader title="Force Delete" icon={AlertTriangle} action={<Pill tone="red">Danger</Pill>} />
         <div className="space-y-3 p-4">
           <p className="text-xs text-red-400">Bypasses daemon cleanup. Files may be orphaned on the node.</p>
-          <Btn tone="danger" onClick={() => { if (confirm(`FORCE delete ${serverName}? Files may be orphaned.`)) forceDeleteMut.mutate(); }} disabled={forceDeleteMut.isPending}>
+          <Btn tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Force delete ${serverName}?`, description: "Daemon cleanup is bypassed. Files may be orphaned on the node. This cannot be undone.", danger: true, confirmLabel: "Force Delete" })) forceDeleteMut.mutate(); })(); }} disabled={forceDeleteMut.isPending}>
             {forceDeleteMut.isPending ? "Deleting…" : "Forcibly Delete"}
           </Btn>
         </div>
       </Card>
+      {renderConfirm()}
     </div>
   );
 }

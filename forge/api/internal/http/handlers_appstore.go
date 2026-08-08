@@ -18,7 +18,7 @@ func registerAppStoreRoutes(protected fiber.Router, cfg Config, svc *appstore.Se
 		search := c.Query("search")
 		apps, err := svc.ListApps(c.Context(), category, search)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": apps})
 	}
@@ -66,16 +66,21 @@ func registerAppStoreRoutes(protected fiber.Router, cfg Config, svc *appstore.Se
 		inst, err := svc.InstallApp(c.Context(), &req)
 		if err != nil {
 			if inst != nil {
-				return c.Status(500).JSON(fiber.Map{"data": inst, "error": err.Error()})
+				logInternalError(c, err)
+				msg := "an internal error occurred"
+				if !isProductionEnv(c) {
+					msg = err.Error()
+				}
+				return c.Status(500).JSON(fiber.Map{"data": inst, "error": msg})
 			}
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(201).JSON(fiber.Map{"data": inst})
 	})
 
 	store.Post("/:id/uninstall", func(c *fiber.Ctx) error {
 		if err := svc.UninstallApp(c.Context(), c.Params("id")); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": "ok"})
 	})
@@ -83,7 +88,7 @@ func registerAppStoreRoutes(protected fiber.Router, cfg Config, svc *appstore.Se
 	store.Get("/installed", func(c *fiber.Ctx) error {
 		installs, err := svc.ListInstalls(c.Context())
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": installs})
 	})
@@ -91,7 +96,7 @@ func registerAppStoreRoutes(protected fiber.Router, cfg Config, svc *appstore.Se
 	store.Post("/:id/upgrade", func(c *fiber.Ctx) error {
 		inst, err := svc.UpgradeApp(c.Context(), c.Params("id"))
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": inst})
 	})
@@ -104,7 +109,7 @@ func registerAppStoreRoutes(protected fiber.Router, cfg Config, svc *appstore.Se
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 		}
 		if err := svc.SyncFromRemote(c.Context(), req.RegistryURL); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": "sync initiated"})
 	})

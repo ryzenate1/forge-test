@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { HealthCheck } from "@/lib/api";
 import { sanitizeError } from "@/lib/sanitize";
+import { redirectOnUnauthorized } from "@/lib/client-auth";
 
 const POLL_INTERVAL_MS = 30000;
 
@@ -21,6 +22,7 @@ export function HealthDashboard() {
     setError(null);
     fetch("/api/proxy/health", { signal: controller.signal, credentials: "include" })
       .then(async (r) => {
+		redirectOnUnauthorized(r);
         if (!r.ok) {
           const body = await r.json().catch(() => null);
           throw new Error(body?.error || `Failed to load: ${r.status}`);
@@ -45,6 +47,7 @@ export function HealthDashboard() {
       const token = ++serverTokenRef.current;
       fetch("/api/proxy/health", { signal: lastController.signal, credentials: "include" })
         .then((r) => {
+			redirectOnUnauthorized(r);
           if (!r.ok) {
             const body = r.clone();
             return body.json().catch(() => null).then((parsed) => {

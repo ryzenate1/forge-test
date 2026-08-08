@@ -37,6 +37,8 @@ export function ScopePicker({ scopes, selected, onChange, disabled, label }: {
       <button
         type="button"
         disabled={disabled}
+        aria-expanded={open}
+        aria-haspopup="listbox"
         onClick={() => { setOpen((v) => !v); setQuery(""); setTimeout(() => inputRef.current?.focus(), 0); }}
         className="flex h-10 w-full items-center justify-between rounded-lg border border-white/[0.12] bg-surface-input px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
       >
@@ -49,13 +51,13 @@ export function ScopePicker({ scopes, selected, onChange, disabled, label }: {
             <Search className="h-4 w-4 shrink-0 text-slate-500" />
             <input
               ref={inputRef}
-              className="min-w-0 flex-1 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-500"
+              className="min-w-0 flex-1 rounded bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-500 focus-visible:ring-2 focus-visible:ring-brand/50"
               placeholder={`Search ${label.toLowerCase()}...`}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
-          <div className="max-h-64 overflow-y-auto p-1">
+          <div aria-multiselectable="true" className="max-h-64 overflow-y-auto p-1" role="listbox">
             {filtered.length === 0 ? (
               <p className="px-2 py-6 text-center text-xs text-slate-500">No scopes match your search.</p>
             ) : (

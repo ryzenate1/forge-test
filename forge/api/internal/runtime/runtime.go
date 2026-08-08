@@ -100,6 +100,8 @@ type ServerConfiguration struct {
 	Allocations map[string]any
 	Config      map[string]any
 	Mounts      []Mount
+	UID         int
+	GID         int
 }
 
 type PowerResponse struct {

@@ -14,7 +14,7 @@ import {
 } from "@/lib/api/deployments";
 import type { AppDeployment } from "@/lib/api/apps";
 import { Btn, Card, CardHeader, EmptyState, Modal, SectionHeader } from "@/components/admin/admin-ui";
-import { toast, Toaster } from "@/components/ui/sonner";
+import { toast } from "@/components/ui/sonner";
 import { DeployStatusBadge } from "@/components/admin/AdminAppsShared";
 import { DeploymentProgress } from "@/components/app/deployment-progress";
 import { RevisionCompare } from "@/components/app/revision-compare";
@@ -305,7 +305,6 @@ export default function AppDeploymentsPage({ params }: { params: Promise<{ id: s
           loading={rollbackMut.isPending}
         />
       )}
-      <Toaster />
     </div>
   );
 }

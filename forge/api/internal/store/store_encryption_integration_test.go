@@ -99,7 +99,7 @@ func TestEncryptedOperationalSecretUseAndRecoveryConsume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	database, err := s.CreateServerDatabase(ctx, "44444444-4444-4444-4444-444444444444", CreateServerDatabaseRequest{Database: "encrypted", Remote: "%"}, nil)
+	database, err := s.CreateServerDatabase(ctx, "44444444-4444-4444-8444-444444444444", CreateServerDatabaseRequest{Database: "encrypted", Remote: "%"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,10 +108,10 @@ func TestEncryptedOperationalSecretUseAndRecoveryConsume(t *testing.T) {
 		t.Fatalf("database secrets host=%q database=%v err=%v", hostPassword, database.Password, err)
 	}
 	oldPassword := *database.Password
-	if err := s.CommitServerDatabasePassword(ctx, "44444444-4444-4444-4444-444444444444", database.ID, oldPassword, "rotated-password", nil); err != nil {
+	if err := s.CommitServerDatabasePassword(ctx, "44444444-4444-4444-8444-444444444444", database.ID, oldPassword, "rotated-password", nil); err != nil {
 		t.Fatal(err)
 	}
-	rotated, err := s.GetServerDatabaseForProvisioning(ctx, "44444444-4444-4444-4444-444444444444", database.ID)
+	rotated, err := s.GetServerDatabaseForProvisioning(ctx, "44444444-4444-4444-8444-444444444444", database.ID)
 	if err != nil || rotated.Password == nil || *rotated.Password != "rotated-password" {
 		t.Fatalf("rotated database secret = %v, %v", rotated.Password, err)
 	}

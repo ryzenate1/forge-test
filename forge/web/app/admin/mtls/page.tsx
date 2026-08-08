@@ -5,6 +5,7 @@ import { Shield, ShieldCheck, ShieldX, RefreshCw, Trash2, Plus, AlertTriangle, C
 import { fetchJSON, postJSON } from "@/lib/api";
 import { Card, CardHeader, EmptyState, StatsRow, Pill } from "@/components/admin/admin-ui";
 import { useState } from "react";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type MTLSCert = {
   id: string;
@@ -24,6 +25,7 @@ type MTLSStatusResponse = { data: { caConfigured: boolean; serverCertCount: numb
 type MTLSMigrationStatusResponse = { data: { caConfigured: boolean; nodesWithCerts: number; totalNodes: number; migrationEnabled: boolean; phase: string } };
 
 export default function AdminMTLSPage() {
+  const [confirm, renderConfirm] = useConfirm();
   const queryClient = useQueryClient();
   const [showGenerateCA, setShowGenerateCA] = useState(false);
   const [caOrg, setCAOrg] = useState("GamePanel");
@@ -210,9 +212,9 @@ export default function AdminMTLSPage() {
                   <td className="py-3">
                     <button
                       onClick={() => {
-                        if (window.confirm("Revoke this CA certificate?")) {
+                        void (async () => { if (await confirm({ title: "Revoke this CA certificate?", description: "Clients presenting this CA will no longer be trusted. This cannot be undone.", danger: true, confirmLabel: "Revoke" })) {
                           revokeMutation.mutate(cert.id);
-                        }
+                        } })();
                       }}
                       disabled={!!cert.revokedAt}
                       className="text-red-400 hover:text-red-300 disabled:opacity-40 transition"
@@ -269,9 +271,9 @@ export default function AdminMTLSPage() {
                     {!cert.revokedAt && (
                       <button
                         onClick={() => {
-                          if (window.confirm("Revoke this certificate?")) {
+                          void (async () => { if (await confirm({ title: "Revoke this client certificate?", description: "The client will no longer be able to authenticate with mTLS. This cannot be undone.", danger: true, confirmLabel: "Revoke" })) {
                             revokeMutation.mutate(cert.id);
-                          }
+                          } })();
                         }}
                         className="text-red-400 hover:text-red-300 transition"
                         title="Revoke"
@@ -334,6 +336,8 @@ export default function AdminMTLSPage() {
           <EmptyState icon={RefreshCw} title="Migration not available" message="Migration service is not configured." />
         )}
       </Card>
+      {renderConfirm()}
     </div>
   );
 }
+

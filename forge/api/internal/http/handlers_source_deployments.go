@@ -189,7 +189,7 @@ func DeploySourceDeployment(cfg Config) fiber.Handler {
 			return fiber.NewError(fiber.StatusNotFound, "deployment not found")
 		}
 		if err := cfg.Store.UpdateSourceDeploymentStatus(ctx, d.ID, "queued"); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		cfg.Store.CreateDeploymentBuildLog(ctx, d.ID, "queued", "Deployment queued")
 		d.Status = "queued"
@@ -213,7 +213,7 @@ func CancelSourceDeployment(cfg Config) fiber.Handler {
 			return fiber.NewError(fiber.StatusConflict, "deployment already in terminal state")
 		}
 		if err := cfg.Store.UpdateSourceDeploymentStatus(ctx, d.ID, "canceled"); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		cfg.Store.CreateDeploymentBuildLog(ctx, d.ID, "canceled", "Deployment canceled by user")
 		return c.JSON(fiber.Map{"ok": true})
@@ -236,7 +236,10 @@ func GetDeploymentBuildLogs(cfg Config) fiber.Handler {
 }
 
 func registerSourceDeploymentRoutes(protected fiber.Router, cfg Config, mutationLimiter fiber.Handler) {
-	sdGroup := protected.Group("/source-deployments")
+	// Source deployments are global infrastructure records that reference
+	// arbitrary servers and git-provider tokens. There is no per-user
+	// ownership filter, so every route is admin-only.
+	sdGroup := protected.Group("/source-deployments", requireRole("admin"))
 	sdGroup.Get("/", ListSourceDeployments(cfg))
 	sdGroup.Post("/", mutationLimiter, CreateSourceDeployment(cfg))
 	sdGroup.Get("/:id", GetSourceDeployment(cfg))

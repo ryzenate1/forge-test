@@ -150,6 +150,7 @@ function ProviderRow({
             onChange={(value) => onChange({ clientSecret: value })}
             type={showSecret ? 'text' : 'password'}
             placeholder={provider.hasClientSecret ? 'Stored securely — enter a new value to replace it' : secretLabel}
+            autoComplete="off"
           />
           <button type="button" aria-label={showSecret ? 'Hide secret' : 'Show secret'} className="absolute right-2 top-7 text-slate-400 hover:text-slate-200" onClick={() => setShowSecret(!showSecret)}>
             {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}

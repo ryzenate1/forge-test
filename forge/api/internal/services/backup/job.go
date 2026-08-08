@@ -278,37 +278,52 @@ func (s *JobService) List(ctx context.Context, filters JobFilter) ([]*BackupJob,
 	return jobs, total, nil
 }
 
-// Update updates a backup job
+// Update updates a backup job using targeted column updates to avoid
+// full-row overwrites clobbering concurrent writes.
 func (s *JobService) Update(ctx context.Context, jobID string, updates map[string]interface{}) (*BackupJob, error) {
 	job, err := s.Get(ctx, jobID)
 	if err != nil {
 		return nil, err
 	}
 	if value, ok := updates["status"].(string); ok {
+		if err := s.store.UpdateBackupJobStatus(ctx, jobID, value); err != nil {
+			return nil, err
+		}
 		job.Status = BackupStatus(value)
 	}
+	var phase string
 	if value, ok := updates["currentPhase"].(string); ok {
+		phase = value
 		job.CurrentPhase = value
 	}
+	var progress float64
 	if value, ok := updates["progressPercentage"].(float64); ok {
 		if value < 0 || value > 100 {
 			return nil, fmt.Errorf("progress percentage must be between 0 and 100")
 		}
+		progress = value
 		job.ProgressPercentage = value
 	}
 	if value, ok := updates["bytesProcessed"].(int64); ok {
 		job.BytesProcessed = value
 	}
+	if phase != "" || progress != 0 || updates["bytesProcessed"] != nil {
+		if err := s.store.UpdateBackupJobProgress(ctx, jobID, phase, progress, job.BytesProcessed); err != nil {
+			return nil, err
+		}
+	}
 	if value, ok := updates["errorMessage"].(string); ok {
 		job.ErrorMessage = &value
-	}
-	if err := s.persistJob(ctx, job); err != nil {
-		return nil, err
+		if err := s.store.FailBackupJob(ctx, jobID, string(job.Status), job.RetryCount, job.LastRetryAt, job.CompletedAt, value); err != nil {
+			return nil, err
+		}
 	}
 	return job, nil
 }
 
-// Execute executes a backup job
+// Execute executes a backup job. The transition into the running state is an
+// atomic compare-and-swap in the store, so concurrent executors (manual API
+// calls and the scheduled worker) cannot run the same job twice.
 func (s *JobService) Execute(ctx context.Context, jobID string, userID string) error {
 	job, err := s.Get(ctx, jobID)
 	if err != nil {
@@ -319,16 +334,26 @@ func (s *JobService) Execute(ctx context.Context, jobID string, userID string) e
 		return fmt.Errorf("backup job is not in a state that can be executed (current: %s)", job.Status)
 	}
 
-	// Update job status to running
+	claimed, err := s.store.ClaimBackupJobForExecution(ctx, jobID)
+	if err != nil {
+		return fmt.Errorf("claim backup job for execution: %w", err)
+	}
+	if !claimed {
+		return fmt.Errorf("backup job %s is already running or was claimed by another worker", jobID)
+	}
+
+	// Re-read the job after the atomic claim so retry_count/error state is fresh.
+	if job, err = s.Get(ctx, jobID); err != nil {
+		return fmt.Errorf("reload backup job after claim: %w", err)
+	}
+
 	job.Status = BackupRunning
-	now := time.Now()
-	job.StartedAt = &now
 	job.CurrentPhase = "preparing"
 	job.ProgressPercentage = 0
 	job.BytesProcessed = 0
-
-	if err := s.persistJob(ctx, job); err != nil {
-		return err
+	if job.StartedAt == nil {
+		now := time.Now()
+		job.StartedAt = &now
 	}
 
 	s.logger.Infof("Starting backup job execution: %s (type: %s)", job.Name, job.JobType)
@@ -351,41 +376,46 @@ func (s *JobService) Execute(ctx context.Context, jobID string, userID string) e
 		// Handle retry logic
 		if job.RetryCount < job.MaxRetries {
 			job.RetryCount++
-			job.Status = BackupPending
-			now = time.Now()
+			now := time.Now()
 			job.LastRetryAt = &now
 			errMsg := err.Error()
 			job.ErrorMessage = &errMsg
-			_ = s.persistJob(ctx, job)
+			if failErr := s.store.FailBackupJob(ctx, job.ID, string(BackupPending), job.RetryCount, job.LastRetryAt, nil, errMsg); failErr != nil {
+				s.logger.Errorf("Failed to mark backup job %s for retry: %v", job.Name, failErr)
+			}
 			s.logger.Warnf("Backup job %s failed, retry %d/%d: %v", job.Name, job.RetryCount, job.MaxRetries, err)
 			return fmt.Errorf("backup failed, will retry: %w", err)
 		}
 
 		// Max retries exceeded
-		job.Status = BackupFailed
 		errMsg := err.Error()
 		job.ErrorMessage = &errMsg
-		now = time.Now()
+		now := time.Now()
 		job.CompletedAt = &now
-		_ = s.persistJob(ctx, job)
+		job.Status = BackupFailed
+		if failErr := s.store.FailBackupJob(ctx, job.ID, string(BackupFailed), job.RetryCount, job.LastRetryAt, job.CompletedAt, errMsg); failErr != nil {
+			s.logger.Errorf("Failed to mark backup job %s failed: %v", job.Name, failErr)
+		}
 		s.logger.Errorf("Backup job %s failed after %d retries: %v", job.Name, job.MaxRetries, err)
 		return fmt.Errorf("backup failed after max retries: %w", err)
 	}
 
 	// Backup completed successfully
 	job.Status = BackupCompleted
-	now = time.Now()
+	now := time.Now()
 	job.CompletedAt = &now
 	job.ProgressPercentage = 100
 
 	// Calculate duration
+	var duration *int
 	if job.StartedAt != nil {
-		duration := int(time.Since(*job.StartedAt).Seconds())
-		job.DurationSeconds = &duration
+		d := int(time.Since(*job.StartedAt).Seconds())
+		job.DurationSeconds = &d
+		duration = job.DurationSeconds
 	}
 
-	if err := s.persistJob(ctx, job); err != nil {
-		return err
+	if err := s.store.CompleteBackupJobSuccess(ctx, job.ID, duration, job.BytesProcessed); err != nil {
+		return fmt.Errorf("complete backup job: %w", err)
 	}
 	s.logger.Infof("Backup job %s completed successfully in %d seconds", job.Name, *job.DurationSeconds)
 
@@ -412,7 +442,7 @@ func (s *JobService) Cancel(ctx context.Context, jobID string, userID string) er
 			return fmt.Errorf("cancel beacon task: %w", err)
 		}
 	}
-	if err := s.persistJob(ctx, job); err != nil {
+	if err := s.store.FailBackupJob(ctx, job.ID, string(BackupCancelled), job.RetryCount, job.LastRetryAt, job.CompletedAt, "Backup cancelled by user"); err != nil {
 		return err
 	}
 

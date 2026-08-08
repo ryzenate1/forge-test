@@ -73,6 +73,7 @@ func (is *IngressSynchronizer) Start(ctx context.Context, interval time.Duration
 		}()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		var lastErr error
 
 		for {
 			select {
@@ -83,7 +84,14 @@ func (is *IngressSynchronizer) Start(ctx context.Context, interval time.Duration
 				return
 			case <-ticker.C:
 				if err := is.Sync(ctx); err != nil {
-					slog.Error("ingress sync failed", "error", err)
+					if lastErr == nil {
+						slog.Error("ingress sync failed", "error", err)
+					} else {
+						slog.Debug("ingress sync still failing", "error", err)
+					}
+					lastErr = err
+				} else {
+					lastErr = nil
 				}
 			}
 		}

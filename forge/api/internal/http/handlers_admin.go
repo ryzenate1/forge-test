@@ -166,7 +166,7 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 			if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "duplicate") {
 				return fiber.NewError(fiber.StatusConflict, err.Error())
 			}
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		_ = cfg.Store.DispatchWebhookEvent(c.Context(), "node:created", map[string]any{
 			"subject_type": "node",
@@ -269,7 +269,7 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 			if strings.Contains(err.Error(), "conflict") || strings.Contains(err.Error(), "invalid transition") {
 				return fiber.NewError(fiber.StatusConflict, err.Error())
 			}
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		_ = cfg.Store.DispatchWebhookEvent(c.Context(), "node:updated", map[string]any{
 			"subject_type": "node",
@@ -320,7 +320,7 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 			if strings.Contains(err.Error(), "not found") {
 				return fiber.NewError(fiber.StatusNotFound, err.Error())
 			}
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"token": token})
 	})
@@ -480,7 +480,7 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 		}
 		snapshot, err := clusterManager.NodeCapacity(ctx, node.ID)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(snapshot)
 	})
@@ -538,7 +538,7 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 		}
 		nodes, err := nodeRegistry.ListNodes(ctx)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		lifecycle := []any{}
 		for _, node := range nodes {
@@ -792,7 +792,7 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 			if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "duplicate") {
 				return fiber.NewError(fiber.StatusConflict, err.Error())
 			}
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(region)
 	})
@@ -821,7 +821,7 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 			if strings.Contains(err.Error(), "not found") {
 				return fiber.NewError(fiber.StatusNotFound, err.Error())
 			}
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(region)
 	})
@@ -843,7 +843,7 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 			if strings.Contains(err.Error(), "servers") || strings.Contains(err.Error(), "nodes") {
 				return fiber.NewError(fiber.StatusConflict, err.Error())
 			}
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"ok": true})
 	})
@@ -901,7 +901,7 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 			if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "duplicate") {
 				return fiber.NewError(fiber.StatusConflict, err.Error())
 			}
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(loc)
 	})
@@ -928,7 +928,7 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 			if strings.Contains(err.Error(), "not found") {
 				return fiber.NewError(fiber.StatusNotFound, err.Error())
 			}
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(loc)
 	})
@@ -950,7 +950,7 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 			if strings.Contains(err.Error(), "nodes") {
 				return fiber.NewError(fiber.StatusConflict, err.Error())
 			}
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"ok": true})
 	})
@@ -1267,7 +1267,7 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 		}
 		variables, err := cfg.Store.ListEggVariables(ctx, c.Params("id"))
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{
 			"egg":       egg,
@@ -1616,14 +1616,14 @@ func registerAdminRoutes(protected fiber.Router, cfg Config, nodeRegistry *noder
 		}
 		serverCount, err := cfg.Store.CountServersUsingMount(ctx, mountID)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		if serverCount > 0 {
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("cannot delete mount: %d server(s) are still attached; detach them first", serverCount))
 		}
 		nodes, err := cfg.Store.ListNodesForMount(ctx, mountID)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		if err := cfg.Store.DeleteMount(ctx, mountID, actorID); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())

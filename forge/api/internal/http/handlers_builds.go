@@ -58,7 +58,7 @@ func registerBuildRoutes(v1 fiber.Router, cfg Config, buildSvc *build.Service, m
 			NoCache:    req.NoCache,
 		}, logCh)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 
 		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"data": record})
@@ -68,7 +68,7 @@ func registerBuildRoutes(v1 fiber.Router, cfg Config, buildSvc *build.Service, m
 		sourceID := c.Query("sourceId")
 		records, err := buildSvc.ListBuilds(c.Context(), sourceID)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		if records == nil {
 			records = []*store.BuildRecord{}

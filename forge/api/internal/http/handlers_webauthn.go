@@ -29,7 +29,7 @@ func registerWebAuthnRoutes(protected fiber.Router, cfg Config, mutationLimiter 
 
 		creation, sessionID, err := wa.BeginRegistration(ctx, user.ID, user.Email, user.Email)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 
 		return c.JSON(fiber.Map{

@@ -4,7 +4,8 @@ import { useEffect, useState, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, Database, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
 import { type ApiDatabaseHost, type CreateDatabaseHostInput, createDatabaseHost, deleteDatabaseHost, fetchDatabaseHosts, fetchNodes, fetchOrphanRemediations, resolveDatabaseOrphanRemediation, resolveServerOrphanRemediation, testDatabaseHostConnection, updateDatabaseHost } from "@/lib/api";
-import { useToast } from "@/components/ui/toast";
+import { toast } from "@/components/ui/sonner";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, AdminSelect, AdminFormSection } from "./admin-ui";
 
 type FieldErrors = {
@@ -30,7 +31,7 @@ function validate(name: string, host: string, port: string, username: string, pa
 
 export function AdminDatabases() {
   const qc = useQueryClient();
-  const { toast } = useToast();
+  const [confirm, renderConfirm] = useConfirm();
   const hostsQuery = useQuery({ queryKey: ["database-hosts"], queryFn: fetchDatabaseHosts });
   const hosts = useMemo(() => Array.isArray(hostsQuery.data) ? hostsQuery.data : [], [hostsQuery.data]);
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
@@ -41,13 +42,13 @@ export function AdminDatabases() {
   const databaseRemediations = useMemo(() => Array.isArray(remediationsQuery.data?.databaseRemediations) ? remediationsQuery.data.databaseRemediations : [], [remediationsQuery.data]);
   const resolveDatabaseRemediationMut = useMutation({
     mutationFn: resolveDatabaseOrphanRemediation,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["orphan-remediations"] }); toast({ tone: "success", title: "Database orphan remediation resolved" }); },
-    onError: (error: Error) => toast({ tone: "error", title: "Could not resolve database remediation", message: error.message }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["orphan-remediations"] }); toast.success("Database orphan remediation resolved"); },
+    onError: (error: Error) => toast.error(error.message || "Could not resolve database remediation"),
   });
   const resolveServerRemediationMut = useMutation({
     mutationFn: resolveServerOrphanRemediation,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["orphan-remediations"] }); toast({ tone: "success", title: "Server orphan remediation resolved" }); },
-    onError: (error: Error) => toast({ tone: "error", title: "Could not resolve server remediation", message: error.message }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["orphan-remediations"] }); toast.success("Server orphan remediation resolved"); },
+    onError: (error: Error) => toast.error(error.message || "Could not resolve server remediation"),
   });
 
   const [modal, setModal] = useState<null | "create" | ApiDatabaseHost>(null);
@@ -77,27 +78,27 @@ export function AdminDatabases() {
 
   const createMut = useMutation({
     mutationFn: () => createDatabaseHost(databaseHostInput),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["database-hosts"] }); setModal(null); toast({ tone: "success", title: "Database host created" }); },
-    onError: (e: Error) => { console.error("Create database host error:", e); toast({ tone: "error", title: "Failed to create database host", message: e.message || "Unknown error" }); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["database-hosts"] }); setModal(null); toast.success("Database host created"); },
+    onError: (e: Error) => { console.error("Create database host error:", e); toast.error(e.message || "Failed to create database host"); },
   });
   const updateMut = useMutation({
     mutationFn: (hostId: string) => updateDatabaseHost(hostId, databaseHostInput),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["database-hosts"] }); setModal(null); toast({ tone: "success", title: "Database host updated" }); },
-    onError: (e: Error) => { console.error("Failed to update database host:", e); toast({ tone: "error", title: "Failed to update database host", message: e.message }); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["database-hosts"] }); setModal(null); toast.success("Database host updated"); },
+    onError: (e: Error) => { console.error("Failed to update database host:", e); toast.error(e.message || "Failed to update database host"); },
   });
 
   const deleteMut = useMutation({
     mutationFn: deleteDatabaseHost,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["database-hosts"] }); toast({ tone: "success", title: "Database host deleted" }); },
-    onError: (e: Error) => toast({ tone: "error", title: "Failed to delete database host", message: e.message }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["database-hosts"] }); toast.success("Database host deleted"); },
+    onError: (e: Error) => toast.error(e.message || "Failed to delete database host"),
   });
   const testMut = useMutation({
     mutationFn: (input: CreateDatabaseHostInput | string) => typeof input === "string" ? testDatabaseHostConnection(input) : testDatabaseHostConnection(input),
     onSuccess: (result) => {
       setTestedConfiguration(configurationKey);
-      toast({ tone: "success", title: "Connection test passed", message: result.message ?? "The database host is reachable." });
+      toast.success(result.message ?? "The database host is reachable.");
     },
-    onError: (e: Error) => toast({ tone: "error", title: "Connection test failed", message: e.message }),
+    onError: (e: Error) => toast.error(e.message || "Connection test failed"),
   });
 
   useEffect(() => {
@@ -200,7 +201,7 @@ export function AdminDatabases() {
                       <div className="flex items-center justify-end gap-1">
                         <Btn size="sm" tone="ghost" onClick={() => testMut.mutate(host.id)} disabled={testMut.isPending}>{testMut.isPending && testMut.variables === host.id ? "Testing..." : "Test"}</Btn>
                         <Btn size="sm" tone="ghost" onClick={() => openEdit(host)}>Edit</Btn>
-                        <Btn size="sm" tone="danger" onClick={() => deleteMut.mutate(host.id)} disabled={deleteMut.isPending}><Trash2 size={12} /></Btn>
+                        <Btn size="sm" tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Delete database host "${host.name}"?`, description: `Databases provisioned through ${host.host}:${host.port} may be left in place; the panel host entry will be removed. This cannot be undone.`, danger: true, confirmLabel: "Delete" })) deleteMut.mutate(host.id); })(); }} disabled={deleteMut.isPending}><Trash2 size={12} /></Btn>
                       </div>
                     </td>
                   </tr>
@@ -255,9 +256,7 @@ export function AdminDatabases() {
                         <p className="mt-2 text-xs text-slate-500">Reported {new Date(remediation.createdAt).toLocaleString()}</p>
                       </div>
                       {remediation.status === "pending" ? (
-                        <Btn size="sm" tone="ghost" disabled={resolveServerRemediationMut.isPending} onClick={() => {
-                          if (window.confirm(`Mark server ${remediation.serverId} as resolved after confirming its remote resource has been cleaned up?`)) resolveServerRemediationMut.mutate(remediation.id);
-                        }}>{isResolving ? "Resolving..." : "Mark resolved"}</Btn>
+                        <Btn size="sm" tone="ghost" disabled={resolveServerRemediationMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: `Mark server ${remediation.serverId} as resolved?`, description: "Only do this after confirming its remote resource has been cleaned up.", confirmLabel: "Mark resolved" })) resolveServerRemediationMut.mutate(remediation.id); })(); }}>{isResolving ? "Resolving..." : "Mark resolved"}</Btn>
                       ) : <span className="text-xs text-slate-500">Resolved {remediation.resolvedAt ? new Date(remediation.resolvedAt).toLocaleString() : ""}</span>}
                     </div>
                   );
@@ -286,9 +285,7 @@ export function AdminDatabases() {
                         <p className="mt-2 text-xs text-slate-500">Reported {new Date(remediation.createdAt).toLocaleString()}</p>
                       </div>
                       {remediation.status === "pending" ? (
-                        <Btn size="sm" tone="ghost" disabled={resolveDatabaseRemediationMut.isPending} onClick={() => {
-                          if (window.confirm(`Mark ${remediation.database} as resolved after confirming its remote resource has been cleaned up?`)) resolveDatabaseRemediationMut.mutate(remediation.id);
-                        }}>{isResolving ? "Resolving..." : "Mark resolved"}</Btn>
+                        <Btn size="sm" tone="ghost" disabled={resolveDatabaseRemediationMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: `Mark ${remediation.database} as resolved?`, description: "Only do this after confirming its remote resource has been cleaned up.", confirmLabel: "Mark resolved" })) resolveDatabaseRemediationMut.mutate(remediation.id); })(); }}>{isResolving ? "Resolving..." : "Mark resolved"}</Btn>
                       ) : <span className="text-xs text-slate-500">Resolved {remediation.resolvedAt ? new Date(remediation.resolvedAt).toLocaleString() : ""}</span>}
                     </div>
                   );
@@ -321,7 +318,7 @@ export function AdminDatabases() {
                 {fieldErrors.username ? <p className="mt-1 text-xs text-red-400">{fieldErrors.username}</p> : null}
               </div>
               <div>
-                <Input label={modal === "create" ? "Password" : "Password (blank keeps current)"} value={hPass} onChange={setHPass} type="password" placeholder="" />
+                <Input label={modal === "create" ? "Password" : "Password (blank keeps current)"} value={hPass} onChange={setHPass} type="password" placeholder="" autoComplete="new-password" />
                 {fieldErrors.password ? <p className="mt-1 text-xs text-red-400">{fieldErrors.password}</p> : null}
               </div>
               <AdminSelect label="Linked node (optional)" value={hNode} onChange={setHNode} placeholder="None" options={Array.isArray(nodes) ? nodes.map((n) => ({ value: n.id, label: n.name })) : []} />
@@ -373,6 +370,7 @@ export function AdminDatabases() {
           />
         </Modal>
       ) : null}
+      {renderConfirm()}
     </div>
   );
 }

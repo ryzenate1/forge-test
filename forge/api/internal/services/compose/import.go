@@ -86,8 +86,8 @@ func (s *ComposeImportService) ImportComposeProject(ctx context.Context, req *Im
 	if strings.TrimSpace(req.Content) == "" {
 		return nil, fmt.Errorf("compose content is required")
 	}
-	if len(req.Content) > 5*1024*1024 {
-		return nil, fmt.Errorf("compose content exceeds 5 MiB")
+	if len(req.Content) > MaxComposeYAMLBytes {
+		return nil, fmt.Errorf("compose content exceeds maximum size of %d bytes", MaxComposeYAMLBytes)
 	}
 
 	s.logger.Info("Starting Compose import", "project_name", req.Name)
@@ -344,6 +344,9 @@ func (s *ComposeImportService) ValidateComposeForImport(content []byte) (*Valida
 func (s *ComposeImportService) GetImportPreview(content string) (*ImportPreview, error) {
 	if strings.TrimSpace(content) == "" {
 		return nil, fmt.Errorf("content is required")
+	}
+	if len(content) > MaxComposeYAMLBytes {
+		return nil, fmt.Errorf("compose content exceeds maximum size of %d bytes", MaxComposeYAMLBytes)
 	}
 
 	// Parse the Compose file

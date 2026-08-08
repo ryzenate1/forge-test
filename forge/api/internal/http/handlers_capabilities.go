@@ -37,7 +37,7 @@ func registerCapabilityRoutes(protected fiber.Router, cfg Config, nodeProbe *nod
 		defer cancel()
 		caps, err := cfg.Store.ListCapabilities(ctx, store.CapabilityInventoryFilter{Offset: offset, Limit: limit})
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": caps})
 	})
@@ -121,7 +121,7 @@ func registerCapabilityRoutes(protected fiber.Router, cfg Config, nodeProbe *nod
 			FetchedAt:        time.Now().UTC(),
 		}
 		if err := cfg.Store.UpsertNodeCapability(ctx, nc); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{
 			"online":       true,
@@ -190,7 +190,7 @@ func registerCapabilityRoutes(protected fiber.Router, cfg Config, nodeProbe *nod
 			FetchedAt:     fetchedAt,
 		}
 		if err := cfg.Store.UpsertNodeCapability(ctx, nc); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"accepted": true})
 	})

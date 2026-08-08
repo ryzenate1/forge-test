@@ -22,7 +22,7 @@ func registerProcedureRoutes(protected fiber.Router, cfg Config, svc *procedure.
 		}
 		procedures, err := svc.ListProcedures(c.Context(), tenantIDPtr)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": procedures})
 	})
@@ -46,7 +46,7 @@ func registerProcedureRoutes(protected fiber.Router, cfg Config, svc *procedure.
 		storeReq := req.toStoreRequest()
 		p, err := svc.CreateProcedure(c.Context(), storeReq)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"data": p})
 	})
@@ -61,7 +61,7 @@ func registerProcedureRoutes(protected fiber.Router, cfg Config, svc *procedure.
 		}
 		p, err := svc.UpdateProcedure(c.Context(), c.Params("id"), req.toStoreRequest())
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": p})
 	})
@@ -81,7 +81,7 @@ func registerProcedureRoutes(protected fiber.Router, cfg Config, svc *procedure.
 		}
 		execution, err := svc.ExecuteProcedure(c.Context(), c.Params("id"), "manual", nil, userIDPtr)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"data": execution})
 	})
@@ -131,7 +131,7 @@ func registerProcedureRoutes(protected fiber.Router, cfg Config, svc *procedure.
 		limit := c.QueryInt("limit", 20)
 		executions, err := svc.ListExecutions(c.Context(), c.Params("id"), limit)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": executions})
 	})

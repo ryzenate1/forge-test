@@ -86,7 +86,7 @@ func registerSetupRoutes(public fiber.Router, cfg Config, authLimiter fiber.Hand
 		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), store.BcryptCost())
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		user, err := cfg.Store.CreateSetupAdmin(ctx, req.Email, string(hash))
 		if err != nil {

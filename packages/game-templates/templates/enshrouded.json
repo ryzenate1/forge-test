@@ -11,7 +11,7 @@
   "images": {
     "SteamCMD Debian": "ghcr.io/parkervcp/steamcmd:debian"
   },
-  "startup": "./enshrouded_server.x86_64 --server-name \"{{SERVER_NAME}}\" --server-ip 0.0.0.0 --server-port {{PORT}} --max-slots {{ENSHROUDED_SLOT_COUNT}} --disable-gui",
+  "startup": "./enshrouded_server.x86_64 --server-name \"{{SERVER_NAME}}\" --server-ip 0.0.0.0 --server-port {{SERVER_PORT}} --max-slots {{ENSHROUDED_SLOT_COUNT}} --disable-gui",
   "config": {
     "files": {
       "enshrouded_server.json": {
@@ -22,8 +22,8 @@
           "saveDirectory": "./savegame",
           "logDirectory": "./logs",
           "ip": "0.0.0.0",
-          "gamePort": "{{PORT}}",
-          "queryPort": "{{PORT}}",
+          "gamePort": "{{SERVER_PORT}}",
+          "queryPort": "{{SERVER_PORT}}",
           "slotCount": "{{ENSHROUDED_SLOT_COUNT}}"
         }
       }

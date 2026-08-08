@@ -3,7 +3,11 @@ package remote
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -186,7 +190,9 @@ func (c *client) request(ctx context.Context, method, baseURL, path string, body
 		if err != nil {
 			return nil, fmt.Errorf("create remote API request: %w", err)
 		}
-		c.setHeaders(req)
+		if err := c.setHeaders(req, payload); err != nil {
+			return nil, err
+		}
 		resp, err := c.httpClient.Do(req)
 		if err == nil && resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500 {
 			return c.handleResponse(req, resp)
@@ -238,10 +244,23 @@ func (c *client) handleResponse(req *http.Request, resp *http.Response) (*http.R
 	return nil, fmt.Errorf("remote API %s %s returned %s: %s", req.Method, req.URL.Path, resp.Status, detail)
 }
 
-func (c *client) setHeaders(req *http.Request) {
+func (c *client) setHeaders(req *http.Request, body []byte) error {
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return fmt.Errorf("generate panel request nonce: %w", err)
+	}
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	nonce := hex.EncodeToString(nonceBytes)
+	mac := hmac.New(sha256.New, []byte(c.token))
+	_, _ = io.WriteString(mac, req.Method+"\n"+req.URL.RequestURI()+"\n"+timestamp+"\n"+nonce+"\n")
+	_, _ = mac.Write(body)
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.forge.v1+json")
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Panel-Timestamp", timestamp)
+	req.Header.Set("X-Panel-Nonce", nonce)
+	req.Header.Set("X-Panel-Signature", hex.EncodeToString(mac.Sum(nil)))
+	return nil
 }
 
 // SendServerStats reports server resource usage.

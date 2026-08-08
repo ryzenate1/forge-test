@@ -217,6 +217,8 @@ export function Dialog({ open, title, description, children, closeAction, classN
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef(closeAction);
+  const titleId = useId();
+  const descriptionId = useId();
   closeRef.current = closeAction;
 
   useEffect(() => {
@@ -247,11 +249,11 @@ export function Dialog({ open, title, description, children, closeAction, classN
 
   return (
     <div className="ui-dialog-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeAction(); }}>
-      <div ref={dialogRef} aria-describedby={description ? "dialog-description" : undefined} aria-labelledby="dialog-title" aria-modal="true" className={cn("ui-dialog", className)} role="dialog">
+      <div ref={dialogRef} aria-describedby={description ? descriptionId : undefined} aria-labelledby={titleId} aria-modal="true" className={cn("ui-dialog", className)} role="dialog">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold text-white" id="dialog-title">{title}</h2>
-            {description ? <p className="mt-1 text-sm text-slate-400" id="dialog-description">{description}</p> : null}
+            <h2 className="text-lg font-semibold text-white" id={titleId}>{title}</h2>
+            {description ? <p className="mt-1 text-sm text-slate-400" id={descriptionId}>{description}</p> : null}
           </div>
           <button aria-label="Close dialog" className="ui-icon-button" onClick={closeAction} type="button"><X className="h-4 w-4" /></button>
         </div>

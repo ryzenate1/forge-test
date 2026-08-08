@@ -16,11 +16,21 @@ import AdminOrganizationsPage from "@/app/admin/organizations/page";
 import { useServerStore } from "@/stores/use-server-store";
 import { jsonResponse, mockFetch, requestJSON } from "@/test/fetch-mock";
 import { renderWithQuery } from "@/test/render";
+import { ServerProvider } from "@/components/server/server-context";
+import type { ApiServer } from "@/lib/api";
 
 const replace = vi.fn();
 const push = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace, push }), usePathname: () => "/admin/overview" }));
 vi.mock("next/link", () => ({ default: ({ children, href, ...props }: { children: ReactNode; href: string }) => <a href={href} {...props}>{children}</a> }));
+
+function renderServerView(server: ApiServer, ui: ReactNode) {
+  return renderWithQuery(
+    <ServerProvider value={{ server, access: { user: null, permissions: ["*"], isOwner: true, isAdmin: false }, refreshServer: async () => {} }}>
+      {ui}
+    </ServerProvider>
+  );
+}
 vi.mock("next/dynamic", () => ({ default: (_loader: unknown, options?: { loading?: ComponentType }) => function FakeEditor(props: { value?: string; onChange?: (value: string) => void; options?: { readOnly?: boolean } }) {
   if (props.options?.readOnly && options?.loading) { const Loading = options.loading; return <Loading />; }
   return <textarea aria-label="File content" disabled={props.options?.readOnly} value={props.value} onChange={(event) => props.onChange?.(event.target.value)} />;
@@ -106,7 +116,7 @@ describe("admin mutation protections", () => {
   it("disables user deletion when the user owns a server", async () => {
     mockFetch(
       jsonResponse([{ id: "u1", email: "owner@example.com", role: "user" }]),
-      jsonResponse([{ id: "s1", name: "Owned", owner: "owner@example.com", ownerId: "u1", template: "egg", node: "node", status: "offline" }]),
+      jsonResponse([{ id: "s1", name: "Owned", owner: "owner@example.com", ownerId: "u1", template: "egg", node: "node", status: "offline", generation: 0 }]),
     );
     renderWithQuery(<AdminUsers />);
     await userEvent.click(await screen.findByText("owner@example.com"));
@@ -136,7 +146,7 @@ describe("server UI truthfulness", () => {
       ],
       pagination: { page: 1, per_page: 20, total: 3, total_pages: 1 }
     }));
-    renderWithQuery(<BackupsView server={{ id: "s1", name: "S", owner: "u", template: "e", node: "n", status: "offline" }} />);
+    renderServerView({ id: "s1", name: "S", owner: "u", template: "e", node: "n", status: "offline", generation: 0 }, <BackupsView server={{ id: "s1", name: "S", owner: "u", template: "e", node: "n", status: "offline", generation: 0 }} />);
     expect(await screen.findByText("pending.zip")).toBeInTheDocument();
     expect(screen.getByText("sha256:abc", { exact: false })).toBeInTheDocument();
     expect(screen.getByText("2.00 kB", { exact: false })).toBeInTheDocument();
@@ -151,7 +161,7 @@ describe("server UI truthfulness", () => {
       { id: "a1", node: "n1", ip: "127.0.0.1", port: 25565, notes: "first" },
       { id: "a2", node: "n1", ip: "127.0.0.1", port: 25566, notes: "second" },
     ]));
-    renderWithQuery(<NetworkView server={{ id: "s1", name: "S", owner: "u", template: "e", node: "n", status: "offline", primaryAllocationId: "a2" }} />);
+    renderServerView({ id: "s1", name: "S", owner: "u", template: "e", node: "n", status: "offline", primaryAllocationId: "a2", generation: 0 }, <NetworkView server={{ id: "s1", name: "S", owner: "u", template: "e", node: "n", status: "offline", primaryAllocationId: "a2", generation: 0 }} />);
     expect(await screen.findByText("Primary")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Unassign 127.0.0.1:25566" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Unassign 127.0.0.1:25565" })).toBeEnabled();
@@ -161,7 +171,7 @@ describe("server UI truthfulness", () => {
     let resolveContent!: (response: Response) => void;
     const content = new Promise<Response>((resolve) => { resolveContent = resolve; });
     mockFetch(jsonResponse([{ name: "server.properties", path: "server.properties", directory: false, size: 20, modTime: "today" }]), () => content);
-    renderWithQuery(<FilesView server={{ id: "s1", name: "S", owner: "u", template: "e", node: "n", status: "offline" }} />);
+    renderServerView({ id: "s1", name: "S", owner: "u", template: "e", node: "n", status: "offline", generation: 0 }, <FilesView server={{ id: "s1", name: "S", owner: "u", template: "e", node: "n", status: "offline", generation: 0 }} />);
     await userEvent.click(await screen.findByRole("button", { name: "server.properties" }));
     expect(screen.getByRole("button", { name: /save content/i })).toBeDisabled();
     expect(screen.getByText("Loading")).toBeInTheDocument();
@@ -169,6 +179,6 @@ describe("server UI truthfulness", () => {
     await act(async () => resolveContent(new Response("motd=hello", { status: 200 })));
     await waitFor(() => expect(screen.getByRole("button", { name: /save content/i })).toBeEnabled());
     fireEvent.change(screen.getByLabelText("File content"), { target: { value: "motd=changed" } });
-    expect(screen.getByText("Edited")).toBeInTheDocument();
+    expect(screen.getByText(/Edited/)).toBeInTheDocument();
   });
 });

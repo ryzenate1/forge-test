@@ -75,7 +75,7 @@ func registerServiceDiscoveryRoutes(protected fiber.Router, cfg Config, svc *ser
 		defer cancel()
 
 		if err := svc.RemoveEndpoint(ctx, c.Params("id")); err != nil {
-			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 
 		return c.SendStatus(http.StatusNoContent)
@@ -101,7 +101,7 @@ func registerServiceDiscoveryRoutes(protected fiber.Router, cfg Config, svc *ser
 		}
 
 		if err := svc.UpdateEndpointStatus(ctx, c.Params("id"), status); err != nil {
-			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 
 		return c.SendStatus(http.StatusNoContent)
@@ -165,7 +165,7 @@ func registerServiceDiscoveryRoutes(protected fiber.Router, cfg Config, svc *ser
 
 		result, err := svc.VerifyCrossNodeReachability(ctx, req.SourceNodeID, req.TargetNodeID, req.ServiceName)
 		if err != nil {
-			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 
 		return c.JSON(fiber.Map{"data": result})

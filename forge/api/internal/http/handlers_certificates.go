@@ -21,7 +21,7 @@ func registerCertificateRoutes(protected fiber.Router, cfg Config, svc *acme.Ser
 		}
 		cert, err := svc.IssueCertificate(c.Context(), req)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.Status(201).JSON(fiber.Map{"data": cert})
 	})
@@ -47,7 +47,7 @@ func registerCertificateRoutes(protected fiber.Router, cfg Config, svc *acme.Ser
 
 		certs, err := svc.ListCertificates(c.Context(), filter)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": certs})
 	})
@@ -62,7 +62,7 @@ func registerCertificateRoutes(protected fiber.Router, cfg Config, svc *acme.Ser
 
 	certs.Delete("/:id", mutationLimiter, requireRole("admin"), requireAdminScope("certificates.write"), func(c *fiber.Ctx) error {
 		if err := svc.RevokeCertificate(c.Context(), c.Params("id")); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.SendStatus(204)
 	})
@@ -70,7 +70,7 @@ func registerCertificateRoutes(protected fiber.Router, cfg Config, svc *acme.Ser
 	certs.Post("/:id/renew", mutationLimiter, requireRole("admin"), requireAdminScope("certificates.write"), func(c *fiber.Ctx) error {
 		cert, err := svc.RenewCertificate(c.Context(), c.Params("id"))
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"data": cert})
 	})

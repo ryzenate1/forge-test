@@ -19,8 +19,8 @@ header(){ echo -e "\n${CYAN}━━━ $* ━━━${NC}\n"; }
 
 BEACON_MODE=false
 DRY_RUN=false
-COMPOSE_FILES=(-f compose.yml -f compose.production.yml)
-COMPOSE_ENV=(--env-file .env)
+COMPOSE_FILES=(-f "$INFRA/compose.yml" -f "$INFRA/compose.production.yml")
+COMPOSE_ENV=(--env-file "$INFRA/.env")
 COMPOSE_CMD=(docker compose "${COMPOSE_FILES[@]}" "${COMPOSE_ENV[@]}")
 
 # ---------------------------------------------------------------------------
@@ -205,7 +205,7 @@ setup_tls() {
 
   if [[ -n "${TRAEFIK_ACME_EMAIL:-}" ]] && [[ -n "${PANEL_DOMAIN:-}" ]] && [[ "${PANEL_DOMAIN:-}" != "panel.example.com" ]]; then
     info "Traefik with Let's Encrypt detected — adding TLS compose file"
-    COMPOSE_FILES+=(-f compose.tls.yml)
+    COMPOSE_FILES+=(-f "$INFRA/compose.tls.yml")
 
     if [[ "$DRY_RUN" == false ]]; then
       "${COMPOSE_CMD[@]}" up -d traefik
@@ -335,7 +335,7 @@ beacon_mode() {
   mkdir -p "${GAME_SERVERS_HOST_DIR:-/srv/game-panel/servers}"
 
   if [[ "$DRY_RUN" == true ]]; then
-    echo "Would run: docker compose -f compose.beacon.yml --env-file .env up -d --build"
+    echo "Would run: docker compose -f $INFRA/compose.beacon.yml --env-file $INFRA/.env up -d --build"
     return
   fi
 
@@ -345,8 +345,8 @@ beacon_mode() {
 
   echo
   info "Beacon node deployed. Verify with:"
-  echo "  docker compose -f compose.beacon.yml --env-file .env ps"
-  echo "  docker compose -f compose.beacon.yml --env-file .env logs daemon"
+  echo "  docker compose -f $INFRA/compose.beacon.yml --env-file $INFRA/.env ps"
+  echo "  docker compose -f $INFRA/compose.beacon.yml --env-file $INFRA/.env logs daemon"
 }
 
 # ---------------------------------------------------------------------------

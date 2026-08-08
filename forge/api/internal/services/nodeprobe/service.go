@@ -24,11 +24,11 @@ type Service struct {
 	timeout time.Duration
 }
 
-func NewService(s *store.Store) *Service {
+func NewService(s *store.Store, cli *daemon.Client) *Service {
 	return &Service{
 		store:   s,
 		client:  &http.Client{Timeout: 5 * time.Second},
-		signer:  daemon.NewClient(),
+		signer:  cli,
 		timeout: 5 * time.Second,
 	}
 }

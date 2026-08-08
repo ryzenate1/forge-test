@@ -40,10 +40,11 @@ func ptrBool(v bool) *bool    { return &v }
 var pinnedImagePattern = regexp.MustCompile(`@sha256:[a-fA-F0-9]{64}$`)
 
 type DockerRuntime struct {
-	client         *client.Client
-	defaultNetwork string
-	hostSettings   dockerHostSettings
-	workloadLocks  [64]sync.Mutex
+	client              *client.Client
+	defaultNetwork      string
+	hostSettings        dockerHostSettings
+	allowUnpinnedImages bool
+	workloadLocks       [64]sync.Mutex
 }
 
 type dockerHostSettings struct {
@@ -67,7 +68,12 @@ func NewDockerRuntime() (*DockerRuntime, error) {
 	if networkName == "" {
 		networkName = "gamepanel"
 	}
-	return &DockerRuntime{client: cli, defaultNetwork: networkName, hostSettings: loadDockerHostSettings()}, nil
+	return &DockerRuntime{
+		client:              cli,
+		defaultNetwork:      networkName,
+		hostSettings:        loadDockerHostSettings(),
+		allowUnpinnedImages: strings.TrimSpace(os.Getenv("DAEMON_ALLOW_UNPINNED_IMAGES")) == "true",
+	}, nil
 }
 
 func validateDockerEndpoint(raw string) error {
@@ -115,7 +121,7 @@ func (r *DockerRuntime) ensureImage(ctx context.Context, imageRef string, regist
 	} else if !errdefs.IsNotFound(err) {
 		return fmt.Errorf("inspect image %q: %w", imageRef, err)
 	}
-	if !pinnedImagePattern.MatchString(imageRef) {
+	if !r.allowUnpinnedImages && !pinnedImagePattern.MatchString(imageRef) {
 		return fmt.Errorf("remote image %q is not digest-pinned; use name@sha256:<64 hex characters>", imageRef)
 	}
 	pullOptions, err := imagePullOptions(registryAuth)
@@ -151,7 +157,10 @@ func (r *DockerRuntime) Create(ctx context.Context, req CreateRequest) error {
 		return err
 	}
 	if existing.Exists {
-		return fmt.Errorf("workload %q already exists", req.ServerID)
+		// Idempotent: creating a workload that already exists is a no-op.
+		// The panel re-provisions on boot to repair missing workloads without
+		// disturbing running containers.
+		return nil
 	}
 	return r.reconcile(ctx, req)
 }
@@ -210,19 +219,33 @@ func (r *DockerRuntime) reconcile(ctx context.Context, req CreateRequest) error 
 	}
 
 	config := buildContainerConfig(req, exposedPorts, hash)
-	created, err := r.client.ContainerCreate(ctx, config, buildHostConfigWithSettings(req, mounts, portBindings, r.hostSettings), buildNetworkingConfig(req), nil, name)
-	if err != nil {
-		return err
-	}
-	if restartAfterCreate {
+	createAndStart := func(ioWeight int64) (bool, error) {
+		reqCopy := req
+		reqCopy.IOWeight = ioWeight
+		created, err := r.client.ContainerCreate(ctx, config, buildHostConfigWithSettings(reqCopy, mounts, portBindings, r.hostSettings), buildNetworkingConfig(reqCopy), nil, name)
+		if err != nil {
+			return false, err
+		}
+		if !restartAfterCreate {
+			return true, nil
+		}
 		if err := r.client.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
 			_ = r.client.ContainerRemove(cleanupCtx, created.ID, container.RemoveOptions{Force: true, RemoveVolumes: true})
-			return fmt.Errorf("restart workload after configuration reconciliation: %w", err)
+			return false, err
+		}
+		return true, nil
+	}
+	_, err = createAndStart(req.IOWeight)
+	if err != nil && req.IOWeight > 0 && strings.Contains(err.Error(), "io.weight") {
+		// Some hosts (e.g. Docker Desktop on macOS) lack the io controller
+		// cgroup; retry once without the best-effort I/O weight limit.
+		if _, err = createAndStart(0); err != nil {
+			return err
 		}
 	}
-	return nil
+	return err
 }
 
 func (r *DockerRuntime) workloadLock(serverID string) *sync.Mutex {
@@ -972,12 +995,12 @@ func validContainerID(value string) bool {
 }
 
 func buildContainerConfig(req CreateRequest, ports nat.PortSet, hash string) *container.Config {
-	uid, gid := req.UID, req.GID
-	if uid == 0 && gid == 0 {
-		uid, gid = 998, 998
+	userSpec := ""
+	if req.UID != 0 || req.GID != 0 {
+		userSpec = fmt.Sprintf("%d:%d", req.UID, req.GID)
 	}
 	timeout := int(req.StopTimeout / time.Second)
-	config := &container.Config{Image: req.Image, Cmd: req.Command, Env: req.Env, WorkingDir: serverContainerRoot, AttachStdin: true, AttachStdout: true, AttachStderr: true, OpenStdin: true, User: fmt.Sprintf("%d:%d", uid, gid), StopSignal: strings.ToUpper(req.StopSignal), Labels: map[string]string{"modern-game-panel.server_id": req.ServerID, configHashLabel: hash}, ExposedPorts: ports}
+	config := &container.Config{Image: req.Image, Cmd: req.Command, Env: req.Env, WorkingDir: serverContainerRoot, AttachStdin: true, AttachStdout: true, AttachStderr: true, OpenStdin: true, User: userSpec, StopSignal: strings.ToUpper(req.StopSignal), Labels: map[string]string{"modern-game-panel.server_id": req.ServerID, configHashLabel: hash}, ExposedPorts: ports}
 	if req.StopTimeout > 0 {
 		config.StopTimeout = &timeout
 	}

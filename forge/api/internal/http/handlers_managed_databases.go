@@ -42,7 +42,7 @@ func registerManagedDatabaseRoutes(protected fiber.Router, cfg Config, mutationL
 		defer cancel()
 		dbs, err := cfg.Store.ListManagedDatabases(ctx)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(dbs)
 	})
@@ -92,7 +92,7 @@ func registerManagedDatabaseRoutes(protected fiber.Router, cfg Config, mutationL
 		defer cancel()
 		db, err := cfg.Store.CreateManagedDatabase(ctx, storeReq)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		if cfg.DBContainerService != nil {
 			go func() {
@@ -146,7 +146,7 @@ func registerManagedDatabaseRoutes(protected fiber.Router, cfg Config, mutationL
 			version = *req.Version
 		}
 		if err := cfg.Store.UpdateManagedDatabase(ctx, id, name, memoryMB, cpuShares, version); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		db, err := cfg.Store.GetManagedDatabase(ctx, id)
 		if err != nil {
@@ -164,7 +164,7 @@ func registerManagedDatabaseRoutes(protected fiber.Router, cfg Config, mutationL
 		defer cancel()
 		_ = cfg.Store.UpdateManagedDatabaseStatus(ctx, id, store.ManagedDBStatusDeleting)
 		if err := cfg.Store.DeleteManagedDatabase(ctx, id); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"ok": true})
 	})
@@ -177,7 +177,7 @@ func registerManagedDatabaseRoutes(protected fiber.Router, cfg Config, mutationL
 		defer cancel()
 		backup, err := dbBackupSvc.Backup(ctx, c.Params("id"))
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(backup)
 	})
@@ -199,7 +199,7 @@ func registerManagedDatabaseRoutes(protected fiber.Router, cfg Config, mutationL
 		defer cancel()
 		restore, err := dbBackupSvc.Restore(ctx, c.Params("id"), req.BackupID)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(restore)
 	})
@@ -212,7 +212,7 @@ func registerManagedDatabaseRoutes(protected fiber.Router, cfg Config, mutationL
 		defer cancel()
 		db, err := dbBackupSvc.RotatePassword(ctx, c.Params("id"))
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(db)
 	})
@@ -225,7 +225,7 @@ func registerManagedDatabaseRoutes(protected fiber.Router, cfg Config, mutationL
 		defer cancel()
 		backups, err := cfg.Store.ListManagedDatabaseBackups(ctx, c.Params("id"))
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(backups)
 	})
@@ -238,7 +238,7 @@ func registerManagedDatabaseRoutes(protected fiber.Router, cfg Config, mutationL
 		defer cancel()
 		restores, err := cfg.Store.ListManagedDatabaseRestores(ctx, c.Params("id"))
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.JSON(restores)
 	})

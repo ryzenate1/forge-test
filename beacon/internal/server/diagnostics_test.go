@@ -2,6 +2,11 @@ package server
 
 import (
 	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -32,6 +37,93 @@ func TestConnectivityDiagnosticsBadHost(t *testing.T) {
 	}
 	if d.TCPConnectivity {
 		t.Log("unexpected TCP connectivity for invalid host")
+	}
+}
+
+func TestDiagnosticPanelURLRejectsUntrustedTargets(t *testing.T) {
+	for _, raw := range []string{
+		"http://attacker.example",
+		"file:///etc/passwd",
+		"https://user:secret@example.com",
+	} {
+		if _, err := diagnosticPanelURL(raw); err == nil {
+			t.Errorf("diagnosticPanelURL(%q) unexpectedly succeeded", raw)
+		}
+	}
+	if _, err := diagnosticPanelURL("http://127.0.0.1:8080/api/v1"); err != nil {
+		t.Fatalf("loopback development endpoint rejected: %v", err)
+	}
+	if !restrictedDiagnosticIP(net.ParseIP("169.254.169.254")) || !restrictedDiagnosticIP(net.ParseIP("100.64.0.1")) {
+		t.Fatal("metadata and CGNAT addresses must be restricted")
+	}
+}
+
+func TestRunConnectivityDiagnosticsDoesNotForwardCredentials(t *testing.T) {
+	var mu sync.Mutex
+	var received []http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		received = append(received, r.Header.Clone())
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	s := &Server{token: "super-secret-node-token-0123456789"}
+	d := s.RunConnectivityDiagnostics(context.Background(), srv.URL)
+	if !d.PanelReachable {
+		t.Fatalf("expected loopback probe to succeed, got %+v", d)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) == 0 {
+		t.Fatal("expected the probe target to receive a request")
+	}
+	for _, h := range received {
+		for _, name := range []string{"Authorization", "X-Forge-Token", "Cookie"} {
+			if v := h.Get(name); v != "" {
+				t.Errorf("credential header %s forwarded to probe target: %q", name, v)
+			}
+		}
+		for name := range h {
+			if strings.HasPrefix(strings.ToLower(name), "x-forge") {
+				t.Errorf("forged header %s forwarded to probe target", name)
+			}
+		}
+	}
+}
+
+func TestProbePanelHealthLoopback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/health" {
+			t.Errorf("unexpected probe path %q", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	status, err := ProbePanelHealth(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("probe failed: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", status)
+	}
+}
+
+func TestProbePanelHealthRejectsRestrictedTargets(t *testing.T) {
+	for _, raw := range []string{
+		"https://169.254.169.254/latest/meta-data",
+		"http://169.254.169.254/latest/meta-data",
+		"http://10.0.0.5/health",
+		"http://[fe80::1]/health",
+		"http://0.0.0.0/health",
+		"ftp://example.com/health",
+		"https://user:pass@example.com/health",
+	} {
+		if _, err := ProbePanelHealth(context.Background(), raw); err == nil {
+			t.Errorf("ProbePanelHealth(%q) unexpectedly succeeded", raw)
+		}
 	}
 }
 

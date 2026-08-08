@@ -88,21 +88,30 @@ func (m *memRateLimiter) cleanup() {
 	}
 }
 
-// ExtractClientIP extracts the real client IP from request headers, respecting
-// X-Forwarded-For and X-Real-IP when the app is behind a reverse proxy.
+// ExtractClientIP uses proxy headers only when the direct peer is a local or
+// private reverse proxy. It takes the right-most forwarded value so a caller-
+// supplied left-most X-Forwarded-For entry cannot rotate rate-limit keys.
 func ExtractClientIP(c *fiber.Ctx) string {
+	peer := strings.TrimSpace(c.IP())
+	peerIP := net.ParseIP(peer)
+	if peerIP == nil || !(peerIP.IsLoopback() || peerIP.IsPrivate() || peerIP.IsUnspecified()) {
+		return peer
+	}
 	xff := c.Get("X-Forwarded-For")
 	if xff != "" {
-		if idx := strings.IndexByte(xff, ','); idx >= 0 {
-			return strings.TrimSpace(xff[:idx])
+		parts := strings.Split(xff, ",")
+		for index := len(parts) - 1; index >= 0; index-- {
+			candidate := strings.TrimSpace(parts[index])
+			if net.ParseIP(candidate) != nil {
+				return candidate
+			}
 		}
-		return strings.TrimSpace(xff)
 	}
 	xri := c.Get("X-Real-IP")
-	if xri != "" {
+	if net.ParseIP(strings.TrimSpace(xri)) != nil {
 		return strings.TrimSpace(xri)
 	}
-	return c.IP()
+	return peer
 }
 
 func isTrustedIP(clientIP string, trustedIPs []string) bool {

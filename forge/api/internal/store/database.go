@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"time"
 )
 
@@ -48,7 +49,12 @@ func (c DBConfig) DSN() string {
 	case DatabasePostgres:
 		sslmode := c.SSLMode
 		if sslmode == "" {
-			sslmode = "disable"
+			appEnv := os.Getenv("APP_ENV")
+			if appEnv == "development" || appEnv == "" {
+				sslmode = "disable"
+			} else {
+				sslmode = "require"
+			}
 		}
 		return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
 			c.User, c.Password, c.Host, c.Port, c.Database, sslmode)

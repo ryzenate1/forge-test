@@ -338,7 +338,7 @@ func CreateGitSource(cfg Config) fiber.Handler {
 		if req.AutoDeploy && req.ProviderTokenID != nil && *req.ProviderTokenID != "" && cfg.GitService != nil {
 			webhookURL, err := buildWebhookURL(cfg, req.Provider)
 			if err != nil {
-				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+				return respondInternalError(c, err)
 			}
 			ctx, cancel := requestContext()
 			defer cancel()
@@ -356,7 +356,7 @@ func CreateGitSource(cfg Config) fiber.Handler {
 		defer cancel()
 		webhookURL, err := buildWebhookURL(cfg, req.Provider)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		source, err := cfg.Store.CreateGitSource(ctx, store.CreateGitSourceRequest{
 			UserID:          claims.Sub,
@@ -748,6 +748,9 @@ func ListGitDeployments(cfg Config) fiber.Handler {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
+		if err := checkServerPermission(c, cfg, ""); err != nil {
+			return err
+		}
 		ctx, cancel := requestContext()
 		defer cancel()
 		source, err := cfg.Store.GetGitSourceByServerID(ctx, c.Params("id"))
@@ -756,7 +759,7 @@ func ListGitDeployments(cfg Config) fiber.Handler {
 		}
 		deploys, err := cfg.Store.ListGitDeployments(ctx, source.ID, 10)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		if deploys == nil {
 			deploys = []store.GitDeployment{}
@@ -776,6 +779,17 @@ func GetGitDeployment(cfg Config) fiber.Handler {
 		if err != nil {
 			return fiber.NewError(fiber.StatusNotFound, err.Error())
 		}
+		// Resolve the owning git source so we can enforce ownership. Subusers
+		// with access to the server are covered by the parent server route;
+		// this endpoint is keyed by deployment ID alone, so the git source
+		// owner check is the ownership boundary here.
+		source, err := cfg.Store.GetGitSource(ctx, deploy.GitSourceID)
+		if err != nil {
+			return fiber.NewError(fiber.StatusNotFound, "git source not found")
+		}
+		if err := requireResourceOwner(c, source.UserID); err != nil {
+			return err
+		}
 		return c.JSON(deploy)
 	}
 }
@@ -784,6 +798,9 @@ func TriggerGitDeployment(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+		}
+		if err := checkServerPermission(c, cfg, ""); err != nil {
+			return err
 		}
 		var req CreateDeploymentRequest
 		if err := c.BodyParser(&req); err != nil {
@@ -801,6 +818,17 @@ func TriggerGitDeployment(cfg Config) fiber.Handler {
 		if err != nil || source == nil {
 			return fiber.NewError(fiber.StatusNotFound, "git source not found for the given repository and branch")
 		}
+		// The route is keyed by server id, so the trigger must stay bound to
+		// the server's own git source. Subusers granted access to the server
+		// may deploy that linked source; admins may deploy any source. A
+		// caller must never trigger a deployment against another user's git
+		// source by guessing a repo URL (IDOR).
+		linked, linkedErr := cfg.Store.GetGitSourceByServerID(ctx, c.Params("id"))
+		if linkedErr != nil || linked.ID != source.ID {
+			if err := requireResourceOwner(c, source.UserID); err != nil {
+				return err
+			}
+		}
 		deploy, err := cfg.Store.CreateGitDeployment(ctx, store.CreateGitDeploymentRequest{
 			GitSourceID: source.ID,
 			Branch:      req.Branch,
@@ -809,7 +837,7 @@ func TriggerGitDeployment(cfg Config) fiber.Handler {
 			StartedAt:   time.Now().UTC(),
 		})
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		return c.Status(fiber.StatusCreated).JSON(deploy)
 	}
@@ -826,6 +854,9 @@ func ListGitDeploymentHooks(cfg Config) fiber.Handler {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
+		if err := checkServerPermission(c, cfg, ""); err != nil {
+			return err
+		}
 		ctx, cancel := requestContext()
 		defer cancel()
 		source, err := cfg.Store.GetGitSourceByServerID(ctx, c.Params("id"))
@@ -834,7 +865,7 @@ func ListGitDeploymentHooks(cfg Config) fiber.Handler {
 		}
 		hooks, err := cfg.Store.ListGitDeploymentHooks(ctx, source.ID)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 		if hooks == nil {
 			hooks = []store.GitDeploymentHook{}
@@ -847,6 +878,9 @@ func CreateGitDeploymentHook(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+		}
+		if err := checkServerPermission(c, cfg, ""); err != nil {
+			return err
 		}
 		var req CreateGitDeploymentHookRequest
 		if err := c.BodyParser(&req); err != nil {
@@ -867,9 +901,10 @@ func CreateGitDeploymentHook(cfg Config) fiber.Handler {
 		}
 		hook, err := cfg.Store.CreateGitDeploymentHook(ctx, source.ID, secret, req.Events)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
-		return c.Status(fiber.StatusCreated).JSON(hook)
+		// The secret is only ever returned here, at creation time.
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"hook": hook, "secret": secret})
 	}
 }
 
@@ -880,6 +915,17 @@ func DeleteGitDeploymentHook(cfg Config) fiber.Handler {
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
+		hook, err := cfg.Store.GetGitDeploymentHook(ctx, c.Params("hook_id"))
+		if err != nil {
+			return fiber.NewError(fiber.StatusNotFound, err.Error())
+		}
+		source, err := cfg.Store.GetGitSource(ctx, hook.GitSourceID)
+		if err != nil {
+			return fiber.NewError(fiber.StatusNotFound, "git source not found")
+		}
+		if err := requireResourceOwner(c, source.UserID); err != nil {
+			return err
+		}
 		if err := cfg.Store.DeleteGitDeploymentHook(ctx, c.Params("hook_id")); err != nil {
 			return fiber.NewError(fiber.StatusNotFound, err.Error())
 		}
@@ -892,17 +938,29 @@ func RegenerateGitDeploymentHookSecret(cfg Config) fiber.Handler {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
+		ctx, cancel := requestContext()
+		defer cancel()
+		existing, err := cfg.Store.GetGitDeploymentHook(ctx, c.Params("hook_id"))
+		if err != nil {
+			return fiber.NewError(fiber.StatusNotFound, err.Error())
+		}
+		source, err := cfg.Store.GetGitSource(ctx, existing.GitSourceID)
+		if err != nil {
+			return fiber.NewError(fiber.StatusNotFound, "git source not found")
+		}
+		if err := requireResourceOwner(c, source.UserID); err != nil {
+			return err
+		}
 		secret := ""
 		if cfg.GitDeployMgmtService != nil {
 			secret = cfg.GitDeployMgmtService.GenerateSecret()
 		}
-		ctx, cancel := requestContext()
-		defer cancel()
 		hook, err := cfg.Store.RegenerateGitDeploymentHookSecret(ctx, c.Params("hook_id"), secret)
 		if err != nil {
 			return fiber.NewError(fiber.StatusNotFound, err.Error())
 		}
-		return c.JSON(hook)
+		// The regenerated secret is only ever returned here, once.
+		return c.JSON(fiber.Map{"hook": hook, "secret": secret})
 	}
 }
 
