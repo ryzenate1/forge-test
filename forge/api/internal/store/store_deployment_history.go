@@ -49,6 +49,7 @@ type PreviewDeployment struct {
 	CreatedAt      time.Time  `json:"createdAt"`
 	UpdatedAt      time.Time  `json:"updatedAt"`
 	CleanedAt      *time.Time `json:"cleanedAt,omitempty"`
+	ExpiresAt      *time.Time `json:"expiresAt,omitempty"`
 }
 
 func (s *Store) CreateDeploymentRecord(ctx context.Context, d *DeploymentRecord) error {

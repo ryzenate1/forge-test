@@ -2232,6 +2232,9 @@ func NewServer(cfg Config) *fiber.App {
 	registerServiceDiscoveryRoutes(protected, cfg, cfg.ServiceDiscovery, adminIPAccess, mutationLimiter)
 	registerCrossNodeRoutes(protected, cfg, cfg.CrossNodeResolver, cfg.IngressSynchronizer, adminIPAccess, mutationLimiter)
 
+	// Phase registrars (each of the 8 build phases registers here)
+	registerPhaseHooks(v1, protected, &cfg)
+
 	// Start schedule runner
 	if cfg.Store != nil {
 		workerCtx := cfg.BackgroundContext
