@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"gamepanel/forge/internal/events"
 	"gamepanel/forge/internal/services/health"
+	"gamepanel/forge/internal/services/reconciler"
 	"gamepanel/forge/internal/store"
 
 	"github.com/gofiber/fiber/v2"
@@ -127,11 +129,19 @@ func TestProductionHealthContracts(t *testing.T) {
 }
 
 func TestMetrics(t *testing.T) {
-	app := NewServer(Config{ReadTimeout: time.Second, AuthSecret: "secret"})
+	t.Setenv("METRICS_TOKEN", "0123456789abcdef0123456789abcdef")
+	reg := events.NewRegistry("test")
+	app := NewServer(Config{
+		ReadTimeout:   time.Second,
+		AuthSecret:    "secret",
+		Reconciler:    reconciler.New(nil, nil, 0),
+		EventRegistry: reg,
+	})
 	req, err := http.NewRequest(http.MethodGet, "/api/v1/metrics", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Header.Set("Authorization", "Bearer 0123456789abcdef0123456789abcdef")
 
 	res, err := app.Test(req)
 	if err != nil {
@@ -143,11 +153,19 @@ func TestMetrics(t *testing.T) {
 		t.Fatalf("expected status 200, got %d", res.StatusCode)
 	}
 	body, _ := io.ReadAll(res.Body)
-	if !strings.Contains(string(body), "game_panel_api_uptime_seconds") {
-		t.Fatalf("expected api uptime metric, got %s", body)
-	}
-	if !strings.Contains(string(body), "game_panel_api_up 1") {
-		t.Fatalf("expected api availability metric, got %s", body)
+	for _, expected := range []string{
+		"game_panel_api_uptime_seconds",
+		"game_panel_api_up 1",
+		"game_panel_api_reconciliation_total",
+		"game_panel_api_reconciliation_failures_total",
+		"game_panel_api_events_published_total",
+		"game_panel_api_events_delivered_total",
+		"game_panel_api_event_handler_failures_total",
+		"game_panel_api_events_dead_lettered_total",
+	} {
+		if !strings.Contains(string(body), expected) {
+			t.Fatalf("expected metric %q, got %s", expected, body)
+		}
 	}
 }
 

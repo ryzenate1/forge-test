@@ -15,6 +15,7 @@ import {
   Pill,
   SectionHeader,
 } from '@/components/admin/admin-ui';
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type ScalingPolicy = {
   id: string;
@@ -43,6 +44,7 @@ type AutoscalerMetrics = {
 };
 
 export default function AdminPolicyDetailPage() {
+  const [confirm, renderConfirm] = useConfirm();
   const params = useParams();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -53,7 +55,7 @@ export default function AdminPolicyDetailPage() {
   const policyQuery = useQuery({
     queryKey: ['admin', 'autoscaler', 'policy', id],
     queryFn: async () =>
-      (await fetchJSON<ApiResponse<ScalingPolicy>>(`/admin/autoscaler/policies/${id}`)).data,
+      (await fetchJSON<ApiResponse<ScalingPolicy>>(`/admin/autoscaler/policies/${encodeURIComponent(id)}`)).data,
   });
 
   const metricsQuery = useQuery({
@@ -68,7 +70,7 @@ export default function AdminPolicyDetailPage() {
   const metrics = metricsQuery.data;
 
   const updateMutation = useMutation({
-    mutationFn: (data: Partial<ScalingPolicy>) => putJSON(`/admin/autoscaler/policies/${id}`, data),
+    mutationFn: (data: Partial<ScalingPolicy>) => putJSON(`/admin/autoscaler/policies/${encodeURIComponent(id)}`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'autoscaler', 'policy', id] });
       setEditing(false);
@@ -76,12 +78,12 @@ export default function AdminPolicyDetailPage() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: () => deleteJSON(`/admin/autoscaler/policies/${id}`),
+    mutationFn: () => deleteJSON(`/admin/autoscaler/policies/${encodeURIComponent(id)}`),
     onSuccess: () => router.push('/admin/autoscaler'),
   });
 
   const evaluateMutation = useMutation({
-    mutationFn: (serverId: string) => postJSON(`/admin/autoscaler/evaluate/${serverId}`),
+    mutationFn: (serverId: string) => postJSON(`/admin/autoscaler/evaluate/${encodeURIComponent(serverId)}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'autoscaler', 'policy', id] });
       queryClient.invalidateQueries({ queryKey: ['admin', 'autoscaler', 'metrics'] });
@@ -118,7 +120,7 @@ export default function AdminPolicyDetailPage() {
                 <Btn
                   tone="danger"
                   onClick={() => {
-                    if (confirm('Delete this policy?')) deleteMutation.mutate();
+                    void (async () => { if (await confirm({ title: "Delete this autoscale policy?", description: "Automatic scaling for this node will stop. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMutation.mutate(); })();
                   }}
                 >
                   <Trash2 size={14} /> Delete
@@ -308,6 +310,8 @@ export default function AdminPolicyDetailPage() {
           />
         </Modal>
       )}
+      {renderConfirm()}
     </div>
   );
 }
+

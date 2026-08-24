@@ -44,19 +44,18 @@ type CreateMigrationRequest struct {
 	TargetNodeID string `json:"targetNodeId,omitempty"`
 }
 
-// NotImplementedError reports a migration lifecycle operation that has no
-// workload executor. Callers can use errors.As to map it to an HTTP 501.
-type NotImplementedError struct {
+// ExecutorUnavailableError reports missing migration runtime dependencies.
+type ExecutorUnavailableError struct {
 	Operation   string
 	MigrationID string
 }
 
-func (e *NotImplementedError) Error() string {
-	return e.Operation + " is not implemented; no workload transfer and restore executor is available"
+func (e *ExecutorUnavailableError) Error() string {
+	return e.Operation + " is unavailable because workload transfer runtime dependencies are missing"
 }
 
-func (e *NotImplementedError) Unwrap() error {
-	return gpruntime.ErrNotImplemented
+func (e *ExecutorUnavailableError) Unwrap() error {
+	return gpruntime.ErrRuntimeUnavailable
 }
 
 type Service struct {
@@ -121,6 +120,10 @@ func (s *Service) CancelEvacuationMigration(ctx context.Context, migrationID str
 func (s *Service) EvacuationMigrationStatus(ctx context.Context, migrationID string) (string, error) {
 	migration, err := s.GetMigration(ctx, migrationID)
 	return migration.Status, err
+}
+
+func (s *Service) ExecutorAvailable() bool {
+	return s != nil && s.daemon != nil && s.runtime != nil
 }
 
 func (s *Service) Metrics() Metrics {
@@ -223,7 +226,7 @@ func (s *Service) ValidateMigration(ctx context.Context, req CreateMigrationRequ
 
 func (s *Service) PrepareMigration(ctx context.Context, migrationID string) (store.Migration, error) {
 	if s == nil || s.store == nil || s.daemon == nil || s.runtime == nil {
-		return store.Migration{}, &NotImplementedError{Operation: "migration preparation", MigrationID: migrationID}
+		return store.Migration{}, &ExecutorUnavailableError{Operation: "migration preparation", MigrationID: migrationID}
 	}
 	migration, err := s.store.GetMigration(ctx, migrationID)
 	if err != nil {
@@ -526,6 +529,14 @@ func (s *Service) run(ctx context.Context, migrationID string) {
 		s.fail(ctx, migrationID, fmt.Errorf("create destination container: %w", err), source, target, false, sourceCredential, destinationCredential)
 		return
 	}
+	exists, err := s.runtime.Exists(ctx, runtimeTarget)
+	if err != nil || !exists {
+		if err == nil {
+			err = errors.New("post-creation health check failed: server does not exist on destination")
+		}
+		s.fail(ctx, migrationID, fmt.Errorf("destination health check: %w", err), source, target, true, sourceCredential, destinationCredential)
+		return
+	}
 	_, _ = s.store.UpdateMigrationRun(ctx, migrationID, "destination_created", "", 0, "")
 	s.finalize(ctx, migrationID, source, target, sourceCredential, destinationCredential)
 }
@@ -554,20 +565,22 @@ func phaseAtLeast(current, expected string) bool {
 }
 
 func (s *Service) fail(ctx context.Context, migrationID string, cause error, source, target store.ServerProvisionTarget, destinationCreated bool, sourceCredential, destinationCredential string) {
+	rollbackCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	if destinationCredential != "" && target.NodeURL != "" {
-		_ = s.daemon.CancelTransfer(context.Background(), target.NodeURL, migrationID, destinationCredential)
+		_ = s.daemon.CancelTransfer(rollbackCtx, target.NodeURL, migrationID, destinationCredential)
 	}
 	if destinationCreated && target.NodeURL != "" {
-		_, _ = s.runtime.DeleteServer(context.Background(), runtimeTarget(target))
+		_, _ = s.runtime.DeleteServer(rollbackCtx, runtimeTarget(target))
 	}
 	if sourceCredential != "" && source.NodeURL != "" {
-		_ = s.daemon.CancelTransfer(context.Background(), source.NodeURL, migrationID, sourceCredential)
+		_ = s.daemon.CancelTransfer(rollbackCtx, source.NodeURL, migrationID, sourceCredential)
 	}
 	if source.NodeURL != "" {
-		_, _ = s.runtime.StartServer(context.Background(), runtimeTarget(source))
+		_, _ = s.runtime.StartServer(rollbackCtx, runtimeTarget(source))
 	}
-	_ = s.store.FailMigrationRun(context.Background(), migrationID, cause.Error())
-	_, _ = s.MarkFailed(context.Background(), migrationID, cause.Error())
+	_ = s.store.FailMigrationRun(rollbackCtx, migrationID, cause.Error())
+	_, _ = s.MarkFailed(rollbackCtx, migrationID, cause.Error())
 }
 
 func (s *Service) CancelMigration(ctx context.Context, migrationID string) (store.Migration, error) {
@@ -667,15 +680,88 @@ func (s *Service) validateTarget(ctx context.Context, server store.Server, sourc
 	if err != nil {
 		return err
 	}
-	if len(filtered) == 0 {
-		return errors.New("target node does not satisfy migration placement constraints")
+	if len(filtered) > 0 {
+		if s.evacuationPlanner != nil {
+			if _, err := s.evacuationPlanner.ValidateCapacity(ctx, target.ID, server); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	if s.evacuationPlanner != nil {
-		if _, err := s.evacuationPlanner.ValidateCapacity(ctx, target.ID, server); err != nil {
-			return err
+
+	failures := []domain.ConstraintFailure{}
+	if target.ActualState != string(domain.NodeActualStateOnline) || target.Maintenance || target.Draining {
+		failures = append(failures, domain.ConstraintFailure{
+			Constraint: "node_state",
+			Required:   "online, not draining, not maintenance",
+			Available:  fmt.Sprintf("%s (draining=%v, maintenance=%v)", target.ActualState, target.Draining, target.Maintenance),
+			Message:    "The target node is not in a state that can receive workloads.",
+		})
+	}
+	if source.RegionID != nil && (target.RegionID == nil || *target.RegionID != *source.RegionID) {
+		failures = append(failures, domain.ConstraintFailure{
+			Constraint: "region",
+			Required:   *source.RegionID,
+			Available:  func() string { if target.RegionID != nil { return *target.RegionID }; return "none" }(),
+			Message:    "The target node is not in the same region as the source node.",
+		})
+	}
+	req.RegionID = "" // unset for eligibility scan
+	snapshot, snapErr := s.store.NodeCapacitySnapshot(ctx, target.ID)
+	if snapErr == nil {
+		if snapshot.TotalCPU > 0 && !schedulersvc.HasCapacity(snapshot.TotalCPU, snapshot.AvailableCPU, server.CPUShares) {
+			failures = append(failures, domain.ConstraintFailure{
+				Constraint: "cpu",
+				Required:   fmt.Sprintf("%d shares", server.CPUShares),
+				Available:  fmt.Sprintf("%d shares", snapshot.AvailableCPU),
+				Message:    "The target node does not have enough available CPU.",
+			})
+		}
+		if snapshot.TotalMemory > 0 && !schedulersvc.HasCapacity(snapshot.TotalMemory, snapshot.AvailableMemory, server.MemoryMB) {
+			failures = append(failures, domain.ConstraintFailure{
+				Constraint: "memory",
+				Required:   fmt.Sprintf("%d MiB", server.MemoryMB),
+				Available:  fmt.Sprintf("%d MiB", snapshot.AvailableMemory),
+				Message:    "The target node does not have enough available memory.",
+			})
+		}
+		if snapshot.TotalDisk > 0 && !schedulersvc.HasCapacity(snapshot.TotalDisk, snapshot.AvailableDisk, server.DiskMB) {
+			failures = append(failures, domain.ConstraintFailure{
+				Constraint: "disk",
+				Required:   fmt.Sprintf("%d MiB", server.DiskMB),
+				Available:  fmt.Sprintf("%d MiB", snapshot.AvailableDisk),
+				Message:    "The target node does not have enough available disk.",
+			})
 		}
 	}
-	return nil
+	if snapErr != nil {
+		failures = append(failures, domain.ConstraintFailure{
+			Constraint: "capacity_snapshot",
+			Required:   "readable capacity data",
+			Available:  snapErr.Error(),
+			Message:    "Could not read capacity data for the target node.",
+		})
+	}
+
+	eligible := []string{}
+	allNodes, listErr := s.store.ListNodes(ctx)
+	if listErr == nil {
+		for _, n := range allNodes {
+			if n.ID == target.ID || n.ID == source.ID {
+				continue
+			}
+			if n.ActualState == string(domain.NodeActualStateOnline) && !n.Maintenance && !n.Draining {
+				eligible = append(eligible, n.ID)
+			}
+		}
+	}
+
+	return &domain.TargetValidationError{
+		Code:            "migration_target_ineligible",
+		Message:         "The selected target node cannot host this server.",
+		Reasons:         failures,
+		EligibleTargets: eligible,
+	}
 }
 
 func newCredential() (string, error) {

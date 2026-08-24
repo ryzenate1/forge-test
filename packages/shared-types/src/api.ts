@@ -1,4 +1,28 @@
 // Common API types
+
+/** Matches the meta.pagination shape returned by paginated list endpoints. */
+export type PaginationMeta = {
+  current: number;
+  total: number;
+  count: number;
+  per_page: number;
+  total_records: number;
+};
+
+/**
+ * Canonical paginated envelope returned by list endpoints:
+ * `{ data: T[], meta: { pagination: PaginationMeta } }`.
+ */
+export type PaginatedResponse<T> = {
+  data: T[];
+  meta?: {
+    pagination?: PaginationMeta;
+  };
+};
+
+/** Alias for the paginated envelope shape (kept for backward compatibility). */
+export type PaginatedEnvelope<T> = PaginatedResponse<T>;
+
 export type ApiUser = {
   id: string;
   externalId?: string;
@@ -26,6 +50,21 @@ export type ApiUser = {
   totpSecret?: string;
 };
 
+export type ApiServerDesiredState = "running" | "stopped" | "terminated";
+
+export type ApiServerActualState =
+  | "offline"
+  | "starting"
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "installing"
+  | "restoring_backup"
+  | "crashed"
+  | "terminating"
+  | "terminated"
+  | "unknown";
+
 export type ApiServer = {
   id: string;
   externalId?: string;
@@ -40,9 +79,9 @@ export type ApiServer = {
   sftpHost?: string;
   sftpPort?: number;
   permissions?: string[];
-  status: string;
-  desiredState?: string;
-  actualState?: string;
+  status: ApiServerActualState;
+  desiredState?: ApiServerDesiredState;
+  actualState?: ApiServerActualState;
   nodeId?: string;
   node?: string;
   allocationId?: string;
@@ -62,32 +101,40 @@ export type ApiServer = {
   suspended?: boolean;
   transferring?: boolean;
   installing?: boolean;
-  installationState?: string;
   transferTargetNodeId?: string;
   transferState?: string;
   transferError?: string;
-  image?: string;
+  transferRunToken?: string;
   createdAt?: string;
-  memory?: string | null;
-  cpu?: string | null;
-  uptime?: string | null;
-  featureLimits?: {
-    databases: number;
-    allocations: number;
-    backups: number;
-  };
   dockerImage?: string;
   startupCommand?: string;
-  environment?: Record<string, string>;
-  relationship?: 'owner' | 'subuser' | 'admin';
   configSyncPending?: boolean;
   configSyncError?: string;
   installedAt?: string;
   skipScripts?: boolean;
   dockerLabels?: Record<string, string>;
+  /** Monotonically increasing counter incremented on each recovery/evacuation. */
+  generation: number;
+  installed?: boolean;
+  /** Time after which a workload's lease expires; must be stopped afterwards. */
+  workloadLeaseExpiry?: string;
 };
 
-export type ApiNodeActualState = "online" | "offline" | "degraded" | "unknown";
+export type ApiNodeDesiredState = "active" | "maintenance" | "draining";
+
+export type ApiNodeActualState = "online" | "offline" | "degraded" | "reconciling" | "unknown";
+
+export type ApiNodeStatus =
+  | "online"
+  | "offline"
+  | "degraded"
+  | "maintenance"
+  | "draining"
+  | "installing"
+  | "restoring_backup"
+  | "stopped"
+  | "active"
+  | "unknown";
 
 export type ApiNode = {
   id: string;
@@ -96,8 +143,8 @@ export type ApiNode = {
   region: string;
   regionId?: string;
   locationId?: string;
-  status: string;
-  desiredState?: string;
+  status: ApiNodeStatus;
+  desiredState?: ApiNodeDesiredState;
   actualState?: ApiNodeActualState;
   heartbeatState?: string;
   heartbeatRecoveryCount?: number;
@@ -115,6 +162,7 @@ export type ApiNode = {
   daemonListen?: number;
   daemonSftp?: number;
   lastSeenAt?: string;
+  lastHeartbeatAt: string;
   memoryMb?: number;
   diskMb?: number;
   uploadSizeMb?: number;
@@ -166,8 +214,10 @@ export type ApiNode = {
   cpuThreads?: number;
   dockerStatus?: string;
   nodeMemoryMb?: number;
-  nodeDiskMb?: number;
+  nodeDiskMB?: number;
   heartbeatError?: string;
+  schedulerType?: string;
+  schedulerConfig?: Record<string, unknown>;
 };
 
 export type ApiNodeHealth = {
@@ -361,11 +411,9 @@ export type ServerUpdateInput = {
 };
 
 export type DatabaseCreateInput = {
-  name: string;
-  remote?: string;
-  hostId?: string;
-  username?: string;
-  password?: string;
+	database: string;
+	remote?: string;
+	maxConnections?: number;
 };
 
 export type ScheduleCreateInput = {
@@ -457,8 +505,10 @@ export type ApiScheduleTask = {
   action: string;
   payload: Record<string, unknown>;
   continueOnFailure: boolean;
-  sequenceOrder: number;
-  sequence?: number;
+  /** Ordering of the task within its schedule; the API always returns this field. */
+  sequence: number;
+  /** @deprecated The API and all consumers use `sequence`. Kept for backward compatibility. */
+  sequenceOrder?: number;
   timeOffset?: number;
   timeOffsetSeconds?: number;
 };
@@ -492,7 +542,6 @@ export type ApiSetupRequest = {
 
 export type LoginResponse = {
   complete: boolean;
-  token?: string;
   user?: ApiUser;
   confirmationToken?: string;
 };
@@ -703,6 +752,21 @@ export type ApiWebhookDelivery = {
   nextAttemptAt?: string;
   deliveredAt?: string;
   createdAt: string;
+};
+
+export type ApiWebhookStats = {
+  totalWebhooks: number;
+  deliveriesToday: number;
+  successRate: number;
+  failedDeliveries: number;
+  pendingDeliveries: number;
+};
+
+export type ApiWebhookTestResult = {
+  success: boolean;
+  statusCode?: number;
+  responseBody?: string;
+  error?: string;
 };
 
 export type ApiMigrationStatus =
@@ -940,6 +1004,26 @@ export type CreateNodeInput = {
   daemonConnect?: number;
   cpuOverallocate?: number;
   tags?: string[];
+  schedulerType?: string;
+  schedulerConfig?: Record<string, unknown>;
+  allowedIps?: string[];
+  networkInterface?: string;
+  reservedMemoryMb?: number;
+  reservedDiskMb?: number;
+  defaultAllocationIp?: string;
+  allocationPortMin?: number;
+  allocationPortMax?: number;
+  autoAllocate?: boolean;
+  enableHealthChecks?: boolean;
+  enableMetrics?: boolean;
+  prometheusEndpoint?: string;
+  alertThresholdCpu?: number;
+  alertThresholdMemory?: number;
+  alertThresholdDisk?: number;
+  maintenanceMessage?: string;
+  drainBeforeMaintenance?: boolean;
+  tokenRotationPolicy?: string;
+  tlsSetting?: string;
 };
 
 export type UpdateNodeInput = {
@@ -970,6 +1054,8 @@ export type UpdateNodeInput = {
   daemonConnect?: number;
   cpuOverallocate?: number;
   tags?: string[];
+  schedulerType?: string;
+  schedulerConfig?: Record<string, unknown>;
 };
 
 export type CreateAllocationInput = {
@@ -1123,6 +1209,40 @@ export type ApiFileEntry = {
   createdAt?: string;
 };
 
+export type ApiFileContent = {
+  content: string;
+  encoding?: string;
+};
+
+export type ApiFileRead = ApiFileContent;
+
+export type ApiTask = {
+  id: string;
+  serverId: string;
+  command: string;
+  status: string;
+  output?: string;
+  createdAt: string;
+  completedAt?: string | null;
+};
+
+export type ApiNotification = {
+  id: string;
+  userId?: string;
+  title: string;
+  content: string;
+  read: boolean;
+  createdAt: string;
+};
+
+export type ApiAlert = {
+  id: string;
+  title: string;
+  message: string;
+  level: "info" | "warning" | "error" | "critical";
+  createdAt: string;
+};
+
 export type ApiServerSubuser = {
   id: string;
   userId?: string;
@@ -1137,26 +1257,31 @@ export type ApiStartupVariable = {
   name: string;
   description?: string;
   envVariable: string;
-  env_variable?: string;
   defaultValue: string;
-  default_value?: string;
   serverValue: string;
-  server_value?: string;
   rules: string;
+  isEditable?: boolean;
+  /** @deprecated Use envVariable instead */
+  env_variable?: string;
+  /** @deprecated Use defaultValue instead */
+  default_value?: string;
+  /** @deprecated Use serverValue instead */
+  server_value?: string;
+  /** @deprecated Use isEditable instead */
   is_editable?: boolean;
 };
 
 export type CrashEvent = {
   id: string;
-  server_id: string;
-  node_id: string;
-  exit_code: number;
-  oom_killed: boolean;
-  clean_exit: boolean;
-  auto_restarted: boolean;
-  crash_count: number;
-  node_state: Record<string, unknown> | null;
-  created_at: string;
+  serverId: string;
+  nodeId: string;
+  exitCode: number;
+  oomKilled: boolean;
+  cleanExit: boolean;
+  autoRestarted: boolean;
+  crashCount: number;
+  nodeState: Record<string, unknown> | null;
+  createdAt: string;
 };
 
 export type ApiHealthCheck = {
@@ -1302,16 +1427,208 @@ export type ApiLegacyTransferStatus = {
 };
 
 export type SocialProvider = {
+	id: string;
+	name: string;
+	displayName: string;
+	enabled: boolean;
+	clientId: string;
+	issuerUrl?: string;
+	hasClientSecret: boolean;
+	scopes: string[];
+	buttonStyle: string;
+	iconClass: string;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type ApiEndpoint = {
+	id: string;
+	name: string;
+	description?: string;
+	endpointType: "docker" | "swarm" | "kubernetes" | "edge";
+	connectionMode: "direct" | "tunnel" | "edge";
+	status: "unknown" | "online" | "degraded" | "offline" | "provisioning";
+	edgeId?: string;
+	tags?: string[];
+	labels?: { key: string; value: string }[];
+	url?: string;
+	projectId?: string;
+	groupId?: string;
+	reachable?: boolean;
+	version?: string;
+	nodeCount?: number;
+	totalContainers?: number;
+	totalImages?: number;
+	totalVolumes?: number;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type ApiEndpointDiagnostics = {
+	endpointId: string;
+	reachable: boolean;
+	version?: string;
+	totalMemoryMb?: number;
+	usedMemoryMb?: number;
+	totalDiskMb?: number;
+	usedDiskMb?: number;
+	cpuPercent?: number;
+	nodes: {
+		nodeId: string;
+		name: string;
+		status: string;
+		serverCount: number;
+		allocatedMemMb: number;
+		allocatedCpu: number;
+		allocatedDiskMb: number;
+	}[];
+	checkedAt: string;
+};
+
+export type ApiEndpointInventorySummary = {
+	totalServers: number;
+	totalContainers: number;
+	totalImages: number;
+	totalVolumes: number;
+	totalAllocations: number;
+	usedMemoryMb: number;
+	totalMemoryMb: number;
+	usedDiskMb: number;
+	totalDiskMb: number;
+};
+
+export type ApiEndpointHealthRecord = {
+	id: string;
+	endpointId: string;
+	status: string;
+	reachable: boolean;
+	healthScore: number;
+	version?: string;
+	containers: number;
+	images: number;
+	volumes: number;
+	error?: string;
+	observedAt: string;
+};
+
+export type ApiEndpointAccessPolicy = {
+	id: string;
+	endpointId: string;
+	principalType: string;
+	principalId: string;
+	role: string;
+	createdAt: string;
+};
+
+export type ApiEndpointNodeMember = {
+	id: string;
+	nodeId: string;
+	nodeName: string;
+	nodeStatus: string;
+	createdAt: string;
+};
+
+export type ProcessType = {
   id: string;
-  name: string;
-  displayName: string;
-  enabled: boolean;
-  clientId: string;
-  issuerUrl?: string;
-  hasClientSecret: boolean;
-  scopes: string[];
-  buttonStyle: string;
-  iconClass: string;
+  serverId: string;
+  processType: string;
+  command: string;
+  quantity: number;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ProcessScalingEvent = {
+  id: string;
+  serverId: string;
+  processType: string;
+  oldQuantity: number;
+  newQuantity: number;
+  triggeredBy: string;
+  createdAt: string;
+};
+
+export type OneOffTask = {
+  id: string;
+  serverId: string;
+  command: string;
+  status: string;
+  output: string;
+  createdAt: string;
+  completedAt: string | null;
+};
+
+export type ProcfileEntry = {
+  processType: string;
+  command: string;
+  quantity?: number;
+};
+
+export type ApiServerConfiguration = {
+  startup: string;
+  stop: string;
+  dockerImage: string;
+  environment: Record<string, string>;
+  limits: {
+    memory: number;
+    disk: number;
+    cpu: number;
+    io: number;
+    swap: number;
+    threads: number | null;
+  };
+};
+
+export type ApiNodeSystemInformation = {
+  version: string;
+  os: string;
+  architecture: string;
+  cpuThreads: number;
+  dockerAvailable: boolean;
+  dockerStatus: string;
+  kernelVersion?: string;
+  uptime?: number;
+};
+
+export type ApiRegionCluster = {
+  regionId: string;
+  nodes: Array<{
+    id: string;
+    name: string;
+    status: string;
+    serverCount: number;
+  }>;
+  totalServers: number;
+  totalNodes: number;
+};
+
+export type ApiNodeDeployment = {
+  nodeId: string;
+  deployable: boolean;
+  reason?: string;
+  score?: number;
+  allocatedResources?: {
+    cpu: number;
+    memory: number;
+    disk: number;
+  };
+};
+
+export type ApiRecoveryToken = {
+  id: string;
+  token: string;
+  used: boolean;
+  createdAt: string;
+  usedAt?: string;
+};
+
+export type ApiAuditLogResponse = {
+  data: ApiAdminAuditEvent[];
+  pagination?: {
+    current: number;
+    total: number;
+    count: number;
+    per_page: number;
+    total_records: number;
+  };
 };

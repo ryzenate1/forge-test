@@ -2,7 +2,6 @@
 import {
   API_BASE_URL,
   ApiError,
-  LEGACY_TOKEN_KEY,
   deleteJSON,
   fetchJSON,
   getCSRFToken,
@@ -94,30 +93,6 @@ export async function refreshSession(): Promise<void> {
     throw new ApiError(`Session refresh failed with ${response.status}`, response.status);
 }
 
-export async function migrateToCookieSession(): Promise<boolean> {
-  if (typeof window === 'undefined') return false;
-  const legacyToken = window.localStorage.getItem(LEGACY_TOKEN_KEY);
-  if (!legacyToken) return false;
-
-  try {
-    const response = await fetch(`${API_BASE_URL}/auth/session/migrate`, {
-      method: 'POST',
-      headers: { Accept: 'application/json', Authorization: `Bearer ${legacyToken}` },
-      credentials: 'include',
-    });
-    if (response.ok) {
-      window.localStorage.removeItem(LEGACY_TOKEN_KEY);
-      return true;
-    }
-    if (response.status === 400 || response.status === 401 || response.status === 403) {
-      window.localStorage.removeItem(LEGACY_TOKEN_KEY);
-    }
-  } catch {
-    // Preserve a valid legacy token while the API is temporarily unavailable.
-  }
-  return false;
-}
-
 export async function requestPasswordReset(
   email: string,
 ): Promise<{ status: string; dev_token?: string; dev_reset_url?: string }> {
@@ -153,7 +128,7 @@ export async function changeEmail(
   newEmail: string,
   currentPassword: string,
 ): Promise<{ status: string }> {
-  return patchJSON<{ status: string }>('/auth/email/change', {
+  return patchJSON<{ status: string }>('/account/email', {
     newEmail,
     currentPassword,
   });

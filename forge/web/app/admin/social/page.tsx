@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Globe, Eye, EyeOff, Save } from 'lucide-react';
 import { fetchJSON, putJSON, type SocialProvider } from '@/lib/api';
-import { Btn, Card, CardHeader, EmptyState, Input, SectionHeader } from '@/components/admin/admin-ui';
+import { AdminPageLayout, Btn, Card, CardHeader, EmptyState, Input, SectionHeader } from '@/components/admin/admin-ui';
 import { Alert } from '@/components/ui/primitives';
 import { useToast } from '@/components/ui/toast';
 
@@ -65,7 +65,7 @@ export default function SocialProvidersPage() {
   });
 
   return (
-    <div>
+    <AdminPageLayout>
       <SectionHeader title="Social Login Providers" sub="Configure real Discord OAuth, Steam OpenID, and Authentik OAuth settings. This page does not test or claim provider connectivity." />
       <Card>
         <CardHeader title={`${providers.length} providers`} icon={Globe} />
@@ -98,7 +98,7 @@ export default function SocialProvidersPage() {
           </div>
         ) : null}
       </Card>
-    </div>
+    </AdminPageLayout>
   );
 }
 
@@ -150,6 +150,7 @@ function ProviderRow({
             onChange={(value) => onChange({ clientSecret: value })}
             type={showSecret ? 'text' : 'password'}
             placeholder={provider.hasClientSecret ? 'Stored securely — enter a new value to replace it' : secretLabel}
+            autoComplete="off"
           />
           <button type="button" aria-label={showSecret ? 'Hide secret' : 'Show secret'} className="absolute right-2 top-7 text-slate-400 hover:text-slate-200" onClick={() => setShowSecret(!showSecret)}>
             {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}

@@ -1,17 +1,22 @@
 package http
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
 
 const (
 	authSourceCookieSession = "cookie-session"
-	authSourceBearerSession = "bearer-session"
 	authSourceOAuth         = "oauth"
 	authSourceAPIKey        = "api-key"
+
+	CSRFTokenLength = 32
+	CSRFTokenExpiry = 2 * time.Hour
 )
 
 func csrfMiddleware(cfg SessionCookieConfig) fiber.Handler {
@@ -26,7 +31,7 @@ func csrfMiddleware(cfg SessionCookieConfig) fiber.Handler {
 			return c.Next()
 		}
 
-		csrfCookie := c.Cookies(CSRFCookieName)
+		csrfCookie := c.Cookies(secureCookieName(CSRFCookieName, cfg.Secure))
 		if csrfCookie == "" {
 			return fiber.NewError(fiber.StatusForbidden, "missing CSRF cookie")
 		}
@@ -41,21 +46,54 @@ func csrfMiddleware(cfg SessionCookieConfig) fiber.Handler {
 		}
 
 		origin := c.Get("Origin")
-		if origin != "" {
-			panelOrigin := c.Locals("panelOrigin")
-			if panelOriginStr, ok := panelOrigin.(string); ok && panelOriginStr != "" {
-				if origin != panelOriginStr {
-					return fiber.NewError(fiber.StatusForbidden, "invalid Origin")
+		panelOrigin := c.Locals("panelOrigin")
+		if panelOriginStr, ok := panelOrigin.(string); ok && panelOriginStr != "" {
+			if origin == "" {
+				// Origin header required for cookie-session mutations
+				fetchSite := c.Get("Sec-Fetch-Site")
+				if fetchSite == "" {
+					return fiber.NewError(fiber.StatusForbidden, "missing Origin header")
 				}
+			} else if origin != panelOriginStr {
+				return fiber.NewError(fiber.StatusForbidden, "invalid Origin")
 			}
 		}
 
-		fetchSite := c.Get("Sec-Fetch-Site")
-		if fetchSite == "cross-site" {
-			return fiber.NewError(fiber.StatusForbidden, "cross-site request forbidden")
+		return c.Next()
+	}
+}
+
+func GenerateCSRFToken() (string, error) {
+	bytes := make([]byte, CSRFTokenLength)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
+func SetCSRFCookie(c *fiber.Ctx, token string) {
+	cfg := LoadSessionCookieConfig()
+	c.Cookie(&fiber.Cookie{
+		Name:     secureCookieName(CSRFCookieName, cfg.Secure),
+		Value:    token,
+		HTTPOnly: false,
+		Secure:   cfg.Secure,
+		SameSite: "Strict",
+		Expires:  time.Now().Add(CSRFTokenExpiry),
+		Path:     "/",
+	})
+}
+
+func GetCSRFTokenHandler() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		token, err := GenerateCSRFToken()
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to generate CSRF token")
 		}
 
-		return c.Next()
+		SetCSRFCookie(c, token)
+
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 }
 
@@ -67,23 +105,27 @@ func publicMutationOriginCheck(cfg SessionCookieConfig) fiber.Handler {
 		}
 
 		origin := c.Get("Origin")
-		if origin != "" {
-			panelOrigin := c.Locals("panelOrigin")
-			if panelOriginStr, ok := panelOrigin.(string); ok && panelOriginStr != "" {
-				if origin != panelOriginStr {
-					return fiber.NewError(fiber.StatusForbidden, "invalid Origin")
+		panelOrigin := c.Locals("panelOrigin")
+		if panelOriginStr, ok := panelOrigin.(string); ok && panelOriginStr != "" {
+			if origin == "" {
+				// Reject state-changing requests without Origin when panelOrigin is configured
+				fetchSite := c.Get("Sec-Fetch-Site")
+				if fetchSite != "same-origin" && fetchSite != "same-site" && fetchSite != "strict-same-origin" {
+					return fiber.NewError(fiber.StatusForbidden, "missing Origin header on state-changing request")
 				}
+			} else if origin != panelOriginStr {
+				return fiber.NewError(fiber.StatusForbidden, "invalid Origin")
 			}
 		}
 
-		fetchSite := c.Get("Sec-Fetch-Site")
-		if fetchSite == "cross-site" {
-			return fiber.NewError(fiber.StatusForbidden, "cross-site request forbidden")
-		}
-
 		contentType := c.Get("Content-Type")
-		if contentType != "" && !strings.HasPrefix(contentType, "application/json") && !strings.HasPrefix(contentType, "multipart/form-data") {
-			return fiber.NewError(fiber.StatusForbidden, "invalid Content-Type")
+		if method == fiber.MethodPost || method == fiber.MethodPut || method == fiber.MethodPatch {
+			if contentType == "" && c.Request().Header.ContentLength() > 0 {
+				return fiber.NewError(fiber.StatusForbidden, "missing Content-Type header")
+			}
+			if contentType != "" && !strings.HasPrefix(contentType, "application/json") && !strings.HasPrefix(contentType, "multipart/form-data") {
+				return fiber.NewError(fiber.StatusForbidden, "invalid Content-Type")
+			}
 		}
 
 		return c.Next()

@@ -3,6 +3,7 @@ package mail
 import (
 	"context"
 	"log"
+	"runtime"
 	"sync"
 	"time"
 
@@ -25,7 +26,17 @@ func NewWorker(s *store.Store) *Worker {
 func (w *Worker) Start(ctx context.Context) {
 	if w != nil && w.store != nil {
 		w.wg.Add(1)
-		go func() { defer w.wg.Done(); w.loop(ctx) }()
+		go func() {
+			defer w.wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					buf := make([]byte, 4096)
+					n := runtime.Stack(buf, false)
+					log.Printf("mail worker panic: %v\nstack: %s", r, buf[:n])
+				}
+			}()
+			w.loop(ctx)
+		}()
 	}
 }
 
@@ -69,9 +80,13 @@ func (w *Worker) processOne(ctx context.Context) bool {
 	settings, err := w.store.GetPanelMailSettings(settingsCtx)
 	settingsCancel()
 	if err == nil {
-		sendCtx, sendCancel := context.WithTimeout(ctx, 20*time.Second)
-		err = w.sender.Send(sendCtx, settings, item.Recipient, item.Subject, item.TextBody, item.HTMLBody)
-		sendCancel()
+		if settings.Driver == "log" {
+			log.Printf("mail (log driver): to=%s subject=%q\n%s", item.Recipient, item.Subject, item.TextBody)
+		} else {
+			sendCtx, sendCancel := context.WithTimeout(ctx, 20*time.Second)
+			err = w.sender.Send(sendCtx, settings, item.Recipient, item.Subject, item.TextBody, item.HTMLBody)
+			sendCancel()
+		}
 	}
 	finishCtx, finishCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer finishCancel()

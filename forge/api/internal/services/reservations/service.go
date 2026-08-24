@@ -2,6 +2,8 @@ package reservations
 
 import (
 	"context"
+	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,7 @@ type Manager struct {
 	publisher events.Publisher
 	mu        sync.Mutex
 	metrics   Metrics
+	cancel    context.CancelFunc
 }
 
 func New(store *store.Store, publishers ...events.Publisher) *Manager {
@@ -44,7 +47,15 @@ func (m *Manager) Start(ctx context.Context) {
 	if m == nil || m.store == nil {
 		return
 	}
+	ctx, m.cancel = context.WithCancel(ctx)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				buf := make([]byte, 4096)
+				n := runtime.Stack(buf, false)
+				fmt.Printf("reservation manager panic: %v\nstack: %s", r, buf[:n])
+			}
+		}()
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
 		for {
@@ -56,6 +67,12 @@ func (m *Manager) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+func (m *Manager) Stop() {
+	if m != nil && m.cancel != nil {
+		m.cancel()
+	}
 }
 
 func (m *Manager) CreateReservation(ctx context.Context, req store.CreatePlacementReservationRequest) (store.PlacementReservation, error) {

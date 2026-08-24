@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-webauthn/webauthn/protocol"
@@ -61,10 +62,16 @@ type Service struct {
 }
 
 func New(rpID, rpDisplayName, rpOrigin string, credStore CredentialStore, sessionStore SessionStore) (*Service, error) {
+	origins := make([]string, 0, 2)
+	for _, origin := range strings.Split(rpOrigin, ",") {
+		if origin = strings.TrimSpace(origin); origin != "" {
+			origins = append(origins, origin)
+		}
+	}
 	wa, err := webauthn.New(&webauthn.Config{
 		RPDisplayName: rpDisplayName,
 		RPID:          rpID,
-		RPOrigins:     []string{rpOrigin},
+		RPOrigins:     origins,
 	})
 	if err != nil {
 		return nil, err
@@ -87,8 +94,13 @@ func (s *Service) BeginRegistration(ctx context.Context, userID, userName, displ
 		return nil, "", err
 	}
 	sessionID := uuid.NewString()
-	data, _ := json.Marshal(sessionData)
-	s.sessionStore.Save(ctx, "webauthn:reg:"+sessionID, data, 5*time.Minute)
+	data, err := json.Marshal(sessionData)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := s.sessionStore.Save(ctx, "webauthn:reg:"+sessionID, data, 5*time.Minute); err != nil {
+		return nil, "", err
+	}
 	return creation, sessionID, nil
 }
 
@@ -98,7 +110,9 @@ func (s *Service) FinishRegistration(ctx context.Context, sessionID, userID stri
 		return nil, err
 	}
 	var sessionData webauthn.SessionData
-	json.Unmarshal(data, &sessionData)
+	if err := json.Unmarshal(data, &sessionData); err != nil {
+		return nil, err
+	}
 	user := &WebAuthnUser{ID: userID}
 
 	httpReq, err := http.NewRequest("POST", "/", io.NopCloser(bytes.NewReader(rawBody)))
@@ -110,13 +124,17 @@ func (s *Service) FinishRegistration(ctx context.Context, sessionID, userID stri
 	if err != nil {
 		return nil, err
 	}
-	s.credStore.SaveCredential(ctx, userID, WebAuthnCredential{
+	if err := s.credStore.SaveCredential(ctx, userID, WebAuthnCredential{
 		ID: uuid.NewString(), UserID: userID, CredentialID: credential.ID,
 		PublicKey: credential.PublicKey, AttestationType: credential.AttestationType,
 		AAGUID: credential.Authenticator.AAGUID, SignCount: credential.Authenticator.SignCount,
 		Name: "Security Key", CreatedAt: time.Now().UTC(), LastUsedAt: time.Now().UTC(),
-	})
-	s.sessionStore.Delete(ctx, "webauthn:reg:"+sessionID)
+	}); err != nil {
+		return nil, err
+	}
+	if err := s.sessionStore.Delete(ctx, "webauthn:reg:"+sessionID); err != nil {
+		return nil, err
+	}
 	return credential, nil
 }
 
@@ -126,8 +144,13 @@ func (s *Service) BeginLogin(ctx context.Context) (*protocol.CredentialAssertion
 		return nil, "", err
 	}
 	sessionID := uuid.NewString()
-	data, _ := json.Marshal(sessionData)
-	s.sessionStore.Save(ctx, "webauthn:login:"+sessionID, data, 5*time.Minute)
+	data, err := json.Marshal(sessionData)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := s.sessionStore.Save(ctx, "webauthn:login:"+sessionID, data, 5*time.Minute); err != nil {
+		return nil, "", err
+	}
 	return assertion, sessionID, nil
 }
 
@@ -137,7 +160,9 @@ func (s *Service) FinishLogin(ctx context.Context, sessionID, userID string, raw
 		return nil, err
 	}
 	var sessionData webauthn.SessionData
-	json.Unmarshal(data, &sessionData)
+	if err := json.Unmarshal(data, &sessionData); err != nil {
+		return nil, err
+	}
 
 	creds, _ := s.credStore.GetCredentials(ctx, userID)
 	user := &WebAuthnUser{ID: userID}
@@ -157,7 +182,9 @@ func (s *Service) FinishLogin(ctx context.Context, sessionID, userID string, raw
 	if err != nil {
 		return nil, err
 	}
-	s.sessionStore.Delete(ctx, "webauthn:login:"+sessionID)
+	if err := s.sessionStore.Delete(ctx, "webauthn:login:"+sessionID); err != nil {
+		return nil, err
+	}
 	return credential, nil
 }
 

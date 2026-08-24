@@ -103,8 +103,9 @@ func (s *Service) CreateServer(ctx context.Context, req store.CreateServerReques
 		decision.AllocationID = allocation.ID
 		decision.Reasons = append(decision.Reasons, "selected first available allocation on placed node")
 	}
+	reservationID := decision.ReservationID
 	var reservation store.PlacementReservation
-	if s.reservations != nil {
+	if reservationID == "" && s.reservations != nil {
 		reservation, err = s.reservations.CreateReservation(ctx, store.CreatePlacementReservationRequest{
 			NodeID:          req.NodeID,
 			ReservationType: store.PlacementReservationTypePlacement,
@@ -117,7 +118,14 @@ func (s *Service) CreateServer(ctx context.Context, req store.CreateServerReques
 		if err != nil {
 			return store.Server{}, domain.PlacementDecision{}, err
 		}
+		reservationID = reservation.ID
 		decision.Reasons = append(decision.Reasons, "reserved capacity on placed node")
+		decision.ReservationID = reservationID
+	} else if reservationID != "" {
+		reservation, err = s.reservations.GetReservation(ctx, reservationID)
+		if err != nil {
+			return store.Server{}, domain.PlacementDecision{}, err
+		}
 	}
 	s.publish(ctx, events.EventPlacementCreated, "placement", decision.NodeID, map[string]any{
 		"regionId":      decision.RegionID,
@@ -130,7 +138,7 @@ func (s *Service) CreateServer(ctx context.Context, req store.CreateServerReques
 	})
 	server, err := s.store.CreateServer(ctx, req)
 	if err != nil {
-		s.cancelReservation(ctx, reservation.ID)
+		s.cancelReservation(ctx, reservationID)
 		return store.Server{}, domain.PlacementDecision{}, err
 	}
 	created := false
@@ -140,12 +148,12 @@ func (s *Service) CreateServer(ctx context.Context, req store.CreateServerReques
 		created, err = s.provisionServer(ctx, server.ID)
 	}
 	if err != nil {
-		s.cancelReservation(ctx, reservation.ID)
+		s.cancelReservation(ctx, reservationID)
 		return store.Server{}, domain.PlacementDecision{}, s.compensateCreateFailure(ctx, server.ID, created, err)
 	}
-	if s.reservations != nil && reservation.ID != "" {
-		if _, err := s.reservations.ConfirmReservation(ctx, reservation.ID); err != nil {
-			s.cancelReservation(ctx, reservation.ID)
+	if s.reservations != nil && reservationID != "" {
+		if _, err := s.reservations.ConfirmReservation(ctx, reservationID); err != nil {
+			s.cancelReservation(ctx, reservationID)
 			return store.Server{}, domain.PlacementDecision{}, s.compensateCreateFailure(ctx, server.ID, true, err)
 		}
 	}
@@ -664,6 +672,7 @@ func runtimeCreateRequest(target store.ServerProvisionTarget) gpruntime.CreateSe
 		Ports: ports, Mounts: mounts, MemoryMB: target.MemoryMB, SwapMB: target.SwapMB,
 		CPUShares: target.CPUShares, CPULimit: target.CPULimit, DiskMB: target.DiskMB,
 		IOWeight: target.IOWeight, Threads: target.Threads, OOMDisabled: target.OOMDisabled,
+		UID: int(target.ContainerUID), GID: int(target.ContainerGID),
 	}
 }
 
@@ -694,11 +703,26 @@ func runtimeConfiguration(target store.ServerProvisionTarget) gpruntime.ServerCo
 	for _, mount := range target.Mounts {
 		mounts = append(mounts, gpruntime.Mount{Source: mount.Source, Target: mount.Target, ReadOnly: mount.ReadOnly})
 	}
+	environment := runtimeEnvironment(target.Environment, target.Image)
 	return gpruntime.ServerConfiguration{
-		UUID: target.ServerID, Name: target.Name, Environment: target.Environment, Invocation: target.StartupCommand,
+		UUID: target.ServerID, Name: target.Name, Environment: environment, Invocation: target.StartupCommand,
 		DockerImage: target.Image, Egg: map[string]any{"id": target.EggID, "fileDenylist": denylist}, Config: config, Allocations: allocations, Mounts: mounts,
 		Build: map[string]any{"memoryLimit": target.MemoryMB, "swapMb": target.SwapMB, "cpuShares": target.CPUShares, "cpuLimit": target.CPULimit, "diskSpace": target.DiskMB, "ioWeight": target.IOWeight, "threads": target.Threads, "oomDisabled": target.OOMDisabled},
+		UID: int(target.ContainerUID), GID: int(target.ContainerGID),
 	}
+}
+
+// runtimeEnvironment augments egg variables with image-specific requirements
+// shared by every runtime path (create and configuration sync).
+func runtimeEnvironment(environment map[string]string, image string) map[string]string {
+	env := make(map[string]string, len(environment))
+	for key, value := range environment {
+		env[key] = value
+	}
+	if strings.Contains(image, "itzg/minecraft-server") {
+		env["EULA"] = "TRUE"
+	}
+	return env
 }
 
 func runtimeTargetFromProvision(target store.ServerProvisionTarget) gpruntime.Target {

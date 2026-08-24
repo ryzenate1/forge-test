@@ -11,9 +11,14 @@ import (
 func StructuredLogger(logger *slog.Logger) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		start := time.Now()
-		requestID := uuid.NewString()
-		c.Locals("requestID", requestID)
-		c.Set("X-Request-ID", requestID)
+		requestID, _ := c.Locals("requestId").(string)
+		if requestID == "" {
+			requestID = uuid.NewString()
+			c.Locals("requestId", requestID)
+			c.Set("X-Request-ID", requestID)
+		} else {
+			c.Set("X-Request-ID", requestID)
+		}
 
 		err := c.Next()
 
@@ -34,6 +39,10 @@ func StructuredLogger(logger *slog.Logger) fiber.Handler {
 
 		if user, ok := c.Locals("user").(tokenClaims); ok {
 			attrs = append(attrs, slog.String("user_id", user.Sub))
+		}
+
+		if err != nil {
+			attrs = append(attrs, slog.String("error", err.Error()))
 		}
 
 		level := slog.LevelInfo

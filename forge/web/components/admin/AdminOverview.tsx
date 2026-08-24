@@ -1,43 +1,35 @@
 "use client";
 
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, Layers, Network, Server, Shield, Activity, HardDrive, Cpu } from "lucide-react";
-import { fetchAdminAudit, fetchAllServers, fetchHealthStatus, fetchNodes, fetchUsers, type ApiAdminAuditEvent, type ApiHealthCheck, type ApiNode, type ApiServer } from "@/lib/api";
+import { fetchAdminAudit, fetchAllNodes, fetchAllServers, fetchHealthStatus, fetchUsers, type ApiAdminAuditEvent, type ApiHealthCheck, type ApiNode, type ApiServer } from "@/lib/api";
 import { Card, CardHeader, EmptyState, SectionHeader, StatsRow, Pill } from "./admin-ui";
 
-function SimplePieChart({ data, total }: { data: { label: string; value: number; color: string }[]; total: number }) {
-  let cumulativePercent = 0;
+function StatusBreakdown({ data, total }: { data: { label: string; value: number; color: string }[]; total: number }) {
   const safeTotal = total > 0 ? total : 1;
   return (
-    <div className="flex items-center gap-4">
-      <div className="relative h-20 w-20 shrink-0">
-        <svg viewBox="0 0 36 36" className="h-full w-full transform -rotate-90">
-          {data.map((item) => {
-            const percent = (item.value / safeTotal) * 100;
-            const strokeDasharray = `${percent} 100`;
-            const strokeDashoffset = -cumulativePercent;
-            cumulativePercent += percent;
-            return (
-              <circle
-                key={item.label}
-                cx="18"
-                cy="18"
-                r="15.9155"
-                fill="transparent"
-                stroke={item.color}
-                strokeWidth="4"
-                strokeDasharray={strokeDasharray}
-                strokeDashoffset={strokeDashoffset}
-              />
-            );
-          })}
-        </svg>
+    <div className="space-y-2">
+      <div className="flex h-3 w-full overflow-hidden rounded-full bg-white/[0.05]">
+        {data.map((item) => {
+          const width = (item.value / safeTotal) * 100;
+          if (width <= 0) return null;
+          return (
+            <div
+              key={item.label}
+              className="h-full transition-all"
+              style={{ width: `${width}%`, backgroundColor: item.color }}
+              title={`${item.label}: ${item.value} (${((item.value / safeTotal) * 100).toFixed(1)}%)`}
+            />
+          );
+        })}
       </div>
-      <div className="space-y-1">
+      <div className="flex flex-wrap gap-x-4 gap-y-1">
         {data.map((item) => (
-          <div key={item.label} className="flex items-center gap-2 text-xs">
-            <div className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color }} />
-            <span className="text-slate-400">{item.label}: {item.value} ({((item.value / safeTotal) * 100).toFixed(1)}%)</span>
+          <div key={item.label} className="flex items-center gap-1.5 text-xs text-slate-400">
+            <div className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
+            <span className="tabular-nums">{item.value}</span>
+            <span className="text-slate-500">{item.label}</span>
           </div>
         ))}
       </div>
@@ -45,22 +37,22 @@ function SimplePieChart({ data, total }: { data: { label: string; value: number;
   );
 }
 
-function SimpleBarChart({ data, title }: { data: { label: string; value: number; max: number }[]; title: string }) {
+function SimpleBarChart({ data, title }: { data: { id: string; label: string; value: number; max: number }[]; title: string }) {
   const maxValue = Math.max(0, ...data.map((item) => item.max));
   return (
     <div>
       <h4 className="text-sm font-semibold text-slate-200 mb-3">{title}</h4>
       <div className="space-y-2">
         {data.map((item) => (
-          <div key={item.label} className="flex items-center gap-2">
-            <span className="w-20 text-xs text-slate-400">{item.label}</span>
-            <div className="flex-1 h-4 rounded-full bg-white/[0.05] overflow-hidden">
-              <div
-                className="h-full rounded-full bg-blue-500 transition-all"
-                style={{ width: `${maxValue > 0 ? Math.min(100, (item.value / maxValue) * 100) : 0}%` }}
+          <div key={item.id} className="flex items-center gap-2 min-w-0">
+            <span className="truncate min-w-0 flex-shrink text-xs text-slate-400" title={item.label}>{item.label}</span>
+            <div className="flex-1 h-4 rounded-full bg-white/[0.05] overflow-hidden min-w-0">
+              <div 
+                className="h-full rounded-full bg-sky-400/80 transition-all"
+                style={{ width: `${maxValue > 0 ? Math.min(100, (item.value / maxValue) * 100) : item.value > 0 ? 100 : 0}%` }}
               />
             </div>
-            <span className="w-16 text-xs text-slate-400 text-right">{item.value}</span>
+            <span className="whitespace-nowrap tabular-nums ml-auto text-xs text-slate-400">{item.value}</span>
           </div>
         ))}
       </div>
@@ -92,38 +84,52 @@ function hasHealthyPersistedHeartbeat(node: ApiNode) {
 }
 
 export function AdminOverview() {
-  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes, refetchInterval: 30_000, retry: 3 });
-  const serversQuery = useQuery({ queryKey: ["servers", "all"], queryFn: fetchAllServers, refetchInterval: 30_000, retry: 3 });
-  const usersQuery = useQuery({ queryKey: ["users"], queryFn: fetchUsers, refetchInterval: 60_000, retry: 2 });
-  const healthQuery = useQuery<{ checks?: ApiHealthCheck[] }>({ queryKey: ["health"], queryFn: fetchHealthStatus, retry: 2, refetchInterval: 30_000 });
-  const activityQuery = useQuery<ApiAdminAuditEvent[]>({ queryKey: ["admin-audit"], queryFn: fetchAdminAudit, retry: 2, refetchInterval: 15_000 });
+  const nodesQuery = useQuery({ queryKey: ["nodes", "all"], queryFn: fetchAllNodes, refetchInterval: 60_000, refetchIntervalInBackground: false, retry: 3 });
+  const serversQuery = useQuery({ queryKey: ["servers", "all"], queryFn: fetchAllServers, refetchInterval: 60_000, refetchIntervalInBackground: false, retry: 3 });
+  const usersQuery = useQuery({ queryKey: ["users"], queryFn: fetchUsers, refetchInterval: 60_000, refetchIntervalInBackground: false, retry: 2 });
+  const healthQuery = useQuery<{ checks?: ApiHealthCheck[] }>({ queryKey: ["health"], queryFn: fetchHealthStatus, retry: 2, refetchInterval: 30_000, refetchIntervalInBackground: false });
+  const activityQuery = useQuery<ApiAdminAuditEvent[]>({ queryKey: ["admin-audit"], queryFn: fetchAdminAudit, retry: 2, refetchInterval: 15_000, refetchIntervalInBackground: false });
 
-  const nodes = nodesQuery.data ?? [];
-  const servers = serversQuery.data ?? [];
+  const nodes = useMemo(() => nodesQuery.data ?? [], [nodesQuery.data]);
+  const servers = useMemo(() => serversQuery.data ?? [], [serversQuery.data]);
   const users = usersQuery.data ?? [];
 
-  const onlineNodes = nodes.filter(hasHealthyPersistedHeartbeat).length;
-  const heartbeatReportedNodes = nodes.filter((node) => Boolean(node.heartbeatState)).length;
-  const runningServers = servers.filter((server) => server.status === "running").length;
-  const failures = [
-    ...(nodesQuery.isError ? [] : nodes.filter((node) => !hasHealthyPersistedHeartbeat(node) || node.heartbeatError).map((node) => ({ id: `node-${node.id}`, label: node.name, detail: node.heartbeatError ?? `Persisted heartbeat is ${node.heartbeatState ?? "unreported"}` }))),
-    ...(serversQuery.isError ? [] : servers.filter((server) => server.status === "failed" || server.status === "install_failed" || server.transferError).map((server) => ({ id: `server-${server.id}`, label: server.name, detail: server.transferError ?? `Server is ${server.status}` }))),
-    ...(healthQuery.isError ? [] : (healthQuery.data?.checks ?? []).filter((check) => check.status !== "ok").map((check) => ({ id: `health-${check.name}`, label: check.label ?? check.name, detail: check.notificationMessage }))),
-  ];
-  const nodeMemoryCapacity = reportedTotal(nodes, "memoryMb");
-  const nodeDiskCapacity = reportedTotal(nodes, "diskMb");
-  const serverMemoryConfiguration = reportedTotal(servers, "memoryMb");
-  const serverDiskConfiguration = reportedTotal(servers, "diskMb");
+  const onlineNodes = useMemo(() => Array.isArray(nodes) ? nodes.filter(hasHealthyPersistedHeartbeat).length : 0, [nodes]);
+  const heartbeatReportedNodes = useMemo(() => Array.isArray(nodes) ? nodes.filter((node) => Boolean(node.heartbeatState)).length : 0, [nodes]);
+  const runningServers = useMemo(() => Array.isArray(servers) ? servers.filter((server) => server.status === "running").length : 0, [servers]);
+  const failures = useMemo(() => [
+    ...(nodesQuery.isError ? [] : Array.isArray(nodes) ? nodes.filter((node) => !hasHealthyPersistedHeartbeat(node) || node.heartbeatError).map((node) => ({ id: `node-${node.id}`, label: node.name, detail: node.heartbeatError ?? `Persisted heartbeat is ${node.heartbeatState ?? "unreported"}` })) : []),
+    ...(serversQuery.isError ? [] : Array.isArray(servers) ? servers.filter((server) => server.status === "crashed" || server.transferError).map((server) => ({ id: `server-${server.id}`, label: server.name, detail: server.transferError ?? `Server is ${server.status}` })) : []),
+    ...(healthQuery.isError ? [] : (Array.isArray(healthQuery.data?.checks) ? healthQuery.data.checks.filter((check) => check.status !== "ok").map((check) => ({ id: `health-${check.name}`, label: check.label ?? check.name, detail: check.notificationMessage })) : [])),
+  ], [nodes, servers, nodesQuery.isError, serversQuery.isError, healthQuery.isError, healthQuery.data?.checks]);
+  const nodeMemoryCapacity = useMemo(() => reportedTotal(nodes, "memoryMb"), [nodes]);
+  const nodeDiskCapacity = useMemo(() => reportedTotal(nodes, "diskMb"), [nodes]);
+  const serverMemoryConfiguration = useMemo(() => reportedTotal(servers, "memoryMb"), [servers]);
+  const serverDiskConfiguration = useMemo(() => reportedTotal(servers, "diskMb"), [servers]);
 
-  const serverStatusData = [
-    { label: "Running", value: servers.filter((server) => server.status === "running").length, color: "#22c55e" },
-    { label: "Stopped", value: servers.filter((server) => server.status === "stopped").length, color: "#64748b" },
-    { label: "Other", value: servers.filter((server) => server.status !== "running" && server.status !== "stopped").length, color: "#eab308" },
-  ];
+  const serverStatusData = useMemo(() => {
+    const srv = Array.isArray(servers) ? servers : [];
+    const running = srv.filter((s) => s.status === "running").length;
+    const stopped = srv.filter((s) => s.status === "stopped" && !s.suspended).length;
+    const failed = srv.filter((s) => s.status === "crashed").length;
+    const suspended = srv.filter((s) => s.suspended).length;
+    const installing = srv.filter((s) => s.status === "installing").length;
+    const other = srv.length - running - stopped - failed - suspended - installing;
+    return [
+      { label: "Running", value: running, color: "#22c55e" },
+      { label: "Stopped", value: stopped, color: "#64748b" },
+      ...(failed > 0 ? [{ label: "Failed", value: failed, color: "#ef4444" }] : []),
+      ...(suspended > 0 ? [{ label: "Suspended", value: suspended, color: "#eab308" }] : []),
+      ...(installing > 0 ? [{ label: "Installing", value: installing, color: "#38bdf8" }] : []),
+      ...(other > 0 ? [{ label: "Other", value: other, color: "#a78bfa" }] : []),
+    ];
+  }, [servers]);
 
-  const nodeResourceData = nodes
-    .filter((node): node is ApiNode & { memoryMb: number } => typeof node.memoryMb === "number" && Number.isFinite(node.memoryMb))
-    .map((node) => ({ label: node.name, value: node.memoryMb, max: node.memoryMb }));
+  const nodeResourceData = useMemo(() => Array.isArray(nodes)
+    ? nodes
+        .filter((node): node is ApiNode & { memoryMb: number } => typeof node.memoryMb === "number" && Number.isFinite(node.memoryMb))
+        .map((node) => ({ id: node.id, label: node.name, value: node.memoryMb, max: node.memoryMb }))
+    : [], [nodes]);
 
   return (
   <div>
@@ -154,21 +160,20 @@ export function AdminOverview() {
       { label: "Users", value: usersQuery.isError ? "Unavailable" : usersQuery.isLoading ? "Loading…" : users.length, icon: Shield, tone: "neutral" },
     ]} />
 
-    <div className="mb-6 grid gap-3 sm:grid-cols-2">
-      <div className="rounded-xl border border-white/[0.06] bg-[#1e2536] p-4">
+    <div className="mb-6 grid gap-6 md:grid-cols-2">
+      <Card className="min-h-[160px]">
         <p className="text-xs font-medium uppercase tracking-wider text-slate-500">Configured server memory</p>
-        <p className="mt-1 text-lg font-bold text-slate-100">{serversQuery.isError ? "Unavailable" : serversQuery.isLoading ? "Loading…" : serverMemoryConfiguration.reported ? `${serverMemoryConfiguration.value.toLocaleString()} MiB` : "Not reported"}</p>
+        <p className="mt-1 text-2xl font-bold tabular-nums text-slate-100">{serversQuery.isError ? "Unavailable" : serversQuery.isLoading ? "Loading…" : serverMemoryConfiguration.reported ? `${serverMemoryConfiguration.value.toLocaleString()} MiB` : "Not reported"}</p>
         <p className="mt-1 text-xs text-slate-500">{serversQuery.isError ? "All-server inventory is unavailable." : serversQuery.isLoading ? "Waiting for the all-server inventory." : `Reported by ${serverMemoryConfiguration.reported} of ${serverMemoryConfiguration.total} servers.`}</p>
         <p className="mt-2 border-t border-white/[0.06] pt-2 text-xs text-slate-400">Node configured capacity: {nodesQuery.isError ? "unavailable" : nodesQuery.isLoading ? "loading…" : nodeMemoryCapacity.reported ? `${nodeMemoryCapacity.value.toLocaleString()} MiB across ${nodeMemoryCapacity.reported}/${nodeMemoryCapacity.total} nodes` : "not reported"}</p>
-      </div>
-      <div className="rounded-xl border border-white/[0.06] bg-[#1e2536] p-4">
+      </Card>
+      <Card className="min-h-[160px]">
         <p className="text-xs font-medium uppercase tracking-wider text-slate-500">Configured server disk</p>
-        <p className="mt-1 text-lg font-bold text-slate-100">{serversQuery.isError ? "Unavailable" : serversQuery.isLoading ? "Loading…" : serverDiskConfiguration.reported ? `${serverDiskConfiguration.value.toLocaleString()} MiB` : "Not reported"}</p>
+        <p className="mt-1 text-2xl font-bold tabular-nums text-slate-100">{serversQuery.isError ? "Unavailable" : serversQuery.isLoading ? "Loading…" : serverDiskConfiguration.reported ? `${serverDiskConfiguration.value.toLocaleString()} MiB` : "Not reported"}</p>
         <p className="mt-1 text-xs text-slate-500">{serversQuery.isError ? "All-server inventory is unavailable." : serversQuery.isLoading ? "Waiting for the all-server inventory." : `Reported by ${serverDiskConfiguration.reported} of ${serverDiskConfiguration.total} servers.`}</p>
         <p className="mt-2 border-t border-white/[0.06] pt-2 text-xs text-slate-400">Node configured capacity: {nodesQuery.isError ? "unavailable" : nodesQuery.isLoading ? "loading…" : nodeDiskCapacity.reported ? `${nodeDiskCapacity.value.toLocaleString()} MiB across ${nodeDiskCapacity.reported}/${nodeDiskCapacity.total} nodes` : "not reported"}</p>
-      </div>
+      </Card>
     </div>
-    <p className="-mt-3 mb-6 text-xs text-slate-500">Capacity is configured allocation, not live resource usage. Coverage counts identify records that supplied each configured value.</p>
 
     <div className="mb-6 grid gap-6 md:grid-cols-2">
       {serversQuery.isError ? (
@@ -187,7 +192,7 @@ export function AdminOverview() {
           {servers.length === 0 ? (
             <EmptyState icon={Activity} message="No servers yet." />
           ) : (
-            <SimplePieChart data={serverStatusData} total={servers.length} />
+            <StatusBreakdown data={serverStatusData} total={servers.length} />
           )}
         </Card>
       )}
@@ -212,7 +217,7 @@ export function AdminOverview() {
           ) : (
             <>
               <SimpleBarChart data={nodeResourceData} title="Configured memory capacity per node (MiB)" />
-              <p className="mt-4 text-xs text-slate-500">Coverage: {nodeResourceData.length} of {nodes.length} nodes reported configured memory capacity. This is not live memory usage.</p>
+              <p className="mt-4 text-xs text-slate-500">Coverage: {nodeResourceData.length} of {nodes.length} nodes reported configured memory capacity.</p>
             </>
           )}
         </Card>
@@ -237,15 +242,15 @@ export function AdminOverview() {
             <EmptyState icon={Network} message="No nodes configured." />
           ) : (
             <>
-            <div className="border-b border-white/[0.04] px-4 py-3 text-xs text-slate-400">
+            <div className="-mx-4 sm:-mx-5 border-b border-white/[0.04] px-4 sm:px-5 py-3 text-xs text-slate-400">
               {onlineNodes} healthy · {heartbeatReportedNodes}/{nodes.length} nodes have a persisted heartbeat state
             </div>
-            <ul className="divide-y divide-white/[0.04]">
+            <ul className="-mx-4 sm:-mx-5 divide-y divide-white/[0.04]">
               {nodes.map((node) => (
-                <li key={node.id} className="flex items-center justify-between px-4 py-3">
-                  <div>
-                    <p className="text-sm font-medium text-slate-200">{node.name}</p>
-                    <p className="text-xs text-slate-500">{node.fqdn ?? node.region}</p>
+                <li key={node.id} className="flex items-center justify-between px-4 sm:px-5 py-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-slate-200">{node.name}</p>
+                    <p className="truncate text-xs text-slate-500">{node.fqdn ?? node.region}</p>
                   </div>
                   <Pill tone={hasHealthyPersistedHeartbeat(node) ? "green" : node.heartbeatState === "degraded" ? "yellow" : node.heartbeatState ? "red" : "neutral"}>
                     {hasHealthyPersistedHeartbeat(node) ? "persisted: healthy" : `persisted: ${node.heartbeatState ?? "unreported"}`}
@@ -275,13 +280,13 @@ export function AdminOverview() {
             <EmptyState icon={Layers} message="No servers yet." />
           ) : (
             <>
-            <div className="border-b border-white/[0.04] px-4 py-3 text-xs text-slate-400">Showing {Math.min(8, servers.length)} of {servers.length} servers returned by the complete inventory.</div>
-            <ul className="divide-y divide-white/[0.04]">
+            <div className="-mx-4 sm:-mx-5 border-b border-white/[0.04] px-4 sm:px-5 py-3 text-xs text-slate-400">Showing {Math.min(8, servers.length)} of {servers.length} servers returned by the complete inventory.</div>
+            <ul className="-mx-4 sm:-mx-5 divide-y divide-white/[0.04]">
               {servers.slice(0, 8).map((server) => (
-                <li key={server.id} className="flex items-center justify-between px-4 py-3">
-                  <div>
-                    <p className="text-sm font-medium text-slate-200">{server.name}</p>
-                    <p className="text-xs text-slate-500">{server.node}</p>
+                <li key={server.id} className="flex items-center justify-between px-4 sm:px-5 py-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-slate-200">{server.name}</p>
+                    <p className="truncate text-xs text-slate-500">{server.node}</p>
                   </div>
                   <Pill tone={server.status === "running" ? "green" : server.status === "stopped" ? "neutral" : "yellow"}>
                     {server.suspended ? "suspended" : server.status}
@@ -303,7 +308,7 @@ export function AdminOverview() {
         ) : serversQuery.isLoading ? (
           <QueryLoading message="Loading configured server capacity…" />
         ) : (
-          <div className="space-y-3 p-4 text-sm">
+          <div className="space-y-3 text-sm">
             <div>
               <p className="text-xs uppercase text-slate-500">Memory configuration</p>
               <p className="mt-1 font-semibold text-slate-200">{serverMemoryConfiguration.reported ? `${serverMemoryConfiguration.value.toLocaleString()} MiB across ${serverMemoryConfiguration.reported} of ${serverMemoryConfiguration.total} servers` : `No memory configuration reported by ${serverMemoryConfiguration.total} servers.`}</p>
@@ -312,7 +317,7 @@ export function AdminOverview() {
               <p className="text-xs uppercase text-slate-500">Disk configuration</p>
               <p className="mt-1 font-semibold text-slate-200">{serverDiskConfiguration.reported ? `${serverDiskConfiguration.value.toLocaleString()} MiB across ${serverDiskConfiguration.reported} of ${serverDiskConfiguration.total} servers` : `No disk configuration reported by ${serverDiskConfiguration.total} servers.`}</p>
             </div>
-            <p className="border-t border-white/[0.06] pt-3 text-xs text-slate-500">Totals include only finite configured values returned by the all-server inventory. They do not represent current usage.</p>
+            <p className="border-t border-white/[0.06] pt-3 text-xs text-slate-500">Totals include only finite configured values returned by the all-server inventory. Capacity is configured allocation, not live resource usage.</p>
           </div>
         )}
       </Card>
@@ -323,10 +328,10 @@ export function AdminOverview() {
           <>
             <QueryError message={`This list is incomplete: ${[nodesQuery.isError && "node heartbeat", serversQuery.isError && "server inventory", healthQuery.isError && "health checks"].filter(Boolean).join(", ")} data is unavailable.`} />
             {failures.length > 0 && (
-              <ul className="divide-y divide-white/[0.04]">
+              <ul className="-mx-4 sm:-mx-5 divide-y divide-white/[0.04]">
                 {failures.slice(0, 10).map((failure) => (
-                  <li className="p-4" key={failure.id}>
-                    <p className="font-semibold text-red-300">{failure.label}</p>
+                  <li className="px-4 sm:px-5 py-4" key={failure.id}>
+                    <p className="truncate font-semibold text-red-300">{failure.label}</p>
                     <p className="text-xs text-slate-400">{failure.detail}</p>
                   </li>
                 ))}
@@ -338,10 +343,10 @@ export function AdminOverview() {
         ) : failures.length === 0 ? (
           <EmptyState icon={AlertTriangle} message="No failures reported." />
         ) : (
-          <ul className="divide-y divide-white/[0.04]">
+          <ul className="-mx-4 sm:-mx-5 divide-y divide-white/[0.04]">
             {failures.slice(0, 10).map((failure) => (
-              <li className="p-4" key={failure.id}>
-                <p className="font-semibold text-red-300">{failure.label}</p>
+              <li className="px-4 sm:px-5 py-4" key={failure.id}>
+                <p className="truncate font-semibold text-red-300">{failure.label}</p>
                 <p className="text-xs text-slate-400">{failure.detail}</p>
               </li>
             ))}
@@ -365,14 +370,14 @@ export function AdminOverview() {
           {(activityQuery.data ?? []).length === 0 ? (
             <EmptyState icon={Shield} message="No administrative activity." />
           ) : (
-            <ul className="divide-y divide-white/[0.04]">
+            <ul className="-mx-4 sm:-mx-5 divide-y divide-white/[0.04]">
               {(activityQuery.data ?? []).slice(0, 8).map((event) => (
-                <li className="p-4" key={event.id}>
+                <li className="px-4 sm:px-5 py-4" key={event.id}>
                   <div className="flex justify-between gap-3">
-                    <p className="text-sm font-semibold text-slate-200">{event.action}</p>
-                    <time className="text-xs text-slate-500">{new Date(event.createdAt).toLocaleString()}</time>
+                    <p className="truncate text-sm font-semibold text-slate-200">{event.action}</p>
+                    <time className="shrink-0 text-xs tabular-nums text-slate-500">{new Date(event.createdAt).toLocaleString()}</time>
                   </div>
-                  <p className="text-xs text-slate-500">{event.actorEmail ?? "system"} · {event.targetType}{event.targetId ? `:${event.targetId}` : ""}</p>
+                  <p className="truncate text-xs text-slate-500">{event.actorEmail ?? "system"} · {event.targetType}{event.targetId ? `:${event.targetId}` : ""}</p>
                 </li>
               ))}
             </ul>

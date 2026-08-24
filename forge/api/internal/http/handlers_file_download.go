@@ -158,6 +158,9 @@ func issueBackupDownloadTicket(cfg Config, tickets *fileDownloadTicketStore) fib
 			return fiber.NewError(fiber.StatusBadRequest, "name is required")
 		}
 		backupName := strings.TrimSpace(req.Name)
+		if backupName == "." || backupName == ".." || path.Base(backupName) != backupName || strings.ContainsRune(backupName, '\x00') {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid backup name")
+		}
 		expires := time.Now().Add(60 * time.Second)
 		token, err := tickets.issue(fileDownloadTicket{
 			serverID: c.Params("id"),

@@ -7,6 +7,8 @@ import { createBackup, deleteBackup, fetchBackups, lockBackup as lockBackupApi, 
 import { type ApiBackup, type ApiServer } from "@/lib/api/types";
 import { hasServerPermission, useOptionalServerContext } from "./server-context";
 import { formatDate } from "@/lib/utils";
+import { useToast } from "@/components/ui/toast";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 export function formatBackupBytes(value: number) {
   if (!Number.isFinite(value) || value < 0) return "Unknown size";
@@ -25,17 +27,19 @@ function errorText(error: unknown, fallback: string) {
 
 export function BackupsView({ server }: { server?: ApiServer }) {
   const context = useOptionalServerContext();
-  const access = context?.access ?? { user: null, permissions: [], isAdmin: true, isOwner: true };
+  const access = context?.access ?? { user: null, permissions: null, isAdmin: false, isOwner: false };
   const canCreate = hasServerPermission(access, "backup.create");
   const canDownload = hasServerPermission(access, "backup.download");
   const canRestore = hasServerPermission(access, "backup.restore");
   const canDelete = hasServerPermission(access, "backup.delete");
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [backupName, setBackupName] = useState("");
   const [ignoredFiles, setIgnoredFiles] = useState("");
   const [lockOnCreate, setLockOnCreate] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const [confirm, renderConfirm] = useConfirm();
   const backups = useQuery({
     queryKey: ["server-backups", server?.id, currentPage],
     queryFn: () => fetchBackups(server?.id ?? "", currentPage, 20),
@@ -43,12 +47,12 @@ export function BackupsView({ server }: { server?: ApiServer }) {
     refetchInterval: (query) => (query.state.data as { data: ApiBackup[] } | undefined)?.data?.some((backup) => backup.status === "pending" || backup.status === "running") ? 3000 : false,
   });
   const invalidate = () => void queryClient.invalidateQueries({ queryKey: ["server-backups", server?.id] });
-  const createMutation = useMutation({
+  const createMutation = useMutation({ 
     mutationFn: () => createBackup(server?.id ?? "", {
       name: backupName || undefined,
       ignored: ignoredFiles ? ignoredFiles.split(",").map(f => f.trim()).filter(f => f) : undefined,
       is_locked: lockOnCreate || undefined
-    }),
+    }), 
     onSuccess: () => {
       invalidate();
       setBackupName("");
@@ -71,12 +75,17 @@ export function BackupsView({ server }: { server?: ApiServer }) {
 
   const download = async (backup: ApiBackup) => {
     if (!server?.id || !isUsable(backup)) return;
-    const { url } = await getBackupDownloadURL(server.id, backup.name);
-    window.location.href = url;
+    try {
+      const { url } = await getBackupDownloadURL(server.id, backup.name);
+      window.location.href = url;
+    } catch (error) {
+      toast({ tone: "error", title: "Download failed", message: error instanceof Error ? error.message : "Could not generate a download link for this backup." });
+    }
   };
 
   return (
     <div className="space-y-6">
+      {renderConfirm()}
       <div className="rounded-xl border border-white/[0.08] bg-[#1e2536] px-4 py-4 text-sm font-semibold text-[#94a3b8]">
         {backupsDisabled ? "Backups are disabled for this server." : typeof limit === "number" && limit > 0 ? `${pagination?.total ?? 0} of ${limit} backup slots used.` : `${pagination?.total ?? 0} backups created; no quota was provided by the API.`}
         {limitReached ? <span className="ml-2 text-red-300">Limit reached.</span> : null}
@@ -103,7 +112,7 @@ export function BackupsView({ server }: { server?: ApiServer }) {
                 <p className="mt-1 font-semibold text-slate-300">{formatDate(backup.completedAt, "Not completed")}</p><p className="uppercase text-[#64748b]">Completed</p>
               </div>
               <div className="flex items-center gap-1 sm:justify-self-end">
-                <button aria-label={`Download ${backup.name}`} className="grid h-9 w-9 place-items-center rounded hover:bg-[#4b5563] disabled:opacity-40" disabled={!usable || !canDownload} onClick={() => void download(backup).catch(() => undefined)} title={usable ? "Download" : "Available after completion"} type="button"><Download size={18} /></button>
+                <button aria-label={`Download ${backup.name}`} className="grid h-9 w-9 place-items-center rounded hover:bg-[#4b5563] disabled:opacity-40" disabled={!usable || !canDownload} onClick={() => void download(backup)} title={usable ? "Download" : "Available after completion"} type="button"><Download size={18} /></button>
                 {backup.isLocked ? (
                   <button
                     aria-label={`Unlock ${backup.name}`}
@@ -127,8 +136,8 @@ export function BackupsView({ server }: { server?: ApiServer }) {
                     <Lock size={18} />
                   </button>
                 )}
-                <button aria-label={`Restore ${backup.name}`} className="grid h-9 w-9 place-items-center rounded text-amber-200 hover:bg-[#4b5563] disabled:opacity-40" disabled={!usable || busy || !canRestore} onClick={() => { if (window.confirm(`Restore ${backup.name}? Current files may be overwritten.`)) restoreMutation.mutate(backup); }} title={usable ? "Restore" : "Available after completion"} type="button"><RotateCcw size={18} /></button>
-                <button aria-label={`Delete ${backup.name}`} className="grid h-9 w-9 place-items-center rounded text-red-200 hover:bg-[#4b5563] disabled:opacity-40" disabled={!usable || busy || !canDelete || backup.isLocked} onClick={() => { if (window.confirm(`Delete backup ${backup.name}?`)) deleteMutation.mutate(backup); }} title={usable ? (backup.isLocked ? "Backup is locked" : "Delete") : "Available after completion"} type="button"><Trash2 size={18} /></button>
+                <button aria-label={`Restore ${backup.name}`} className="grid h-9 w-9 place-items-center rounded text-amber-200 hover:bg-[#4b5563] disabled:opacity-40" disabled={!usable || busy || !canRestore} onClick={async () => { if (await confirm({ title: `Restore ${backup.name}?`, description: "Current server files may be overwritten. This cannot be undone.", confirmLabel: "Restore" })) restoreMutation.mutate(backup); }} title={usable ? "Restore" : "Available after completion"} type="button"><RotateCcw size={18} /></button>
+                <button aria-label={`Delete ${backup.name}`} className="grid h-9 w-9 place-items-center rounded text-red-200 hover:bg-[#4b5563] disabled:opacity-40" disabled={!usable || busy || !canDelete || backup.isLocked} onClick={async () => { if (await confirm({ title: `Delete backup ${backup.name}?`, description: "The backup will be permanently removed.", danger: true, confirmLabel: "Delete" })) deleteMutation.mutate(backup); }} title={usable ? (backup.isLocked ? "Backup is locked" : "Delete") : "Available after completion"} type="button"><Trash2 size={18} /></button>
               </div>
             </div>
           );
@@ -137,8 +146,8 @@ export function BackupsView({ server }: { server?: ApiServer }) {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm font-semibold text-[#64748b]">Only completed backups can be downloaded, restored, or deleted. Locked backups cannot be deleted until unlocked.</p>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <button
-            className="text-sm font-semibold text-[#64748b] hover:text-slate-100"
+          <button 
+            className="text-sm font-semibold text-[#64748b] hover:text-slate-100" 
             onClick={() => setShowAdvanced(!showAdvanced)}
             type="button"
           >
@@ -151,7 +160,7 @@ export function BackupsView({ server }: { server?: ApiServer }) {
         <div className="flex items-center justify-between rounded-xl bg-[#1e2536] px-4 py-3">
           <p className="text-sm font-semibold text-[#64748b]">Page {pagination.page} of {pagination.total_pages} ({pagination.total} total)</p>
           <div className="flex gap-2">
-            <button
+            <button 
               className="rounded-lg bg-[#0f141f] px-3 py-2 text-sm font-semibold text-slate-100 hover:bg-[#1e2536] disabled:opacity-40"
               disabled={pagination.page <= 1}
               onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
@@ -159,7 +168,7 @@ export function BackupsView({ server }: { server?: ApiServer }) {
             >
               Previous
             </button>
-            <button
+            <button 
               className="rounded-lg bg-[#0f141f] px-3 py-2 text-sm font-semibold text-slate-100 hover:bg-[#1e2536] disabled:opacity-40"
               disabled={pagination.page >= pagination.total_pages}
               onClick={() => setCurrentPage(p => Math.min(pagination.total_pages, p + 1))}
@@ -174,7 +183,7 @@ export function BackupsView({ server }: { server?: ApiServer }) {
         <div className="rounded-xl bg-[#1e2536] px-4 py-4 space-y-3">
           <div>
             <label className="block text-sm font-semibold text-slate-100 mb-1">Backup Name (optional)</label>
-            <input
+            <input 
               className="w-full rounded-lg bg-[#0f141f] border border-white/[0.1] px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
               placeholder="Leave empty for auto-generated name"
               value={backupName}
@@ -184,7 +193,7 @@ export function BackupsView({ server }: { server?: ApiServer }) {
           </div>
           <div>
             <label className="block text-sm font-semibold text-slate-100 mb-1">Ignored Files (comma-separated patterns)</label>
-            <input
+            <input 
               className="w-full rounded-lg bg-[#0f141f] border border-white/[0.1] px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
               placeholder="e.g., node_modules, .git, *.log"
               value={ignoredFiles}
@@ -193,8 +202,12 @@ export function BackupsView({ server }: { server?: ApiServer }) {
             />
             <p className="text-xs text-[#64748b] mt-1">Use .gitignore-style patterns to exclude files from backup</p>
           </div>
+          <div className="rounded-lg border border-white/[0.08] bg-[#0f141f] px-3 py-3">
+            <p className="text-sm font-semibold text-slate-100 mb-1">Storage Destination</p>
+            <p className="text-xs text-[#64748b]">Custom storage destinations (S3, GCS, Azure) are not supported yet. Backups currently use the default node-local storage.</p>
+          </div>
           <div className="flex items-center gap-2">
-            <input
+            <input 
               checked={lockOnCreate}
               onChange={(e) => setLockOnCreate(e.target.checked)}
               type="checkbox"

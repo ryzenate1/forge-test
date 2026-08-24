@@ -7,6 +7,9 @@ import (
 	"fmt"
 )
 
+// SetServerPowerState records the expected power state after a control
+// signal. Transitions are restricted to allowed prior states so a stale or
+// out-of-order signal cannot corrupt the server lifecycle.
 func (s *Store) SetServerPowerState(ctx context.Context, serverID, signal string) error {
 	status := "stopped"
 	if signal == "start" || signal == "restart" {
@@ -16,14 +19,39 @@ func (s *Store) SetServerPowerState(ctx context.Context, serverID, signal string
 		status = "stopped"
 	}
 
-	commandTag, err := s.db.Exec(ctx, `UPDATE servers SET status = $1 WHERE id = $2`, status, serverID)
+	allowed := powerSignalPriorStates(signal)
+	commandTag, err := s.db.Exec(ctx, `
+		UPDATE servers SET status = $1, updated_at = now()
+		WHERE id = $2
+		  AND (status = ANY($3::text[]) OR $3 = '{}')
+	`, status, serverID, allowed)
 	if err != nil {
 		return err
 	}
 	if commandTag.RowsAffected() == 0 {
-		return errors.New("server not found")
+		var current string
+		_ = s.db.QueryRow(ctx, `SELECT status FROM servers WHERE id = $1`, serverID).Scan(&current)
+		if current == "" {
+			return errors.New("server not found")
+		}
+		return fmt.Errorf("cannot %s server in state %q", signal, current)
 	}
 	return s.AppendAudit(ctx, nil, "server power "+signal, "server", &serverID, fmt.Sprintf(`{"status":"%s"}`, status))
+}
+
+// powerSignalPriorStates returns the prior server statuses that may transition
+// under the given power signal. An empty slice means any status is allowed.
+func powerSignalPriorStates(signal string) []string {
+	switch signal {
+	case "start":
+		return []string{"created", "stopped", "install_failed"}
+	case "restart":
+		return []string{"running", "created", "stopped", "install_failed"}
+	case "stop", "kill":
+		return []string{"running", "installing", "provisioning", "restoring_backup", "recovering", "created", "stopped"}
+	default:
+		return []string{}
+	}
 }
 
 func (s *Store) ServerControlTarget(ctx context.Context, serverID string) (ServerControlTarget, error) {
@@ -66,7 +94,7 @@ func (s *Store) ServerProvisionTarget(ctx context.Context, serverID string) (Ser
 		       COALESCE(NULLIF(s.startup_command, ''), e.startup),
 		       e.install_script, e.install_container, e.install_entrypoint, e.config::text, e.file_denylist::text,
 		       s.memory_mb, s.swap_mb, s.cpu_shares, s.cpu_limit, s.disk_mb, s.io_weight,
-		       COALESCE(s.threads, ''), s.oom_disabled, host(a.ip), a.port,
+		       COALESCE(s.threads, ''), s.oom_disabled, s.container_uid, s.container_gid, host(a.ip), a.port,
 		       s.suspended, s.installed, s.status
 		FROM servers s
 		JOIN nodes n ON n.id = s.node_id
@@ -97,6 +125,8 @@ func (s *Store) ServerProvisionTarget(ctx context.Context, serverID string) (Ser
 		&target.IOWeight,
 		&target.Threads,
 		&target.OOMDisabled,
+		&target.ContainerUID,
+		&target.ContainerGID,
 		&allocationIP,
 		&allocationPort,
 		&target.Suspended,

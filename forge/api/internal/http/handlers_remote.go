@@ -8,8 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"gamepanel/forge/internal/daemon"
@@ -22,26 +22,74 @@ import (
 var (
 	errHMACMismatch   = errors.New("HMAC signature mismatch")
 	errHMACTimestamp  = errors.New("missing or invalid HMAC timestamp")
-	errHMACBodyRead   = errors.New("failed to read request body for HMAC verification")
 	errHMACMethod     = errors.New("HMAC verification requires HTTP method")
 	errHMACRequestURI = errors.New("HMAC verification requires request URI")
+	errHMACNonce      = errors.New("missing, invalid, or replayed HMAC nonce")
 )
 
 func requestContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 5*time.Second)
 }
 
-// verifyRemoteHMAC checks X-Panel-Signature and X-Panel-Timestamp when present.
-// When HMAC headers are absent (legacy daemon), authentication falls through to
-// the bearer token check.  When present, both checks must pass.
-func verifyRemoteHMAC(c *fiber.Ctx, nodeToken string) error {
+func longRequestContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 5*time.Minute)
+}
+
+// maxRemoteNonces bounds the in-memory replay cache. Entries already expire
+// after the 5-minute skew window, so the cap only matters under sustained
+// request volume; when full, the oldest entry is evicted.
+const maxRemoteNonces = 4096
+
+type remoteNonceStore struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+func newRemoteNonceStore() *remoteNonceStore {
+	return &remoteNonceStore{seen: make(map[string]time.Time)}
+}
+
+func (s *remoteNonceStore) accept(nonce string, expires time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for value, expiry := range s.seen {
+		if !expiry.After(now) {
+			delete(s.seen, value)
+		}
+	}
+	if _, exists := s.seen[nonce]; exists {
+		return false
+	}
+	if len(s.seen) >= maxRemoteNonces {
+		oldest, oldestExpiry := "", time.Time{}
+		for value, expiry := range s.seen {
+			if oldest == "" || expiry.Before(oldestExpiry) {
+				oldest, oldestExpiry = value, expiry
+			}
+		}
+		delete(s.seen, oldest)
+	}
+	s.seen[nonce] = expires
+	return true
+}
+
+// verifyRemoteHMAC requires a fresh, one-time signed request. Bearer auth in
+// remoteNodeMiddleware establishes the node identity; HMAC binds the method,
+// URI, body, timestamp, and nonce to prevent tampering and replay.
+func verifyRemoteHMAC(c *fiber.Ctx, nodeToken string, nonces *remoteNonceStore) error {
 	signature := c.Get("X-Panel-Signature")
 	timestamp := c.Get("X-Panel-Timestamp")
-	if signature == "" && timestamp == "" {
-		return nil // legacy daemon – no HMAC headers
-	}
-	if timestamp == "" {
+	nonce := c.Get("X-Panel-Nonce")
+	parsedTimestamp, err := time.Parse(time.RFC3339, timestamp)
+	if signature == "" || timestamp == "" || err != nil || time.Since(parsedTimestamp) > 5*time.Minute || time.Until(parsedTimestamp) > 5*time.Minute {
 		return errHMACTimestamp
+	}
+	if len(nonce) != 32 {
+		return errHMACNonce
+	}
+	if decoded, err := hex.DecodeString(nonce); err != nil || len(decoded) != 16 {
+		return errHMACNonce
 	}
 	method := c.Method()
 	if method == "" {
@@ -51,24 +99,18 @@ func verifyRemoteHMAC(c *fiber.Ctx, nodeToken string) error {
 	if len(requestURI) == 0 {
 		return errHMACRequestURI
 	}
-	var body []byte
-	if c.Request().Body() != nil {
-		var err error
-		body, err = io.ReadAll(c.Request().BodyStream())
-		if err != nil {
-			return errHMACBodyRead
-		}
-		// Re-arm the body for downstream handlers.
-		c.Request().SetBody(body)
-	}
-	expected := signHMAC(nodeToken, string(method), string(requestURI), timestamp, body)
+	body := append([]byte(nil), c.Body()...)
+	expected := signHMAC(nodeToken, string(method), string(requestURI), timestamp, nonce, body)
 	if !hmac.Equal([]byte(signature), []byte(expected)) {
 		return errHMACMismatch
+	}
+	if nonces == nil || !nonces.accept(nonce, parsedTimestamp.Add(5*time.Minute)) {
+		return errHMACNonce
 	}
 	return nil
 }
 
-func signHMAC(token, method, requestURI, timestamp string, body []byte) string {
+func signHMAC(token, method, requestURI, timestamp, nonce string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(token))
 	_, _ = mac.Write([]byte(method))
 	_, _ = mac.Write([]byte("\n"))
@@ -76,11 +118,14 @@ func signHMAC(token, method, requestURI, timestamp string, body []byte) string {
 	_, _ = mac.Write([]byte("\n"))
 	_, _ = mac.Write([]byte(timestamp))
 	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(nonce))
+	_, _ = mac.Write([]byte("\n"))
 	_, _ = mac.Write(body)
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func remoteNodeMiddleware(cfg Config, nodeRegistry *noderegistry.Service) fiber.Handler {
+	nonces := newRemoteNonceStore()
 	return func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
@@ -96,10 +141,7 @@ func remoteNodeMiddleware(cfg Config, nodeRegistry *noderegistry.Service) fiber.
 		if err != nil {
 			return fiber.NewError(fiber.StatusForbidden, "invalid daemon bearer token")
 		}
-		// HMAC verification – backward-compatible with legacy daemons.
-		// Uses the bearer token itself as the HMAC key so the panel does not
-		// need to store the raw daemon secret in the response Node struct.
-		if err := verifyRemoteHMAC(c, bearerToken); err != nil {
+		if err := verifyRemoteHMAC(c, bearerToken, nonces); err != nil {
 			return fiber.NewError(fiber.StatusForbidden, err.Error())
 		}
 		c.Locals("remoteNode", node)

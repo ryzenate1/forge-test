@@ -7,12 +7,19 @@ import {
   getCSRFToken,
   API_BASE_URL,
 } from './http';
+import type { ApiFileEntry } from './types';
 
-export async function fetchServerFiles(serverId: string, path?: string): Promise<any[]> {
+export async function fetchServerFiles(serverId: string, path?: string): Promise<ApiFileEntry[]> {
   const url = path
     ? `/servers/${encodeURIComponent(serverId)}/files?path=${encodeURIComponent(path)}`
     : `/servers/${encodeURIComponent(serverId)}/files`;
-  return fetchJSON<any[]>(url);
+  const files = await fetchJSON<ApiFileEntry[]>(url);
+  // The daemon returns modTime; the web API type uses modifiedAt. Normalize so
+  // consumers never read an undefined timestamp.
+  return (files ?? []).map((file) => ({
+    ...file,
+    modifiedAt: file.modifiedAt ?? file.createdAt,
+  }));
 }
 
 export async function downloadServerFile(serverId: string, path: string): Promise<Blob> {
@@ -21,6 +28,7 @@ export async function downloadServerFile(serverId: string, path: string): Promis
     headers: {
       ...getAuthHeaders(),
     },
+    credentials: 'include',
   });
 
   if (!response.ok) {
@@ -141,6 +149,11 @@ export async function decompressServerFiles(serverId: string, path: string): Pro
   });
 }
 
+/**
+ * Canonical pull — POST /servers/:id/files/pull (spec contract).
+ * Backend also accepts POST /servers/:id/files/download as legacy alias
+ * (see `downloadFileToServer` in @/lib/api), both handled by PullRemoteFile.
+ */
 export async function pullServerFile(
   serverId: string,
   url: string,
@@ -151,6 +164,9 @@ export async function pullServerFile(
     { url, path },
   );
 }
+
+// Legacy alias re-export for callers still importing from files module.
+export const downloadFileToServerViaFiles = pullServerFile;
 
 export async function readServerFile(serverId: string, path: string): Promise<string> {
   const response = await fetch(

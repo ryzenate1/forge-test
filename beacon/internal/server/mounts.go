@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
 
+	"gamepanel/beacon/internal/rootfs"
 	"gamepanel/beacon/internal/runtime"
 )
 
@@ -102,4 +105,111 @@ func (s *Server) reconcileRuntimeConfiguration(ctx context.Context, desired runt
 		return fmt.Errorf("runtime %q cannot reconcile an existing workload", provider)
 	}
 	return reconciler.Reconcile(ctx, desired)
+}
+
+type mountCleanupRequest struct {
+	Source string `json:"source"`
+}
+
+func (s *Server) cleanupMount(w http.ResponseWriter, r *http.Request) {
+	var body mountCleanupRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	source := strings.TrimSpace(body.Source)
+	if source == "" {
+		http.Error(w, "source is required", http.StatusBadRequest)
+		return
+	}
+	if !filepath.IsAbs(source) {
+		http.Error(w, "source must be an absolute host path", http.StatusBadRequest)
+		return
+	}
+	allowed := s.allowedMountSources()
+	if len(allowed) == 0 {
+		http.Error(w, "custom mounts are not enabled on this node", http.StatusBadRequest)
+		return
+	}
+	canonical, err := allowedMountSource(source, allowed)
+	if err != nil {
+		if !isPathNotExist(err) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !mountSourceWithinAllowed(source, allowed) {
+			http.Error(w, fmt.Sprintf("mount source %q is not within configured allowed_mounts", source), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": false, "reason": "directory does not exist"})
+		return
+	}
+	permittedRoot, relative, err := allowedMountRelative(canonical, allowed)
+	if err != nil || relative == "" || relative == "." {
+		http.Error(w, "refusing to remove an allowed mount root", http.StatusBadRequest)
+		return
+	}
+	confined, err := rootfs.New(permittedRoot)
+	if err != nil {
+		http.Error(w, "failed to open mount root", http.StatusInternalServerError)
+		return
+	}
+	defer confined.Close()
+	info, statErr := confined.Stat(filepath.ToSlash(relative))
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": false, "reason": "directory does not exist"})
+			return
+		}
+		http.Error(w, statErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = info // RemoveAll safely handles regular files and directories.
+	if err := confined.RemoveAll(filepath.ToSlash(relative)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": true})
+}
+
+func isPathNotExist(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	return false
+}
+
+func allowedMountRelative(source string, allowed []string) (string, string, error) {
+	for _, permitted := range allowed {
+		canonicalPermitted, err := filepath.EvalSymlinks(filepath.Clean(permitted))
+		if err != nil {
+			continue
+		}
+		relative, err := filepath.Rel(canonicalPermitted, source)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return canonicalPermitted, relative, nil
+		}
+	}
+	return "", "", errors.New("mount source is outside allowed roots")
+}
+
+func mountSourceWithinAllowed(source string, allowed []string) bool {
+	if !filepath.IsAbs(source) {
+		return false
+	}
+	cleanSource := filepath.Clean(source)
+	for _, permitted := range allowed {
+		if !filepath.IsAbs(permitted) {
+			continue
+		}
+		cleanPermitted := filepath.Clean(permitted)
+		relative, err := filepath.Rel(cleanPermitted, cleanSource)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }

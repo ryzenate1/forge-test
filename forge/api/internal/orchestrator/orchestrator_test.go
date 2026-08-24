@@ -32,6 +32,11 @@ func (m *mockSuspensionStore) SetServerSuspension(ctx context.Context, serverID 
 	return args.Error(0)
 }
 
+func (m *mockSuspensionStore) CompareAndSetServerSuspension(ctx context.Context, serverID string, expected, suspended bool) (bool, error) {
+	args := m.Called(ctx, serverID, expected, suspended)
+	return args.Bool(0), args.Error(1)
+}
+
 func (m *mockSuspensionStore) ServerControlTarget(ctx context.Context, serverID string) (store.ServerControlTarget, error) {
 	args := m.Called(ctx, serverID)
 	return args.Get(0).(store.ServerControlTarget), args.Error(1)
@@ -80,11 +85,11 @@ func TestSuspendServer(t *testing.T) {
 	mPub := new(mockPublisher)
 
 	mStore.On("GetServer", mock.Anything, "server-1").Return(store.Server{ID: "server-1", Suspended: false}, nil)
+	mStore.On("CompareAndSetServerSuspension", mock.Anything, "server-1", false, true).Return(true, nil)
 	mStore.On("ServerControlTarget", mock.Anything, "server-1").Return(store.ServerControlTarget{
 		ServerID: "server-1", NodeURL: "http://node:9090", NodeToken: "token",
 	}, nil)
 	mRuntime.On("StopServer", mock.Anything, mock.Anything).Return(gpruntime.PowerResponse{Accepted: true}, nil)
-	mStore.On("SetServerSuspension", mock.Anything, "server-1", true).Return(nil)
 	mPub.On("Publish", mock.Anything, mock.Anything).Return(nil)
 
 	err := SuspendServer(context.Background(), mStore, mRuntime, mPub, "server-1")
@@ -111,8 +116,10 @@ func TestSuspendServer_RuntimeRequired(t *testing.T) {
 func TestSuspendServer_GetServerError(t *testing.T) {
 	mStore := new(mockSuspensionStore)
 	mStore.On("GetServer", mock.Anything, "server-1").Return(store.Server{}, assert.AnError)
+	mRuntime := new(mockSuspensionRuntime)
+	mRuntime.Test(t)
 
-	err := SuspendServer(context.Background(), mStore, new(mockSuspensionRuntime), nil, "server-1")
+	err := SuspendServer(context.Background(), mStore, mRuntime, nil, "server-1")
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, assert.AnError)
 	mStore.AssertExpectations(t)
@@ -121,8 +128,10 @@ func TestSuspendServer_GetServerError(t *testing.T) {
 func TestSuspendServer_AlreadySuspended(t *testing.T) {
 	mStore := new(mockSuspensionStore)
 	mStore.On("GetServer", mock.Anything, "server-1").Return(store.Server{ID: "server-1", Suspended: true}, nil)
+	mRuntime := new(mockSuspensionRuntime)
+	mRuntime.Test(t)
 
-	err := SuspendServer(context.Background(), mStore, new(mockSuspensionRuntime), nil, "server-1")
+	err := SuspendServer(context.Background(), mStore, mRuntime, nil, "server-1")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "already suspended")
 	mStore.AssertExpectations(t)
@@ -133,7 +142,7 @@ func TestUnsuspendServer(t *testing.T) {
 	mPub := new(mockPublisher)
 
 	mStore.On("GetServer", mock.Anything, "server-1").Return(store.Server{ID: "server-1", Suspended: true}, nil)
-	mStore.On("SetServerSuspension", mock.Anything, "server-1", false).Return(nil)
+	mStore.On("CompareAndSetServerSuspension", mock.Anything, "server-1", true, false).Return(true, nil)
 	mPub.On("Publish", mock.Anything, mock.Anything).Return(nil)
 
 	err := UnsuspendServer(context.Background(), mStore, mPub, "server-1")
@@ -172,7 +181,7 @@ func TestUnsuspendServer_AlreadyUnsuspended(t *testing.T) {
 func TestUnsuspendServer_SetServerSuspensionError(t *testing.T) {
 	mStore := new(mockSuspensionStore)
 	mStore.On("GetServer", mock.Anything, "server-1").Return(store.Server{ID: "server-1", Suspended: true}, nil)
-	mStore.On("SetServerSuspension", mock.Anything, "server-1", false).Return(assert.AnError)
+	mStore.On("CompareAndSetServerSuspension", mock.Anything, "server-1", true, false).Return(false, assert.AnError)
 
 	err := UnsuspendServer(context.Background(), mStore, nil, "server-1")
 	assert.Error(t, err)

@@ -20,7 +20,7 @@ func registerCrashDetectionRoutes(protected fiber.Router, cfg Config, detector *
 		}
 		events, err := cfg.Store.ListCrashEvents(c.Context(), c.Params("id"), 50)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			return respondInternalError(c, err)
 		}
 		return c.JSON(fiber.Map{"events": events})
 	})

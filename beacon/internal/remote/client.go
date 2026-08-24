@@ -3,9 +3,16 @@ package remote
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -31,6 +38,7 @@ type Client interface {
 	SendCrashEvent(ctx context.Context, serverID string, exitCode int, oomKilled bool, autoRestart bool) error
 	SendBackupStatus(ctx context.Context, serverID string, req BackupStatusRequest) error
 	SendRestoreStatus(ctx context.Context, serverID string, req RestoreStatusRequest) error
+	SendCapabilityReport(ctx context.Context, report interface{}) error
 }
 
 type client struct {
@@ -38,6 +46,7 @@ type client struct {
 	apiBaseURL    string
 	token         string
 	httpClient    *http.Client
+	initErr       error
 }
 
 // NewClient accepts the panel root URL (or a URL ending in /api/v1 or
@@ -45,14 +54,54 @@ type client struct {
 // use /api/remote, while node heartbeat uses the Forge /api/v1 route.
 func NewClient(panelURL, token string) Client {
 	panelURL = normalizePanelBaseURL(panelURL)
-	return &client{
+	parsed, err := url.Parse(panelURL)
+	if err == nil {
+		err = validatePanelEndpoint(parsed)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	transport.MaxIdleConnsPerHost = 10
+	transport.MaxIdleConns = 50
+	result := &client{
 		remoteBaseURL: panelURL + "/api/remote",
 		apiBaseURL:    panelURL + "/api/v1",
 		token:         token,
+		initErr:       err,
 		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
+			Transport: transport,
+			Timeout:   15 * time.Second,
 		},
 	}
+	result.httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("too many panel redirects")
+		}
+		if len(via) > 0 && !sameEndpointOrigin(via[0].URL, req.URL) {
+			return errors.New("cross-origin panel redirect refused")
+		}
+		return validatePanelEndpoint(req.URL)
+	}
+	return result
+}
+
+func validatePanelEndpoint(endpoint *url.URL) error {
+	if endpoint == nil || endpoint.Hostname() == "" || endpoint.User != nil {
+		return errors.New("panel URL must include a host and no credentials")
+	}
+	if endpoint.Scheme == "https" {
+		return nil
+	}
+	ip := net.ParseIP(endpoint.Hostname())
+	if endpoint.Scheme == "http" && (strings.EqualFold(endpoint.Hostname(), "localhost") || ip != nil && ip.IsLoopback()) {
+		return nil
+	}
+	return errors.New("panel URL must use HTTPS (HTTP is allowed only for loopback)")
+}
+
+func sameEndpointOrigin(left, right *url.URL) bool {
+	return left != nil && right != nil &&
+		strings.EqualFold(left.Scheme, right.Scheme) &&
+		strings.EqualFold(left.Host, right.Host)
 }
 
 func normalizePanelBaseURL(value string) string {
@@ -123,21 +172,52 @@ func (c *client) postAndClose(ctx context.Context, baseURL, path string, body in
 }
 
 func (c *client) request(ctx context.Context, method, baseURL, path string, body interface{}) (*http.Response, error) {
-	var payload io.Reader
+	if c.initErr != nil {
+		return nil, c.initErr
+	}
+	var payload []byte
 	if body != nil {
 		var buf bytes.Buffer
 		if err := json.NewEncoder(&buf).Encode(body); err != nil {
 			return nil, fmt.Errorf("encode remote API request: %w", err)
 		}
-		payload = &buf
+		payload = buf.Bytes()
 	}
 	endpoint := strings.TrimRight(baseURL, "/") + "/" + strings.TrimLeft(path, "/")
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, payload)
-	if err != nil {
-		return nil, fmt.Errorf("create remote API request: %w", err)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(payload))
+		if err != nil {
+			return nil, fmt.Errorf("create remote API request: %w", err)
+		}
+		if err := c.setHeaders(req, payload); err != nil {
+			return nil, err
+		}
+		resp, err := c.httpClient.Do(req)
+		if err == nil && resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500 {
+			return c.handleResponse(req, resp)
+		}
+		if err == nil && attempt == 2 {
+			return c.handleResponse(req, resp)
+		}
+		if resp != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
+			lastErr = fmt.Errorf("remote API %s %s returned %s", method, req.URL.Path, resp.Status)
+		} else {
+			lastErr = err
+		}
+		if attempt < 2 {
+			timer := time.NewTimer(time.Duration(1<<attempt) * 250 * time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			}
+		}
 	}
-	c.setHeaders(req)
-	return c.do(req)
+	return nil, fmt.Errorf("remote API request failed after retries: %w", lastErr)
 }
 
 func (c *client) do(req *http.Request) (*http.Response, error) {
@@ -145,6 +225,10 @@ func (c *client) do(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("remote API %s %s: %w", req.Method, req.URL.Path, err)
 	}
+	return c.handleResponse(req, resp)
+}
+
+func (c *client) handleResponse(req *http.Request, resp *http.Response) (*http.Response, error) {
 	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 		return resp, nil
 	}
@@ -160,10 +244,23 @@ func (c *client) do(req *http.Request) (*http.Response, error) {
 	return nil, fmt.Errorf("remote API %s %s returned %s: %s", req.Method, req.URL.Path, resp.Status, detail)
 }
 
-func (c *client) setHeaders(req *http.Request) {
+func (c *client) setHeaders(req *http.Request, body []byte) error {
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return fmt.Errorf("generate panel request nonce: %w", err)
+	}
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	nonce := hex.EncodeToString(nonceBytes)
+	mac := hmac.New(sha256.New, []byte(c.token))
+	_, _ = io.WriteString(mac, req.Method+"\n"+req.URL.RequestURI()+"\n"+timestamp+"\n"+nonce+"\n")
+	_, _ = mac.Write(body)
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.forge.v1+json")
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Panel-Timestamp", timestamp)
+	req.Header.Set("X-Panel-Nonce", nonce)
+	req.Header.Set("X-Panel-Signature", hex.EncodeToString(mac.Sum(nil)))
+	return nil
 }
 
 // SendServerStats reports server resource usage.
@@ -241,4 +338,9 @@ func (c *client) SendBackupStatus(ctx context.Context, serverID string, req Back
 // SendRestoreStatus notifies the panel that a restore completed.
 func (c *client) SendRestoreStatus(ctx context.Context, serverID string, req RestoreStatusRequest) error {
 	return c.postAndClose(ctx, c.remoteBaseURL, "/servers/"+url.PathEscape(serverID)+"/backups/restore-status", req)
+}
+
+// SendCapabilityReport sends a capability report to the panel.
+func (c *client) SendCapabilityReport(ctx context.Context, report interface{}) error {
+	return c.postAndClose(ctx, c.apiBaseURL, "/nodes/capabilities", report)
 }

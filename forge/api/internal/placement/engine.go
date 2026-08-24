@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"sync"
 )
 
 type Logger interface {
@@ -14,6 +15,7 @@ type Engine struct {
 	scorer  Scorer
 	checker *ConstraintChecker
 	logger  Logger
+	mu      sync.Mutex
 }
 
 func NewEngine(scorer Scorer, checker *ConstraintChecker) *Engine {
@@ -33,6 +35,8 @@ func (e *Engine) Scorer() Scorer {
 }
 
 func (e *Engine) Place(ctx context.Context, candidates []Candidate, req WorkloadRequest) (ScoreResult, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	filtered, reasons := e.checker.FilterByConstraints(candidates, req.Constraints, req.ConstraintCtx)
 	if e.logger != nil {
 		for _, r := range reasons {
@@ -51,7 +55,7 @@ func (e *Engine) Place(ctx context.Context, candidates []Candidate, req Workload
 		}
 		bonus, bonusReasons := e.checker.CheckSoft(c, req.Constraints, req.ConstraintCtx)
 		allReasons := append(scoreReasons, bonusReasons...)
-		results = append(results, ScoreResult{NodeID: c.NodeID, Score: score + bonus, Reasons: allReasons})
+		results = append(results, ScoreResult{NodeID: c.NodeID, Score: score + bonus, Reasons: allReasons, StorageLocality: c.StorageLocality})
 	}
 
 	if len(results) == 0 {
@@ -73,6 +77,8 @@ func (e *Engine) Place(ctx context.Context, candidates []Candidate, req Workload
 }
 
 func (e *Engine) PlaceAll(ctx context.Context, candidates []Candidate, req WorkloadRequest) ([]ScoreResult, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	filtered, reasons := e.checker.FilterByConstraints(candidates, req.Constraints, req.ConstraintCtx)
 	if e.logger != nil {
 		for _, r := range reasons {
@@ -91,7 +97,7 @@ func (e *Engine) PlaceAll(ctx context.Context, candidates []Candidate, req Workl
 		}
 		bonus, bonusReasons := e.checker.CheckSoft(c, req.Constraints, req.ConstraintCtx)
 		allReasons := append(scoreReasons, bonusReasons...)
-		results = append(results, ScoreResult{NodeID: c.NodeID, Score: score + bonus, Reasons: allReasons})
+		results = append(results, ScoreResult{NodeID: c.NodeID, Score: score + bonus, Reasons: allReasons, StorageLocality: c.StorageLocality})
 	}
 
 	if len(results) == 0 {

@@ -102,7 +102,7 @@ func defaults(v *viper.Viper) {
 	v.SetDefault("app.env", "development")
 	v.SetDefault("app.name", "GamePanel")
 	v.SetDefault("app.url", "http://localhost:3000")
-	v.SetDefault("app.debug", true)
+	v.SetDefault("app.debug", false)
 	v.SetDefault("app.version", "0.1.0")
 	v.SetDefault("app.locale", "en")
 	v.SetDefault("app.fallback_locale", "en")
@@ -151,7 +151,6 @@ func NewManager(configPaths ...string) (*Manager, error) {
 	for _, p := range configPaths {
 		v.AddConfigPath(p)
 	}
-	v.AddConfigPath(".")
 	v.AddConfigPath("./config")
 	v.AddConfigPath("$HOME/.gamepanel")
 	v.AddConfigPath("/etc/gamepanel")
@@ -162,17 +161,35 @@ func NewManager(configPaths ...string) (*Manager, error) {
 		}
 	}
 
-	v.SetEnvPrefix("GAMEPANEL")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+	// Bind the deployed environment names explicitly. AutomaticEnv maps
+	// nested keys such as db.url to DB_URL, while the application uses a few
+	// established names that do not follow that shape.
+	for key, environmentName := range map[string]string{
+		"app.env":            "APP_ENV",
+		"app.key":            "APP_KEY",
+		"app.cipher":         "APP_CIPHER",
+		"server.addr":        "API_ADDR",
+		"server.panel_url":   "PANEL_URL",
+		"db.url":             "DATABASE_URL",
+		"auth.secret":        "API_AUTH_SECRET",
+		"auth.secret_key":    "FORGE_MASTER_KEY",
+		"auth.previous_keys": "FORGE_PREVIOUS_MASTER_KEYS",
+		"daemon.node_token":  "DAEMON_NODE_TOKEN",
+	} {
+		if err := v.BindEnv(key, environmentName); err != nil {
+			return nil, fmt.Errorf("bind environment variable %s: %w", environmentName, err)
+		}
+	}
 
 	return &Manager{v: v}, nil
 }
 
-func (m *Manager) All() Config {
+func (m *Manager) All() (Config, error) {
 	var cfg Config
 	if err := m.v.Unmarshal(&cfg); err != nil {
-		panic(fmt.Sprintf("unmarshal config: %v", err))
+		return Config{}, fmt.Errorf("unmarshal config: %w", err)
 	}
 	if cfg.DB.URL == "" {
 		cfg.DB.URL = os.Getenv("DATABASE_URL")
@@ -180,7 +197,7 @@ func (m *Manager) All() Config {
 	if cfg.Auth.Secret == "" {
 		cfg.Auth.Secret = os.Getenv("API_AUTH_SECRET")
 	}
-	return cfg
+	return cfg, nil
 }
 
 func (m *Manager) Viper() *viper.Viper { return m.v }

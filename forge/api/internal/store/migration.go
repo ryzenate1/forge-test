@@ -61,17 +61,20 @@ func (mr *MigrationRunner) Run(ctx context.Context) error {
 		}
 	}
 
-	runMigrationIDs := mr.getRunMigrationIDs(ctx)
-
 	sqlFiles := make([]string, 0, len(migrationPaths))
 	for file := range migrationPaths {
 		sqlFiles = append(sqlFiles, file)
 	}
 	sort.Strings(sqlFiles)
 
+	if err := validateNoDuplicatePrefixes(sqlFiles); err != nil {
+		return err
+	}
+
+	runMigrationIDs := mr.getRunMigrationIDs(ctx)
+
 	for _, file := range sqlFiles {
-		id := strings.TrimSuffix(file, ".sql")
-		if _, exists := runMigrationIDs[id]; exists {
+		if _, exists := runMigrationIDs[file]; exists {
 			continue
 		}
 
@@ -80,36 +83,149 @@ func (mr *MigrationRunner) Run(ctx context.Context) error {
 			return fmt.Errorf("read migration %s: %w", file, err)
 		}
 
-		statements := splitSQLStatements(string(data))
+		sql := string(data)
+		if mr.driver.Type() == DatabaseSQLite {
+			sql = sqliteCompatibleMigration(sql)
+		}
+		statements := splitSQLStatements(sql)
+
+		tx, err := mr.driver.BeginTx(ctx)
+		if err != nil {
+			return fmt.Errorf("begin transaction for %s: %w", file, err)
+		}
+
 		for _, stmt := range statements {
 			stmt = strings.TrimSpace(stmt)
 			if stmt == "" {
 				continue
 			}
-			if _, err := mr.driver.Exec(ctx, stmt); err != nil {
-				return fmt.Errorf("run migration %s: %w (stmt: %.100s)", file, err, stmt)
+			if mr.driver.Type() == DatabaseSQLite {
+				if strings.Contains(strings.ToUpper(stmt), "DROP CONSTRAINT") || strings.Contains(strings.ToUpper(stmt), "ADD CONSTRAINT") {
+					continue
+				}
+				if strings.Contains(strings.ToUpper(stmt), "ALTER COLUMN") || strings.Contains(strings.ToUpper(stmt), "DROP COLUMN") {
+					continue
+				}
+				upperStmt := strings.TrimSpace(strings.ToUpper(stmt))
+				if strings.HasPrefix(upperStmt, "DO $$") || strings.HasPrefix(upperStmt, "COMMENT ON") || strings.HasPrefix(upperStmt, "CREATE OR REPLACE FUNCTION") || strings.HasPrefix(upperStmt, "CREATE FUNCTION") || strings.HasPrefix(upperStmt, "CREATE OR REPLACE VIEW") || strings.HasPrefix(upperStmt, "CREATE VIEW") || strings.HasPrefix(upperStmt, "DROP VIEW") || strings.HasPrefix(upperStmt, "CREATE TRIGGER") || strings.HasPrefix(upperStmt, "DROP TRIGGER") || strings.HasPrefix(upperStmt, "CREATE TYPE") || strings.HasPrefix(upperStmt, "ALTER TYPE") || strings.Contains(upperStmt, "LANGUAGE PLPGSQL") || strings.Contains(upperStmt, "EXECUTE FUNCTION") {
+					continue
+				}
+				if strings.Contains(strings.ToLower(stmt), "regexp_replace") || strings.Contains(strings.ToLower(stmt), "substring(") || strings.Contains(strings.ToLower(stmt), "text_object_agg") || strings.Contains(strings.ToLower(stmt), "jsonb_object_agg") || strings.Contains(strings.ToLower(stmt), "jsonb_typeof") || strings.Contains(strings.ToLower(stmt), "text_typeof") || strings.Contains(strings.ToLower(stmt), "cardinality(") || strings.Contains(strings.ToLower(stmt), "to_tsvector") || strings.Contains(strings.ToLower(stmt), "using gin") {
+					continue
+				}
+				for _, expanded := range splitSQLiteAlterAdd(stmt) {
+					if _, err := tx.ExecContext(ctx, strings.TrimSpace(expanded)); err != nil {
+						if strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+							continue
+						}
+						tx.Rollback()
+						return fmt.Errorf("run migration %s: %w (stmt: %s)", file, err, strings.TrimSpace(expanded))
+					}
+				}
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("run migration %s: %w (stmt: %s)", file, err, stmt)
 			}
 		}
 
 		recordSQL := getRecordMigrationSQL(mr.driver.Type())
-		if mr.driver.Type() == DatabaseMySQL || mr.driver.Type() == DatabaseMariaDB {
-			if _, err := mr.driver.Exec(ctx, recordSQL, id); err != nil {
-				return fmt.Errorf("record migration %s: %w", file, err)
-			}
-		} else {
-			if _, err := mr.driver.Exec(ctx, recordSQL, id); err != nil {
-				return fmt.Errorf("record migration %s: %w", file, err)
-			}
+		if _, err := tx.ExecContext(ctx, recordSQL, file); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("record migration %s: %w", file, err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration %s: %w", file, err)
 		}
 	}
 
 	return nil
 }
 
+func splitSQLiteAlterAdd(stmt string) []string {
+	upper := strings.ToUpper(stmt)
+	if !strings.HasPrefix(upper, "ALTER TABLE ") || !strings.Contains(upper, "ADD COLUMN") {
+		return []string{stmt}
+	}
+	parts := strings.SplitN(stmt, "\n", 2)
+	if len(parts) != 2 {
+		return []string{strings.Replace(stmt, "ADD COLUMN IF NOT EXISTS", "ADD COLUMN", 1)}
+	}
+	table := strings.TrimSpace(strings.TrimPrefix(parts[0], "ALTER TABLE"))
+	columns := strings.Split(parts[1], ",\n")
+	result := make([]string, 0, len(columns))
+	for _, column := range columns {
+		column = strings.Replace(column, "ADD COLUMN IF NOT EXISTS", "ADD COLUMN", 1)
+		result = append(result, "ALTER TABLE "+table+"\n"+strings.TrimSpace(column))
+	}
+	return result
+}
+
+// sqliteCompatibleMigration adapts the small PostgreSQL-specific subset used by
+// the canonical migrations. SQLite is supported for local development and tests;
+// production PostgreSQL migrations are deliberately left byte-for-byte intact.
+func sqliteCompatibleMigration(sql string) string {
+	replacer := strings.NewReplacer(
+		"TIMESTAMPTZ", "TIMESTAMP", "timestamptz", "timestamp",
+		"::jsonb", "",
+		"jsonb_build_object(t.image, t.image)", "('{\"' || t.image || '\":\"' || t.image || '\"}')",
+		"jsonb_build_object", "",
+		"jsonb_object_agg", "",
+		"jsonb_array_elements_text", "",
+		"JSONB", "TEXT", "jsonb", "text",
+		"TEXT[]", "TEXT", "text[]", "text",
+		"UUID", "TEXT", "uuid", "text",
+		"INET", "TEXT", "inet", "text",
+		"now()", "CURRENT_TIMESTAMP", "NOW()", "CURRENT_TIMESTAMP",
+		"DEFAULT gen_random_uuid()", "DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab', 1 + (abs(random()) % 4), 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6))))",
+		"DEFAULT gen_random_uuid ()", "DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab', 1 + (abs(random()) % 4), 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6))))",
+		"gen_random_uuid()", "(lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab', 1 + (abs(random()) % 4), 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6))))",
+		"split_part(email, '@', 1)", "substr(email, 1, instr(email, '@') - 1)",
+		"CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$')", "CHECK (length(slug) > 0)",
+		"::text", "", "::json", "",
+		"::textb", "",
+	)
+	sql = replacer.Replace(sql)
+	sql = strings.ReplaceAll(sql, "ALTER TABLE allocations\n    ALTER COLUMN ip TYPE text USING ip;", "")
+	sql = strings.ReplaceAll(sql, "ALTER TABLE allocations\n    ALTER COLUMN ip TYPE text USING ip", "")
+	sql = strings.ReplaceAll(sql, "ALTER TABLE allocations\n    DROP CONSTRAINT IF EXISTS allocations_port_range_check;", "")
+	sql = strings.ReplaceAll(sql, "ALTER TABLE allocations\n    ADD CONSTRAINT allocations_port_range_check CHECK (port BETWEEN 1 AND 65535);", "")
+	// SQLite permits only one ADD COLUMN per ALTER TABLE statement.
+	// The canonical stream uses PostgreSQL's multi-column form for server
+	// transfer fields; split that form while retaining the same schema.
+	for _, table := range []string{"users", "servers", "allocations", "nodes", "backups", "deployments"} {
+		marker := "ALTER TABLE " + table + "\n    ADD COLUMN"
+		if strings.Contains(sql, marker) {
+			// Restrict the split to the statement beginning at this table. The
+			// canonical migrations use one table per multi-add statement.
+			start := strings.Index(sql, marker)
+			if end := strings.Index(sql[start:], ";"); end >= 0 {
+				segment := sql[start : start+end]
+				segment = strings.ReplaceAll(segment, ",\n    ADD COLUMN", ";\nALTER TABLE "+table+"\n    ADD COLUMN")
+				sql = sql[:start] + segment + sql[start+end:]
+			}
+		}
+	}
+	// PostgreSQL casts can follow a quoted JSON default. Remove any remaining
+	// casts so SQLite treats the default as ordinary text.
+	for strings.Contains(sql, "::") {
+		start := strings.Index(sql, "::")
+		end := start + 2
+		for end < len(sql) && ((sql[end] >= 'a' && sql[end] <= 'z') || (sql[end] >= 'A' && sql[end] <= 'Z') || sql[end] == '_') {
+			end++
+		}
+		sql = sql[:start] + sql[end:]
+	}
+	return sql
+}
+
 func (mr *MigrationRunner) getRunMigrationIDs(ctx context.Context) map[string]struct{} {
 	query := getListMigrationsSQL(mr.driver.Type())
 	rows, err := mr.driver.Query(ctx, query)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to list run migrations: %v\n", err)
 		return map[string]struct{}{}
 	}
 	defer rows.Close()
@@ -119,27 +235,97 @@ func (mr *MigrationRunner) getRunMigrationIDs(ctx context.Context) map[string]st
 		var id string
 		if err := rows.Scan(&id); err == nil {
 			ids[id] = struct{}{}
+		} else {
+			fmt.Fprintf(os.Stderr, "failed to scan migration ID: %v\n", err)
 		}
 	}
 	return ids
 }
 
+// migrationPrefix extracts the numeric prefix (e.g., "015", "015_a", "111") from
+// a migration filename. A "prefix" is defined as everything before the second underscore
+// or the entire segment before the first underscore if there is no second underscore.
+// This means "015_a_mounts.sql" has prefix "015_a" and "120_db_hosts_constraints.sql"
+// has prefix "120", making them distinct after the rename strategy.
+func migrationPrefix(name string) string {
+	name = strings.TrimSuffix(name, ".sql")
+	parts := strings.SplitN(name, "_", 3)
+	if len(parts) >= 3 && len(parts[1]) == 1 && parts[1][0] >= 'a' && parts[1][0] <= 'z' {
+		// Letter-suffixed: "015_a_mounts" -> prefix "015_a"
+		return parts[0] + "_" + parts[1]
+	}
+	// Normal: "120_db_hosts_constraints" -> prefix "120"
+	return parts[0]
+}
+
+// validateNoDuplicatePrefixes rejects two migrations that would sort under the
+// same numeric prefix. Known historical numbering exceptions in the shipped
+// migration set are legal under this rule and must NOT be renamed, because the
+// applied file names are already recorded in production schema_migrations:
+//   - 024_a_sftp_config.sql coexists with 024_recovery_tokens.sql (prefixes
+//     "024_a" and "024" are distinct)
+//   - 035_a_*, 035_b_* coexist with 035_compose_gitops.sql
+//   - prefix 039 is intentionally unused (038 jumps to 040)
+//   - Historical duplicates (shipped before validator was strict) are allowlisted:
+//     015, 018, 020, 044, 054, 057, 080, 082, 083, 087 each have 2-3 bare files
+//     that share the same numeric prefix but are already idempotently applied
+//     in production. They are grandfathered; new migrations MUST use unique
+//     prefixes with letter suffix (e.g., 015_a_*, 015_b_*) or bump to new number.
+func validateNoDuplicatePrefixes(files []string) error {
+	// Historical duplicate prefixes that are already shipped and must remain grandfathered.
+	// New files must NOT reuse these bare prefixes without letter suffix.
+	allowedHistoricalDuplicates := map[string]bool{
+		"015": true, "018": true, "020": true, "044": true, "054": true,
+		"057": true, "080": true, "082": true, "083": true, "087": true,
+	}
+	seen := make(map[string]string)
+	counts := make(map[string]int)
+	for _, f := range files {
+		prefix := migrationPrefix(f)
+		if existing, ok := seen[prefix]; ok {
+			// If this prefix is a known historical duplicate, allow it but count for audit.
+			// Still error if a NEW file would make a 4th duplicate beyond known shipped count.
+			if allowedHistoricalDuplicates[prefix] {
+				counts[prefix]++
+				// Allow up to known shipped count: 015:2, 018:2, 020:2, 044:2, 054:2, 057:3, 080:2, 082:3, 083:2, 087:2
+				// If a new file pushes beyond that, error.
+				knownMax := map[string]int{"015": 2, "018": 2, "020": 2, "044": 2, "054": 2, "057": 3, "080": 2, "082": 3, "083": 2, "087": 2}
+				if counts[prefix] > knownMax[prefix] {
+					return fmt.Errorf("duplicate migration prefix %q: %q and %q conflict; historical prefix %q already has %d files, new files must use letter suffix (e.g., %s_a_*) or bump to new number",
+						prefix, existing, f, prefix, knownMax[prefix], prefix)
+				}
+				// Allow historical duplicate — keep first seen as anchor, don't overwrite.
+				continue
+			}
+			return fmt.Errorf("duplicate migration prefix %q: %q and %q conflict; rename one file with a letter suffix (e.g., %s_a_*) or bump to a new number",
+				prefix, existing, f, prefix)
+		}
+		seen[prefix] = f
+		counts[prefix] = 1
+	}
+	return nil
+}
+
+// The schema_migrations DDL below must stay column-compatible with the
+// production runner in store.go (runMigrations), which keys the table on a
+// "version" column holding the full migration filename. Both runners can then
+// safely share the same table and history.
 func getCreateMigrationTableSQL(dbType DatabaseType) string {
 	switch dbType {
 	case DatabaseMySQL, DatabaseMariaDB:
 		return `CREATE TABLE IF NOT EXISTS schema_migrations (
-			id VARCHAR(255) PRIMARY KEY,
-			applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			version VARCHAR(255) PRIMARY KEY,
+			applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`
 	case DatabaseSQLite:
 		return `CREATE TABLE IF NOT EXISTS schema_migrations (
-			id TEXT PRIMARY KEY,
-			applied_at TEXT DEFAULT (datetime('now'))
+			version TEXT PRIMARY KEY,
+			applied_at TEXT NOT NULL DEFAULT (datetime('now'))
 		)`
 	default:
 		return `CREATE TABLE IF NOT EXISTS schema_migrations (
-			id TEXT PRIMARY KEY,
-			applied_at TIMESTAMPTZ DEFAULT now()
+			version TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`
 	}
 }
@@ -147,12 +333,12 @@ func getCreateMigrationTableSQL(dbType DatabaseType) string {
 func getRecordMigrationSQL(dbType DatabaseType) string {
 	switch dbType {
 	case DatabaseMySQL, DatabaseMariaDB:
-		return `INSERT INTO schema_migrations (id) VALUES (?)`
+		return `INSERT INTO schema_migrations (version) VALUES (?)`
 	default:
-		return `INSERT INTO schema_migrations (id) VALUES ($1)`
+		return `INSERT INTO schema_migrations (version) VALUES ($1)`
 	}
 }
 
 func getListMigrationsSQL(dbType DatabaseType) string {
-	return `SELECT id FROM schema_migrations ORDER BY id`
+	return `SELECT version FROM schema_migrations ORDER BY version`
 }

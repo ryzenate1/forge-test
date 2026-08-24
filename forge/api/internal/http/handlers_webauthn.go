@@ -1,8 +1,6 @@
 package http
 
 import (
-	"time"
-
 	"gamepanel/forge/internal/services/webauthn"
 
 	"github.com/gofiber/fiber/v2"
@@ -31,7 +29,7 @@ func registerWebAuthnRoutes(protected fiber.Router, cfg Config, mutationLimiter 
 
 		creation, sessionID, err := wa.BeginRegistration(ctx, user.ID, user.Email, user.Email)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return respondInternalError(c, err)
 		}
 
 		return c.JSON(fiber.Map{
@@ -62,7 +60,11 @@ func registerWebAuthnRoutes(protected fiber.Router, cfg Config, mutationLimiter 
 		ctx, cancel := requestContext()
 		defer cancel()
 
-		_, err := wa.FinishRegistration(ctx, req.SessionID, claims.Sub, c.Body())
+		body := c.Body()
+		if len(body) > 65536 {
+			return fiber.NewError(fiber.StatusBadRequest, "request body too large")
+		}
+		_, err := wa.FinishRegistration(ctx, req.SessionID, claims.Sub, body)
 		if err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
@@ -107,7 +109,11 @@ func registerWebAuthnRoutes(protected fiber.Router, cfg Config, mutationLimiter 
 		ctx, cancel := requestContext()
 		defer cancel()
 
-		_, err := wa.FinishLogin(ctx, req.SessionID, req.UserID, c.Body())
+		body := c.Body()
+		if len(body) > 65536 {
+			return fiber.NewError(fiber.StatusBadRequest, "request body too large")
+		}
+		_, err := wa.FinishLogin(ctx, req.SessionID, req.UserID, body)
 		if err != nil {
 			return fiber.NewError(fiber.StatusUnauthorized, err.Error())
 		}
@@ -117,19 +123,20 @@ func registerWebAuthnRoutes(protected fiber.Router, cfg Config, mutationLimiter 
 			return fiber.NewError(fiber.StatusInternalServerError, "user not found")
 		}
 
-		token, err := issueToken(cfg.AuthSecret, user)
+		token, err := issueConfiguredToken(cfg, user)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not issue token")
 		}
 
-		csrfToken, _ := generateCSRFToken()
-		expires := time.Now().Add(tokenTTL)
+		csrfToken, err := generateCSRFToken()
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "could not generate csrf token")
+		}
+		expires := tokenExpiry(cfg)
 		setSessionCookies(c, token, csrfToken, expires)
 
 		return c.JSON(fiber.Map{
 			"complete": true,
-			"token":    token,
-			"user":     user,
 		})
 	})
 

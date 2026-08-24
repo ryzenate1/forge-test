@@ -1,18 +1,18 @@
-.PHONY: help lint format test build clean
+.PHONY: help lint format test build clean api-test beacon-test web-test
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 lint: ## Run all linters
-	./scripts/lint.sh
+	./scripts/dev/lint.sh
 
 format: ## Format all code
-	./scripts/format.sh
+	./scripts/dev/format.sh
 
 test: ## Run all tests
-	cd forge/api && go test ./... && cd ../..
-	cd beacon && go test ./... && cd ../..
-	cd forge/web && npm test && cd ../..
+	@set -e; cd forge/api && go test -race -timeout 10m -count=1 ./...
+	@set -e; cd beacon && go test -race -timeout 10m -count=1 ./...
+	@set -e; cd forge/web && npm test
 
 build: ## Build all components
 	cd forge/api && go build ./cmd/api && cd ../..
@@ -20,10 +20,10 @@ build: ## Build all components
 	cd forge/web && npm run build && cd ../..
 
 api-test: ## Run only API tests
-	cd forge/api && go test -v ./... && cd ../..
+	cd forge/api && go test -v -race -timeout 10m -count=1 ./... && cd ../..
 
 beacon-test: ## Run only Beacon tests
-	cd beacon && go test -v ./... && cd ../..
+	cd beacon && go test -v -race -timeout 10m -count=1 ./... && cd ../..
 
 web-test: ## Run only Web tests
 	cd forge/web && npm test && cd ../..

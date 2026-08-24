@@ -14,20 +14,32 @@ func NewFactory(config RuntimeConfig) *Factory {
 }
 
 func (f *Factory) CreateRuntime(ctx context.Context) (Runtime, error) {
+	var rt Runtime
+	var err error
 	switch f.config.Provider {
 	case ProviderDocker:
-		return NewDockerRuntime()
+		rt, err = NewDockerRuntime()
 	case ProviderPodman:
-		return NewPodmanRuntime(f.config.Podman)
+		rt, err = NewPodmanRuntime(f.config.Podman)
 	case ProviderKubernetes:
-		return NewKubernetesRuntime(f.config.Kubernetes)
+		rt, err = NewKubernetesRuntime(f.config.Kubernetes)
 	case ProviderContainerd:
-		return nil, fmt.Errorf("containerd runtime requires additional build tags: go build -tags containerd")
+		rt, err = createContainerdRuntime(f.config.Containerd)
 	case ProviderFirecracker:
-		return nil, fmt.Errorf("firecracker runtime requires additional build tags: go build -tags firecracker")
+		rt, err = createFirecrackerRuntime(f.config.Firecracker)
 	default:
 		return nil, fmt.Errorf("unsupported runtime provider: %s", f.config.Provider)
 	}
+	if err != nil {
+		return nil, err
+	}
+	if pinger, ok := rt.(Pinger); ok {
+		if err := pinger.Ping(ctx); err != nil {
+			_ = rt.Close()
+			return nil, fmt.Errorf("%s runtime health check: %w", f.config.Provider, err)
+		}
+	}
+	return rt, nil
 }
 
 func (f *Factory) AvailableProviders() []string {

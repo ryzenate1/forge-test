@@ -15,7 +15,8 @@ import {
   type ApiPanelMailSettings,
   type ApiPanelSettings,
 } from "@/lib/api";
-import { Btn, Card, CardHeader, Input, SectionHeader, cn } from "./admin-ui";
+import { AdminTabs, Btn, Card, CardHeader, Input, SectionHeader, cn } from "./admin-ui";
+import { CardSkeleton } from "@/components/ui/loading-skeleton";
 
 type Tab = "general" | "security" | "mail" | "monitoring" | "orchestration" | "backups" | "advanced";
 const TABS: Array<{ id: Tab; label: string; icon: typeof SettingsIcon }> = [
@@ -94,21 +95,7 @@ export function AdminSettings() {
   return (
     <div className="space-y-6">
       <SectionHeader title="Settings Center" sub="Global controls for branding, security, monitoring, orchestration, and platform behavior." />
-      <nav className="flex flex-wrap gap-1 border-b border-white/[0.06]">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            className={cn(
-              "flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition",
-              tab === t.id ? "border-b-2 border-[#dc2626] text-[#dc2626]" : "text-slate-400 hover:text-slate-200",
-            )}
-            onClick={() => setTab(t.id)}
-            type="button"
-          >
-            <t.icon size={14} /> {t.label}
-          </button>
-        ))}
-      </nav>
+      <AdminTabs tabs={TABS.map((t) => ({ id: t.id, label: t.label, icon: t.icon }))} active={tab} onChange={(id) => setTab(id as Tab)} />
       {tab === "general" && <PanelSettingsTab mode="general" />}
       {tab === "security" && <PanelSettingsTab mode="security" />}
       {tab === "mail" && <MailTab />}
@@ -182,7 +169,7 @@ function PanelSettingsTab({ mode }: { mode: Exclude<Tab, "mail" | "advanced"> })
     onError: (error) => setNotice(error instanceof Error ? error.message : "Settings could not be saved."),
   });
 
-  if (isLoading) return <div className="p-8 text-center text-sm text-slate-500">Loading...</div>;
+  if (isLoading) return <CardSkeleton />;
 
   return (
     <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); saveMut.mutate(); }}>
@@ -323,7 +310,7 @@ function MailTab() {
     mutationFn: () => testMailSettings(testRecipient.trim()),
     onError: (error) => setNotice(error instanceof Error ? error.message : "Test email could not be sent."),
   });
-  if (isLoading) return <div className="p-8 text-center text-sm text-slate-500">Loading...</div>;
+  if (isLoading) return <CardSkeleton />;
   return (
     <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); saveMut.mutate(); }}>
       <Card>
@@ -333,7 +320,7 @@ function MailTab() {
               <Input label="SMTP Port" value={String(form.smtpPort ?? 587)} onChange={(v) => setForm((p) => ({ ...p, smtpPort: Number(v) }))} type="number" required />
               <SelectField label="Encryption" value={form.smtpEncryption ?? ""} options={["", "tls", "ssl"]} onChange={(value) => setForm((p) => ({ ...p, smtpEncryption: value }))} />
           <Input label="SMTP Username" value={form.smtpUsername ?? ""} onChange={(v) => setForm((p) => ({ ...p, smtpUsername: v }))} />
-          <Input label="SMTP Password" type="password" value={form.smtpPassword ?? ""} onChange={(v) => setForm((p) => ({ ...p, smtpPassword: v }))} placeholder="Leave blank to keep" />
+          <Input label="SMTP Password" type="password" value={form.smtpPassword ?? ""} onChange={(v) => setForm((p) => ({ ...p, smtpPassword: v }))} placeholder="Leave blank to keep" autoComplete="off" />
           <Input label="From Address" type="email" value={form.mailFromAddress ?? ""} onChange={(v) => setForm((p) => ({ ...p, mailFromAddress: v }))} required />
           <Input label="From Name" value={form.mailFromName ?? ""} onChange={(v) => setForm((p) => ({ ...p, mailFromName: v }))} />
           <Input label="Test Recipient" type="email" value={testRecipient} onChange={setTestRecipient} placeholder="operator@example.com" />
@@ -375,7 +362,7 @@ function AdvancedTab() {
     },
     onError: (error) => setNotice(error instanceof Error ? error.message : "Advanced settings could not be saved."),
   });
-  if (isLoading) return <div className="p-8 text-center text-sm text-slate-500">Loading...</div>;
+  if (isLoading) return <CardSkeleton />;
   return (
     <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); saveMut.mutate(); }}>
       <Card>

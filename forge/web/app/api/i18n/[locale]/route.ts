@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
-import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import de from "../../../../../../lang/de.json";
+import en from "../../../../../../lang/en.json";
+import es from "../../../../../../lang/es.json";
+import fr from "../../../../../../lang/fr.json";
+import ja from "../../../../../../lang/ja.json";
+import pt from "../../../../../../lang/pt.json";
+import ru from "../../../../../../lang/ru.json";
+import zh from "../../../../../../lang/zh.json";
 
-const SUPPORTED_LOCALES = ["en", "de", "es", "fr", "ja", "pt", "ru", "zh"];
+const MESSAGES = { de, en, es, fr, ja, pt, ru, zh } as const;
 
 export async function GET(
   _request: Request,
@@ -10,19 +16,15 @@ export async function GET(
 ) {
   const { locale } = await params;
 
-  if (!SUPPORTED_LOCALES.includes(locale)) {
+  if (!(locale in MESSAGES)) {
     return NextResponse.json({ error: `Unsupported locale: ${locale}` }, { status: 400 });
   }
 
-  // TODO: Bridge solution - replace with proper next-intl integration
-  const filePath = resolve(process.cwd(), "../../lang", `${locale}.json`);
+  const messages = MESSAGES[locale as keyof typeof MESSAGES];
 
-  if (!existsSync(filePath)) {
-    return NextResponse.json({ error: `Locale file not found: ${locale}` }, { status: 404 });
-  }
-
-  const content = readFileSync(filePath, "utf-8");
-  const messages = JSON.parse(content);
-
-  return NextResponse.json(messages);
+  return NextResponse.json(messages, {
+    // Translation edits must be visible immediately, including through shared
+    // proxies. The client keeps a per-locale in-memory cache for navigation.
+    headers: { "Cache-Control": "no-store" },
+  });
 }

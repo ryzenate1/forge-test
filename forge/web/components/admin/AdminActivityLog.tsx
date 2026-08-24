@@ -2,9 +2,9 @@
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, AlertTriangle, ArrowRightLeft, Download, FileText, RefreshCw, Server, Shield, UserCheck } from "lucide-react";
+import { Activity, AlertTriangle, ArrowRightLeft, Download, FileText, Filter, RefreshCw, Server, Shield, UserCheck } from "lucide-react";
 import { exportAdminActivity, fetchAdminActivity, type AdminActivityFilter, type ApiActivityLog } from "@/lib/api";
-import { Btn, Card, CardHeader, EmptyState, Input, SectionHeader } from "./admin-ui";
+import { Btn, Card, EmptyState, Input, SectionHeader, AdminTable, AdminTHead, AdminTh, AdminTBody, AdminTr, AdminTd, selectStyle, cn } from "./admin-ui";
 
 type ActivityEvent = {
   id: string;
@@ -60,7 +60,7 @@ function getEventIcon(type: ActivityEvent["type"]) {
 
 function formatDetail(entry: ApiActivityLog): string {
   if (entry.description) return entry.description;
-  if (!entry.properties) return "—";
+  if (!entry.properties) return "";
   try {
     return JSON.stringify(entry.properties);
   } catch {
@@ -100,6 +100,7 @@ export function AdminActivityLog() {
   const [level, setLevel] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [pageSize, setPageSize] = useState<(typeof PAGE_SIZES)[number]>(50);
   const [offset, setOffset] = useState(0);
   const [exporting, setExporting] = useState<"csv" | "json" | null>(null);
@@ -122,6 +123,7 @@ export function AdminActivityLog() {
     queryKey: ["admin-activity", filter],
     queryFn: () => fetchAdminActivity(filter),
     refetchInterval: 15_000,
+    refetchOnWindowFocus: true,
   });
   const events = useMemo(() => (activityQuery.data?.events ?? []).map(activityToEvent), [activityQuery.data]);
   const total = activityQuery.data?.total ?? 0;
@@ -164,6 +166,12 @@ export function AdminActivityLog() {
   const isLoading = activityQuery.isLoading;
   const isFetching = activityQuery.isFetching;
   const loadError = activityQuery.isError ? errorMessage(activityQuery.error, "Activity events could not be loaded.") : null;
+  const hasActiveFilters = event || actorId || subjectType || subjectId || source || level || from || to;
+
+  const advancedFiltersCount = [actorId, subjectType, subjectId, source, level].filter(Boolean).length;
+
+  const inputBase = "h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15";
+  const selectBase = cn(selectStyle, "h-9");
 
   return (
     <div>
@@ -173,32 +181,128 @@ export function AdminActivityLog() {
         action={<Btn tone="ghost" onClick={() => { void activityQuery.refetch(); }} disabled={isFetching}><RefreshCw className={isFetching ? "animate-spin" : ""} size={13} /> Refresh</Btn>}
       />
 
-      <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Input label="Event" value={event} onChange={(value) => updateFilter(() => setEvent(value))} placeholder="Exact event name" />
-        <Input label="Actor ID" value={actorId} onChange={(value) => updateFilter(() => setActorId(value))} placeholder="Actor ID" />
-        <Input label="Resource type" value={subjectType} onChange={(value) => updateFilter(() => setSubjectType(value))} placeholder="Resource type" />
-        <Input label="Resource ID" value={subjectId} onChange={(value) => updateFilter(() => setSubjectId(value))} placeholder="Resource ID" />
-        <Input label="Source" value={source} onChange={(value) => updateFilter(() => setSource(value))} placeholder="Source" />
-        <select aria-label="Activity level" className="h-9 rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100 outline-none" onChange={(selection) => updateFilter(() => setLevel(selection.target.value))} value={level}>
-          <option value="">All levels</option><option value="info">Info</option><option value="warning">Warning</option><option value="error">Error</option>
-        </select>
-        <label className="text-xs text-slate-400">From<input aria-label="From date" className="mt-1 block h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100 outline-none" max={to || undefined} onChange={(selection) => updateFilter(() => setFrom(selection.target.value))} type="date" value={from} /></label>
-        <label className="text-xs text-slate-400">To<input aria-label="To date" className="mt-1 block h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100 outline-none" min={from || undefined} onChange={(selection) => updateFilter(() => setTo(selection.target.value))} type="date" value={to} /></label>
+      <div className="mb-5 flex flex-wrap items-end gap-3">
+        <div className="min-w-[240px] flex-1 sm:max-w-sm">
+          <label className="block text-xs font-medium text-slate-400 mb-1">Event</label>
+          <input
+            type="text"
+            value={event}
+            onChange={(e) => updateFilter(() => setEvent(e.target.value))}
+            placeholder="Search by event name..."
+            className={inputBase}
+          />
+        </div>
+        <div className="flex items-end gap-2">
+          <label className="block text-xs font-medium text-slate-400 mb-1">
+            <span className="mb-1 block">From</span>
+            <input type="date" value={from} max={to || undefined} onChange={(e) => updateFilter(() => setFrom(e.target.value))} className={inputBase} />
+          </label>
+          <span className="pb-2 text-slate-600">&rarr;</span>
+          <label className="block text-xs font-medium text-slate-400 mb-1">
+            <span className="mb-1 block">To</span>
+            <input type="date" value={to} min={from || undefined} onChange={(e) => updateFilter(() => setTo(e.target.value))} className={inputBase} />
+          </label>
+        </div>
+        <Btn
+          tone="ghost"
+          onClick={() => setShowAdvanced(!showAdvanced)}
+        >
+          <Filter size={13} />
+          {showAdvanced ? "Hide filters" : `Filters${advancedFiltersCount > 0 ? ` (${advancedFiltersCount})` : ""}`}
+        </Btn>
+        <Btn tone="ghost" onClick={clearFilters} disabled={!hasActiveFilters}>Clear</Btn>
       </div>
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <Btn tone="ghost" onClick={clearFilters} disabled={!event && !actorId && !subjectType && !subjectId && !source && !level && !from && !to}>Clear filters</Btn>
-        <label className="ml-auto flex items-center gap-2 text-xs text-slate-400">Rows<select aria-label="Rows per page" className="h-9 rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100 outline-none" onChange={(selection) => updateFilter(() => setPageSize(Number(selection.target.value) as (typeof PAGE_SIZES)[number]))} value={pageSize}>{PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}</select></label>
-        <Btn tone="ghost" onClick={() => { void exportActivity("csv"); }} disabled={exporting !== null}><Download size={13} /> {exporting === "csv" ? "Exporting…" : "CSV"}</Btn>
-        <Btn tone="ghost" onClick={() => { void exportActivity("json"); }} disabled={exporting !== null}><Download size={13} /> {exporting === "json" ? "Exporting…" : "JSON"}</Btn>
+
+      {showAdvanced && (
+        <div className="mb-5 grid grid-cols-2 gap-3 rounded-xl border border-white/[0.07] bg-white/[0.015] p-4 sm:grid-cols-3 lg:grid-cols-5">
+          <Input label="Actor ID" value={actorId} onChange={(value) => updateFilter(() => setActorId(value))} placeholder="Actor ID" />
+          <Input label="Resource type" value={subjectType} onChange={(value) => updateFilter(() => setSubjectType(value))} placeholder="Resource type" />
+          <Input label="Resource ID" value={subjectId} onChange={(value) => updateFilter(() => setSubjectId(value))} placeholder="Resource ID" />
+          <Input label="Source" value={source} onChange={(value) => updateFilter(() => setSource(value))} placeholder="Source" />
+          <label className="block text-sm font-medium text-slate-300">
+            <span className="mb-1.5 block">Level</span>
+            <select className={selectBase} value={level} onChange={(e) => updateFilter(() => setLevel(e.target.value))}>
+              <option value="">All levels</option><option value="info">Info</option><option value="warning">Warning</option><option value="error">Error</option>
+            </select>
+          </label>
+        </div>
+      )}
+
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-xs text-slate-400">Rows
+            <select className={cn(selectBase, "w-20")} value={pageSize} onChange={(e) => updateFilter(() => setPageSize(Number(e.target.value) as (typeof PAGE_SIZES)[number]))}>
+              {PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
+            </select>
+          </label>
+          <span className="text-xs text-slate-500">{total.toLocaleString()} event{total === 1 ? "" : "s"}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Btn tone="ghost" onClick={() => { void exportActivity("csv"); }} disabled={exporting !== null}>
+            <Download size={13} /> {exporting === "csv" ? "Exporting…" : "Export CSV"}
+          </Btn>
+          <Btn tone="ghost" onClick={() => { void exportActivity("json"); }} disabled={exporting !== null}>
+            <Download size={13} /> {exporting === "json" ? "Exporting…" : "Export JSON"}
+          </Btn>
+        </div>
       </div>
 
       {loadError ? <div className="mb-4 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-200">{loadError} <button className="ml-2 underline hover:text-white" onClick={() => { void activityQuery.refetch(); }} type="button">Retry</button></div> : null}
       {exportError ? <div className="mb-4 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-200">{exportError}</div> : null}
 
       <Card>
-        <CardHeader title={`${total.toLocaleString()} event${total === 1 ? "" : "s"}`} icon={FileText} />
-        {isLoading ? <div className="py-10 text-center text-sm text-slate-500">Loading activity events…</div> : activityQuery.isError ? <EmptyState icon={FileText} message="Activity events are unavailable. Retry the request." /> : events.length === 0 ? <EmptyState icon={FileText} message="No activity events match these filters." /> : <div className="max-h-[680px] overflow-auto"><table className="w-full min-w-[800px] text-left text-xs"><thead className="sticky top-0 z-10 border-b border-white/[0.06] bg-[#161b28] text-slate-500"><tr><th className="px-4 py-3">Time</th><th className="px-4 py-3">Type</th><th className="px-4 py-3">Action</th><th className="px-4 py-3">Actor</th><th className="px-4 py-3">Resource</th><th className="px-4 py-3">Detail</th></tr></thead><tbody className="divide-y divide-white/[0.04]">{events.map((entry) => { const Icon = getEventIcon(entry.type); return <tr key={entry.id} className="hover:bg-white/[0.02]"><td className="whitespace-nowrap px-4 py-3 text-slate-500">{displayTimestamp(entry.timestamp)}</td><td className="px-4 py-3"><span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold text-slate-400"><Icon size={10} />{entry.type.replace("_", " ")}</span></td><td className="px-4 py-3 font-semibold text-slate-200">{entry.action}</td><td className="px-4 py-3 text-slate-300">{entry.actor}</td><td className="px-4 py-3 font-mono text-slate-500">{entry.resource}</td><td className="max-w-[200px] truncate px-4 py-3 text-slate-500" title={entry.detail}>{entry.detail}</td></tr>; })}</tbody></table></div>}
-        {!isLoading && !activityQuery.isError && total > 0 ? <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.06] px-4 py-3 text-xs text-slate-400"><span>Page {currentPage} of {totalPages}</span><div className="flex gap-2"><Btn tone="ghost" disabled={offset === 0 || isFetching} onClick={() => setOffset((current) => Math.max(0, current - pageSize))}>Previous</Btn><Btn tone="ghost" disabled={offset + pageSize >= total || isFetching} onClick={() => setOffset((current) => current + pageSize)}>Next</Btn></div></div> : null}
+        {isLoading ? <div className="py-10 text-center text-sm text-slate-500">Loading activity events…</div> :
+         activityQuery.isError ? <EmptyState icon={FileText} message="Activity events are unavailable." title="Failed to Load" /> :
+         events.length === 0 ? (
+           <EmptyState
+             icon={FileText}
+             message={hasActiveFilters ? "No activity events match these filters. Try adjusting your search." : "No activity events recorded yet. Events will appear here as users interact with the platform."}
+             title={hasActiveFilters ? "No Results" : "No Events"}
+           />
+         ) : (
+           <div className="max-h-[680px] overflow-auto">
+             <AdminTable label="Activity events">
+               <AdminTHead>
+                 <AdminTh>Time</AdminTh>
+                 <AdminTh>Type</AdminTh>
+                 <AdminTh>Action</AdminTh>
+                 <AdminTh>Actor</AdminTh>
+                 <AdminTh>Resource</AdminTh>
+                 <AdminTh>Detail</AdminTh>
+               </AdminTHead>
+               <AdminTBody>
+                 {events.map((entry) => {
+                   const Icon = getEventIcon(entry.type);
+                   return (
+                     <AdminTr key={entry.id}>
+                       <AdminTd className="whitespace-nowrap text-slate-500">{displayTimestamp(entry.timestamp)}</AdminTd>
+                       <AdminTd>
+                         <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold text-slate-400">
+                           <Icon size={10} />{entry.type.replace("_", " ")}
+                         </span>
+                       </AdminTd>
+                       <AdminTd className="font-semibold text-slate-200">{entry.action}</AdminTd>
+                       <AdminTd className="text-slate-300">{entry.actor}</AdminTd>
+                       <AdminTd className="font-mono text-slate-500">{entry.resource}</AdminTd>
+                       <AdminTd className="max-w-[200px] truncate text-slate-500">
+                         <span title={entry.detail}>{entry.detail}</span>
+                       </AdminTd>
+                     </AdminTr>
+                   );
+                 })}
+               </AdminTBody>
+             </AdminTable>
+           </div>
+         )}
+        {!isLoading && !activityQuery.isError && total > pageSize ? (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.06] px-4 py-3 text-xs text-slate-400">
+            <span>Page {currentPage} of {totalPages}</span>
+            <div className="flex gap-2">
+              <Btn tone="ghost" disabled={offset === 0 || isFetching} onClick={() => setOffset((current) => Math.max(0, current - pageSize))}>Previous</Btn>
+              <Btn tone="ghost" disabled={offset + pageSize >= total || isFetching} onClick={() => setOffset((current) => current + pageSize)}>Next</Btn>
+            </div>
+          </div>
+        ) : null}
       </Card>
     </div>
   );

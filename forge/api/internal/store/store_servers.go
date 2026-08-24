@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"errors"
 	"fmt"
@@ -10,6 +11,20 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+// clampPageParams enforces page >= 1 and 1 <= perPage <= 200.
+func clampPageParams(page, perPage int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 {
+		perPage = 50
+	}
+	if perPage > 200 {
+		perPage = 200
+	}
+	return page, perPage
+}
 
 func (s *Store) ListServers(ctx context.Context) ([]Server, error) {
 	rows, err := s.db.Query(ctx, `
@@ -37,6 +52,7 @@ func (s *Store) ListServers(ctx context.Context) ([]Server, error) {
 }
 
 func (s *Store) ListServersForUser(ctx context.Context, userID, role string, page, perPage int, search string) ([]Server, int, error) {
+	page, perPage = clampPageParams(page, perPage)
 	if role == "admin" {
 		return s.ListServersPaginated(ctx, page, perPage, search)
 	}
@@ -101,6 +117,7 @@ func (s *Store) ListServersForUser(ctx context.Context, userID, role string, pag
 }
 
 func (s *Store) ListServersPaginated(ctx context.Context, page, perPage int, search string) ([]Server, int, error) {
+	page, perPage = clampPageParams(page, perPage)
 	offset := (page - 1) * perPage
 	baseQuery := `
 		SELECT id, name, description, status, desired_state, actual_state, config_sync_pending, suspended, transferring, transfer_target_node_id, transfer_state, transfer_error, transfer_run_token, memory_mb, cpu_shares, disk_mb, node_name, owner_email, template_name
@@ -180,6 +197,12 @@ func (s *Store) CreateServer(ctx context.Context, req CreateServerRequest) (Serv
 	templateExists := defaultMemoryMB > 0
 	if req.MemoryMB <= 0 {
 		req.MemoryMB = defaultMemoryMB
+	}
+	if req.IOWeight == 0 {
+		req.IOWeight = 500
+	}
+	if req.DockerLabels == nil {
+		req.DockerLabels = map[string]string{}
 	}
 	if req.MemoryMB <= 0 || req.CPUShares <= 0 || req.CPULimit < 0 || req.DiskMB <= 0 || req.DatabaseLimit < 0 || req.BackupLimit < 0 || req.AllocationLimit < 0 || req.IOWeight < 10 || req.IOWeight > 1000 || req.SwapMB < -1 {
 		return Server{}, errors.New("invalid server resource limits")
@@ -293,7 +316,8 @@ func (s *Store) GetServer(ctx context.Context, serverID string) (Server, error) 
 		       s.primary_allocation_id::text, s.config_sync_pending, s.config_sync_error,
 		       n.name, n.id::text, COALESCE(NULLIF(n.fqdn, ''), n.base_url), COALESCE(n.daemon_sftp, 2022),
 		       u.email, u.id::text, e.name,
-		       COALESCE(s.uuid, ''), COALESCE(s.uuid_short, ''), s.installed_at, s.skip_scripts, s.docker_labels
+		       COALESCE(s.uuid, ''), COALESCE(s.uuid_short, ''), s.installed_at, s.skip_scripts, s.docker_labels,
+		       COALESCE(s.generation, 0), s.workload_lease_expiry
 		FROM servers s
 		JOIN nodes n ON n.id = s.node_id
 		JOIN users u ON u.id = s.owner_id
@@ -309,6 +333,7 @@ func (s *Store) GetServer(ctx context.Context, serverID string) (Server, error) 
 		&server.Node, &server.NodeID, &server.SFTPHost, &server.SFTPPort,
 		&server.Owner, &server.OwnerID, &server.Template,
 		&server.Uuid, &server.UuidShort, &server.InstalledAt, &server.SkipScripts, &server.DockerLabels,
+		&server.Generation, &server.WorkloadLeaseExpiry,
 	)
 	if err != nil {
 		return Server{}, err
@@ -353,6 +378,18 @@ func (s *Store) SetServerSuspension(ctx context.Context, serverID string, suspen
 		return errors.New("server not found")
 	}
 	return nil
+}
+
+func (s *Store) CompareAndSetServerSuspension(ctx context.Context, serverID string, expected, suspended bool) (bool, error) {
+	commandTag, err := s.db.Exec(ctx, `
+		UPDATE servers
+		SET suspended = $3
+		WHERE id = $1 AND suspended = $2
+	`, serverID, expected, suspended)
+	if err != nil {
+		return false, err
+	}
+	return commandTag.RowsAffected() == 1, nil
 }
 
 func (s *Store) SetServerSuspended(ctx context.Context, serverID string, suspended bool, actorID *string) error {
@@ -458,6 +495,20 @@ func (s *Store) UpdateServer(ctx context.Context, serverID string, req UpdateSer
 		return Server{}, err
 	}
 	return s.GetServer(ctx, serverID)
+}
+
+func (s *Store) UpdateServerGeneration(ctx context.Context, serverID string, generation int64, leaseExpiry *time.Time) error {
+	commandTag, err := s.db.Exec(ctx, `
+		UPDATE servers SET generation = $2, workload_lease_expiry = $3, updated_at = now()
+		WHERE id = $1
+	`, serverID, generation, leaseExpiry)
+	if err != nil {
+		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return errors.New("server not found")
+	}
+	return nil
 }
 
 func invalidOptionalInt(value *int, minimum int, strict bool) bool {

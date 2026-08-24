@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +16,6 @@ import (
 	"gamepanel/beacon/internal/remote"
 	"gamepanel/beacon/internal/rootfs"
 	"gamepanel/beacon/internal/runtime"
-	"gamepanel/beacon/internal/transfer"
 )
 
 type PowerState string
@@ -47,6 +47,7 @@ type ServerState struct {
 	CrashDetectionEnabled bool
 	CrashCooldown         time.Duration
 	LastCrash             time.Time
+	LastStartedAt         time.Time
 	Suspended             bool
 	// DetectCleanExitAsCrash matches Wings' config of the same name: when
 	// false (the recommended default), an exit code of 0 is treated as a
@@ -82,16 +83,17 @@ type ServerManager struct {
 	onStopped              func(string)
 	sendConsole            func(string, string) error
 	crashHandler           func(ctx context.Context, serverID string, exitCode int, oomKilled bool)
+	panelSyncMu            sync.Mutex
+	stateDir               string
 }
 
 func NewServerManager(rt runtime.Runtime) *ServerManager {
 	return &ServerManager{runtime: rt, crashCooldown: time.Minute, detectCleanExitAsCrash: false}
 }
 
-// SetDetectCleanExitAsCrash toggles whether an exit code of 0 should be
-// treated as a crash and trigger auto-restart. When false (default), exit
-// code 0 is treated as a clean shutdown and the server stays stopped.
-// Matches Wings' config.system.crash_detection.detect_clean_exit_as_crash.
+// SetConsoleLifecycle registers callbacks invoked when a server transitions
+// to a running or stopped power state. The onRunning callback is called when
+// the server starts; onStopped is called on any stop or crash.
 func (m *ServerManager) SetConsoleLifecycle(onRunning, onStopped func(string)) {
 	m.onRunning = onRunning
 	m.onStopped = onStopped
@@ -103,11 +105,19 @@ func (m *ServerManager) SetCrashHandler(handler func(ctx context.Context, server
 	m.crashHandler = handler
 }
 
+// SetStateDir configures the directory used to persist per-server power state
+// (last start time and expected-stop flag) so crash auto-restart survives a
+// daemon restart. A nil or empty path disables persistence.
+func (m *ServerManager) SetStateDir(dir string) {
+	m.stateDir = strings.TrimSpace(dir)
+}
+
 func (m *ServerManager) Reconcile(ctx context.Context, reconstruction Reconstruction) error {
 	state := m.State(reconstruction.ServerID)
+	persisted := m.loadPowerState(reconstruction.ServerID)
 	state.mu.Lock()
 	state.RootDir = filepath.Clean(reconstruction.RootDir)
-	state.DiskLimitBytes = mbToBytes(reconstruction.DiskLimitMB)
+	state.DiskLimitBytes = MbToBytes(reconstruction.DiskLimitMB)
 	state.ConfigurationSynced = reconstruction.ConfigurationSynced
 	state.Suspended = reconstruction.Suspended
 	state.InstallationState = reconstruction.InstallationState
@@ -116,6 +126,12 @@ func (m *ServerManager) Reconcile(ctx context.Context, reconstruction Reconstruc
 	}
 	state.ExpectedStop = false
 	state.RunningAction = ""
+	// Restore crash-recovery state persisted before a daemon restart. This is
+	// what lets the daemon honour crash auto-restart across its own restarts:
+	// a workload that crashed while the daemon was down is restarted instead
+	// of being left offline forever.
+	state.ExpectedStop = persisted.ExpectedStop
+	state.LastStartedAt = persisted.LastStartedAt
 	state.mu.Unlock()
 	if m.runtime == nil {
 		return errRuntimeUnavailable
@@ -136,14 +152,73 @@ func (m *ServerManager) Reconcile(ctx context.Context, reconstruction Reconstruc
 	if actual.Exists && actual.Running && m.onRunning != nil {
 		m.onRunning(reconstruction.ServerID)
 	}
+	if err := m.autoRestartCrashed(ctx, reconstruction.ServerID, state, actual); err != nil {
+		return err
+	}
 	return nil
 }
+
+// autoRestartCrashed restarts a workload that is down but was started shortly
+// before the daemon restarted and was not expected to stop. This preserves
+// crash auto-restart semantics across daemon restarts.
+func (m *ServerManager) autoRestartCrashed(ctx context.Context, serverID string, state *ServerState, actual runtime.ContainerState) error {
+	state.mu.Lock()
+	lastStarted := state.LastStartedAt
+	expectedStop := state.ExpectedStop
+	state.mu.Unlock()
+	if !actual.Exists || actual.Running || expectedStop || lastStarted.IsZero() {
+		return nil
+	}
+	if time.Since(lastStarted) > crashAutoRestartWindow {
+		return nil
+	}
+	log.Printf("beacon: restarting workload %s that stopped near the daemon restart (last started %s, not expected to stop)", serverID, lastStarted.Format(time.RFC3339))
+	if err := m.runtime.Start(ctx, serverID); err != nil {
+		if isContainerMissing(err) {
+			return nil
+		}
+		return err
+	}
+	state.mu.Lock()
+	state.PowerState = PowerStateRunning
+	state.ContainerExists = true
+	state.ExpectedStop = false
+	state.LastStartedAt = time.Now()
+	state.mu.Unlock()
+	m.persistPowerState(serverID, state)
+	if m.onRunning != nil {
+		m.onRunning(serverID)
+	}
+	return nil
+}
+
+// crashAutoRestartWindow bounds how long after its last start a workload is
+// eligible for crash auto-restart after a daemon restart. Workloads that have
+// been down longer than this are treated as intentionally stopped.
+const crashAutoRestartWindow = 24 * time.Hour
 
 func (m *ServerManager) SetDetectCleanExitAsCrash(value bool) {
 	if m == nil {
 		return
 	}
 	m.detectCleanExitAsCrash = value
+}
+
+// ServerIDs returns the identifiers of every server currently tracked by the
+// manager. It is used by the /metrics endpoint to enumerate workloads for
+// per-container runtime stats.
+func (m *ServerManager) ServerIDs() []string {
+	if m == nil {
+		return nil
+	}
+	ids := make([]string, 0, 16)
+	m.states.Range(func(key, _ any) bool {
+		if id, ok := key.(string); ok && id != "" {
+			ids = append(ids, id)
+		}
+		return true
+	})
+	return ids
 }
 
 func (m *ServerManager) State(serverID string) *ServerState {
@@ -157,7 +232,8 @@ func (m *ServerManager) State(serverID string) *ServerState {
 		StopTimeout:            30 * time.Second,
 		Suspended:              false,
 	})
-	return value.(*ServerState)
+	state, _ := value.(*ServerState)
+	return state
 }
 
 func (m *ServerManager) MarkInstalling(serverID string, installing bool) {
@@ -182,7 +258,7 @@ func (m *ServerManager) MarkCreated(serverID, rootDir string, diskLimitMB int64)
 	state.InstallationState = "installed"
 	state.ContainerExists = true
 	state.RootDir = rootDir
-	state.DiskLimitBytes = mbToBytes(diskLimitMB)
+	state.DiskLimitBytes = MbToBytes(diskLimitMB)
 	if state.PowerState == "" {
 		state.PowerState = PowerStateOffline
 	}
@@ -194,7 +270,7 @@ func (m *ServerManager) MarkConfigurationSynced(serverID string, diskLimitMB int
 	defer state.mu.Unlock()
 	state.ConfigurationSynced = true
 	if diskLimitMB >= 0 {
-		state.DiskLimitBytes = mbToBytes(diskLimitMB)
+		state.DiskLimitBytes = MbToBytes(diskLimitMB)
 	}
 }
 
@@ -222,11 +298,94 @@ func (m *ServerManager) UpdateRuntimeConfig(serverID string, memoryMB int64, all
 	}
 }
 
+// persistedPowerState is the subset of ServerState that must survive a daemon
+// restart so crash auto-restart stays correct.
+type persistedPowerState struct {
+	LastStartedAt time.Time `json:"lastStartedAt,omitempty"`
+	ExpectedStop  bool      `json:"expectedStop"`
+}
+
+func (m *ServerManager) powerStatePath(serverID string) string {
+	return filepath.Join(m.stateDir, serverID+".json")
+}
+
+func (m *ServerManager) loadPowerState(serverID string) persistedPowerState {
+	if m.stateDir == "" {
+		return persistedPowerState{}
+	}
+	body, err := os.ReadFile(m.powerStatePath(serverID))
+	if err != nil {
+		return persistedPowerState{}
+	}
+	var persisted persistedPowerState
+	if err := json.Unmarshal(body, &persisted); err != nil {
+		return persistedPowerState{}
+	}
+	return persisted
+}
+
+// persistPowerState writes per-server power state atomically. Errors are
+// logged but never fail power operations.
+func (m *ServerManager) persistPowerState(serverID string, state *ServerState) {
+	if m.stateDir == "" {
+		return
+	}
+	state.mu.Lock()
+	persisted := persistedPowerState{LastStartedAt: state.LastStartedAt, ExpectedStop: state.ExpectedStop}
+	state.mu.Unlock()
+	body, err := json.Marshal(persisted)
+	if err != nil {
+		log.Printf("beacon: marshal power state for %s: %v", serverID, err)
+		return
+	}
+	if err := os.MkdirAll(m.stateDir, 0o700); err != nil {
+		log.Printf("beacon: create power state directory: %v", err)
+		return
+	}
+	path := m.powerStatePath(serverID)
+	temp, err := os.CreateTemp(m.stateDir, "."+serverID+".state-*.tmp")
+	if err != nil {
+		log.Printf("beacon: create power state temp for %s: %v", serverID, err)
+		return
+	}
+	tempName := temp.Name()
+	defer os.Remove(tempName)
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		log.Printf("beacon: secure power state for %s: %v", serverID, err)
+		return
+	}
+	if _, err := temp.Write(body); err != nil {
+		_ = temp.Close()
+		log.Printf("beacon: write power state for %s: %v", serverID, err)
+		return
+	}
+	if err := temp.Close(); err != nil {
+		log.Printf("beacon: close power state for %s: %v", serverID, err)
+		return
+	}
+	if err := os.Rename(tempName, path); err != nil {
+		log.Printf("beacon: replace power state for %s: %v", serverID, err)
+	}
+}
+
+func (m *ServerManager) deletePowerState(serverID string) {
+	if m.stateDir == "" {
+		return
+	}
+	_ = os.Remove(m.powerStatePath(serverID))
+}
+
+// stopServer stops the workload. Configuration is snapshotted under the state
+// lock before any blocking runtime call so the caller never needs to hold the
+// lock across network/container operations.
 func (m *ServerManager) stopServer(ctx context.Context, state *ServerState, serverID string) error {
+	state.mu.Lock()
 	stopType := strings.TrimSpace(state.StopType)
 	stopValue := strings.TrimSpace(state.StopValue)
-
 	timeout := state.StopTimeout
+	state.mu.Unlock()
+
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
@@ -259,6 +418,7 @@ func (m *ServerManager) stopServer(ctx context.Context, state *ServerState, serv
 
 func (m *ServerManager) Delete(serverID string) {
 	m.states.Delete(serverID)
+	m.deletePowerState(serverID)
 }
 
 func (m *ServerManager) HandlePower(ctx context.Context, serverID, signal string) error {
@@ -269,20 +429,23 @@ func (m *ServerManager) HandlePower(ctx context.Context, serverID, signal string
 	if !state.mu.TryLock() {
 		return errors.New("another server action is already running")
 	}
-	defer state.mu.Unlock()
-
 	if state.RunningAction != "" {
+		state.mu.Unlock()
 		return errors.New("another server action is already running")
 	}
 	if state.InstallationState == "installing" {
+		state.mu.Unlock()
 		return errors.New("server is installing")
 	}
 
 	state.RunningAction = signal
+	state.mu.Unlock()
 	defer func() {
+		state.mu.Lock()
 		if state.RunningAction == signal {
 			state.RunningAction = ""
 		}
+		state.mu.Unlock()
 	}()
 
 	var err error
@@ -291,12 +454,18 @@ func (m *ServerManager) HandlePower(ctx context.Context, serverID, signal string
 		if err := m.onBeforeStart(serverID, state); err != nil {
 			return err
 		}
+		state.mu.Lock()
 		state.PowerState = PowerStateStarting
 		state.ExpectedStop = false
+		state.mu.Unlock()
 		err = m.runtime.Start(ctx, serverID)
 		if err == nil {
+			state.mu.Lock()
 			state.PowerState = PowerStateRunning
 			state.ContainerExists = true
+			state.LastStartedAt = time.Now()
+			state.mu.Unlock()
+			m.persistPowerState(serverID, state)
 			if m.onRunning != nil {
 				m.onRunning(serverID)
 			}
@@ -305,11 +474,16 @@ func (m *ServerManager) HandlePower(ctx context.Context, serverID, signal string
 		if m.onStopped != nil {
 			m.onStopped(serverID)
 		}
+		state.mu.Lock()
 		state.PowerState = PowerStateStopping
 		state.ExpectedStop = true
+		state.mu.Unlock()
+		m.persistPowerState(serverID, state)
 		err = m.stopServer(ctx, state, serverID)
 		if err == nil {
+			state.mu.Lock()
 			state.PowerState = PowerStateOffline
+			state.mu.Unlock()
 		}
 	case "restart":
 		if err := m.onBeforeStart(serverID, state); err != nil {
@@ -318,35 +492,54 @@ func (m *ServerManager) HandlePower(ctx context.Context, serverID, signal string
 		if m.onStopped != nil {
 			m.onStopped(serverID)
 		}
+		state.mu.Lock()
 		state.PowerState = PowerStateStopping
 		state.ExpectedStop = true
+		state.mu.Unlock()
 		err = m.stopServer(ctx, state, serverID)
 		if err == nil {
 			err = m.runtime.Start(ctx, serverID)
 		}
+		state.mu.Lock()
 		if err == nil {
 			state.PowerState = PowerStateRunning
 			state.ExpectedStop = false
-			if m.onRunning != nil {
-				m.onRunning(serverID)
-			}
+			state.LastStartedAt = time.Now()
+		} else {
+			// A failed restart must not leave the server stuck in "stopping"
+			// or with a pending expected-stop: reset to offline so the crash
+			// watcher and panel see a consistent state.
+			state.PowerState = PowerStateOffline
+			state.ExpectedStop = false
+		}
+		state.mu.Unlock()
+		m.persistPowerState(serverID, state)
+		if err == nil && m.onRunning != nil {
+			m.onRunning(serverID)
 		}
 	case "kill":
 		if m.onStopped != nil {
 			m.onStopped(serverID)
 		}
+		state.mu.Lock()
 		state.PowerState = PowerStateStopping
 		state.ExpectedStop = true
+		state.mu.Unlock()
+		m.persistPowerState(serverID, state)
 		err = m.runtime.Kill(ctx, serverID)
 		if err == nil {
+			state.mu.Lock()
 			state.PowerState = PowerStateOffline
+			state.mu.Unlock()
 		}
 	default:
 		return errors.New("invalid power signal")
 	}
 	if err != nil {
 		if isContainerMissing(err) {
+			state.mu.Lock()
 			state.PowerState = PowerStateOffline
+			state.mu.Unlock()
 		}
 		return err
 	}
@@ -354,54 +547,65 @@ func (m *ServerManager) HandlePower(ctx context.Context, serverID, signal string
 }
 
 func (m *ServerManager) onBeforeStart(serverID string, state *ServerState) error {
+	state.mu.Lock()
+	installing := state.InstallationState == "installing"
+	suspended := state.Suspended
+	synced := state.ConfigurationSynced
+	root := state.RootDir
+	chownOnBoot := state.ChownOnBoot
+	uid, gid := state.UID, state.GID
+	panelURL, panelToken := state.PanelURL, state.PanelToken
+	diskLimit := state.DiskLimitBytes
+	state.mu.Unlock()
+
 	// Check if server is installing
-	if state.InstallationState == "installing" {
+	if installing {
 		return errors.New("server is installing")
 	}
 
 	// Check if server is suspended
-	if state.Suspended {
+	if suspended {
 		return errors.New("server is suspended")
 	}
 
 	// Configuration must be synced
-	if !state.ConfigurationSynced {
+	if !synced {
 		return errors.New("server configuration has not been synced")
 	}
 
 	// Root directory must be known
-	if state.RootDir == "" {
+	if root == "" {
 		return errors.New("server root directory is unknown")
 	}
 
 	// Chown server directory on boot if enabled
-	if state.ChownOnBoot {
-		if err := chownRecursive(state.RootDir, state.UID, state.GID); err != nil {
+	if chownOnBoot {
+		if err := chownRecursive(root, uid, gid); err != nil {
 			// Log but don't fail - chown errors shouldn't block startup
 			fmt.Printf("warning: chown failed: %v\n", err)
 		}
 	}
 
 	// Sync latest server state from Panel if available.
-	if state.PanelURL != "" && state.PanelToken != "" {
-		if err := m.syncServerStateFromPanel(serverID, state); err != nil {
+	if panelURL != "" && panelToken != "" {
+		if err := m.syncServerStateFromPanel(serverID, panelURL, panelToken); err != nil {
 			// Log but don't fail - Panel sync errors shouldn't block startup
 			fmt.Printf("warning: panel sync failed: %v\n", err)
 		}
 	}
 
 	// Check disk usage
-	if state.DiskLimitBytes <= 0 {
+	if diskLimit <= 0 {
 		return nil
 	}
 
-	usage, err := diskUsageBytes(state.RootDir)
+	usage, err := diskUsageBytes(root)
 	if err != nil {
 		return err
 	}
 
-	if usage > state.DiskLimitBytes {
-		return fmt.Errorf("server disk usage %d exceeds limit %d", usage, state.DiskLimitBytes)
+	if usage > diskLimit {
+		return fmt.Errorf("server disk usage %d exceeds limit %d", usage, diskLimit)
 	}
 
 	return nil
@@ -419,13 +623,16 @@ func chownRecursive(root string, uid, gid int) error {
 
 // syncServerStateFromPanel fetches the latest server configuration from the
 // panel and updates in-memory daemon state to better mirror Wings' source of
-// truth model.
-func (m *ServerManager) syncServerStateFromPanel(serverID string, state *ServerState) error {
-	panelURL := strings.TrimSpace(state.PanelURL)
-	token := strings.TrimSpace(state.PanelToken)
-	if panelURL == "" || token == "" {
+// truth model. Panel sync is serialized with its own mutex so concurrent power
+// operations cannot interleave HTTP fetches against the panel.
+func (m *ServerManager) syncServerStateFromPanel(serverID, panelURL, token string) error {
+	if strings.TrimSpace(panelURL) == "" || strings.TrimSpace(token) == "" {
 		return nil
 	}
+	if !m.panelSyncMu.TryLock() {
+		return errors.New("panel state sync is already in progress")
+	}
+	defer m.panelSyncMu.Unlock()
 
 	client := remote.NewClient(panelURL, token)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -476,6 +683,7 @@ func (m *ServerManager) syncServerStateFromPanel(serverID string, state *ServerS
 		envVars[key] = value
 	}
 
+	state := m.State(serverID)
 	state.mu.Lock()
 	state.Suspended = settings.Suspended
 	state.StartupCommand = settings.Invocation
@@ -564,7 +772,7 @@ func diskUsageBytes(root string) (int64, error) {
 	return total, err
 }
 
-func mbToBytes(value int64) int64 {
+func MbToBytes(value int64) int64 {
 	if value <= 0 {
 		return 0
 	}
@@ -607,7 +815,9 @@ func (m *ServerManager) HandleContainerEvent(ctx context.Context, event runtime.
 		state.ContainerExists = true
 		state.PowerState = PowerStateRunning
 		state.ExpectedStop = false
+		state.LastStartedAt = time.Now()
 		state.mu.Unlock()
+		m.persistPowerState(event.ServerID, state)
 		if m.onRunning != nil {
 			m.onRunning(event.ServerID)
 		}
@@ -626,6 +836,7 @@ func (m *ServerManager) HandleContainerEvent(ctx context.Context, event runtime.
 		state.ExpectedStop = false
 		state.RunningAction = ""
 		state.mu.Unlock()
+		m.persistPowerState(event.ServerID, state)
 		return
 	}
 	// Determine crash state honouring DetectCleanExitAsCrash (Wings parity).
@@ -660,16 +871,4 @@ func (m *ServerManager) HandleContainerEvent(ctx context.Context, event runtime.
 func isExitEvent(action string) bool {
 	action = strings.ToLower(action)
 	return action == "die" || action == "oom" || action == "stop"
-}
-
-var (
-	transferManager     *transfer.Manager
-	transferManagerOnce sync.Once
-)
-
-func getTransferManager() *transfer.Manager {
-	transferManagerOnce.Do(func() {
-		transferManager = transfer.NewManager()
-	})
-	return transferManager
 }

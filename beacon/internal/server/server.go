@@ -8,6 +8,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,7 @@ import (
 	"gamepanel/beacon/internal/backup"
 	"gamepanel/beacon/internal/events"
 	"gamepanel/beacon/internal/ignore"
+	"gamepanel/beacon/internal/metrics"
 	"gamepanel/beacon/internal/remote"
 	"gamepanel/beacon/internal/rootfs"
 	"gamepanel/beacon/internal/runtime"
@@ -39,7 +41,12 @@ import (
 
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/expfmt"
 )
+
+// Ensure UpgradePayload can be referenced from handlers defined in this file.
+var _ = UpgradePayload{}
 
 var (
 	allowedWebSocketOrigins = loadAllowedWebSocketOrigins()
@@ -59,8 +66,11 @@ type Server struct {
 	allowedMounts     []string
 	allowedMountsMu   sync.RWMutex
 	token             string
+	metricsToken      string
+	version           string
 	started           time.Time
 	backups           backup.BackupInterface
+	backupMu          sync.Mutex
 	sessionsReg       *sessionRegistry
 	dockerState       string
 	panelClient       remote.Client
@@ -68,10 +78,25 @@ type Server struct {
 	consoles          *consoleManager
 	pullClientFactory func(context.Context, *url.URL) (*http.Client, error)
 	transferProtocol  *transfer.Engine
+	transfers         *transfer.Manager
 	operations        *OperationQueue
 	tokenGenerator    *tokens.Generator
+	composeStacks     *composeStack
+	enrollmentMgr     *EnrollmentManager
+	edgeAgent         *EdgeAgent
+	edgeMu            sync.RWMutex
+	upgradeMgr        *UpgradeManager
+	upgradeMu         sync.Mutex
+	builds            *buildManager
+	firewall          *firewallData
+	capabilitiesMu    sync.Mutex
+	previousCaps      *CapabilityReport
 	ctx               context.Context
 	cancel            context.CancelFunc
+	shutdownOnce      sync.Once
+	nonceMu           sync.Mutex
+	seenNonces        map[string]time.Time
+	diskFreeFn        func(dir string) (int64, error)
 }
 
 // SetPanelClient wires the remote panel client so that install-status
@@ -80,9 +105,19 @@ func (s *Server) SetPanelClient(c remote.Client) {
 	s.panelClient = c
 }
 
+func (s *Server) SetEdgeAgent(agent *EdgeAgent) {
+	s.edgeMu.Lock()
+	s.edgeAgent = agent
+	s.edgeMu.Unlock()
+}
+
 // SetTokenGenerator wires the JWT token generator for direct download tokens.
 func (s *Server) SetTokenGenerator(g *tokens.Generator) {
 	s.tokenGenerator = g
+}
+
+func (s *Server) SetMetricsToken(token string) {
+	s.metricsToken = strings.TrimSpace(token)
 }
 
 // SetAllowedMounts configures the host paths that panel-supplied mounts may
@@ -214,6 +249,7 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 		manager:           manager,
 		dataDir:           dataDir,
 		token:             token,
+		version:           "beacon-dev",
 		started:           time.Now(),
 		backups:           backups,
 		sessionsReg:       newSessionRegistry(),
@@ -221,8 +257,21 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 		eventBus:          events.NewBus(),
 		pullClientFactory: securePullClient,
 		transferProtocol:  protocol,
+		transfers:         transfer.NewManager(),
+		composeStacks:     newComposeStackManager(dataDir),
+		enrollmentMgr:     NewEnrollmentManager(filepath.Join(dataDir, ".beacon", "enrollment")),
 		ctx:               serverCtx,
 		cancel:            cancel,
+		seenNonces:        make(map[string]time.Time),
+		builds:            &buildManager{active: make(map[string]*buildJob)},
+		firewall: &firewallData{
+			statePath: filepath.Join(dataDir, ".beacon", "firewall.json"),
+			state: firewallState{
+				Enabled:  true,
+				Rules:    make(map[string]FirewallRule),
+				Forwards: make(map[string]PortForward),
+			},
+		},
 	}
 	server.consoles = newConsoleManager(serverCtx, rt)
 	manager.SetConsoleCommand(server.consoles.Write)
@@ -238,7 +287,7 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 		}
 		return manager.HandlePower(ctx, op.ServerID, string(op.Type))
 	}
-	journalPath := filepath.Join(filepath.Dir(dataDir), "journal", "operations.db")
+	journalPath := filepath.Join(dataDir, ".beacon", "journal", "operations.db")
 	operationQueue, journalErr := NewPersistentOperationQueue(journalPath, 2, operationHandler)
 	if journalErr != nil {
 		log.Printf("[beacon] persistent command journal unavailable, using memory queue: %v", journalErr)
@@ -246,11 +295,30 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 	}
 	server.operations = operationQueue
 	server.operations.Start(serverCtx)
+	server.startBuildReaper(serverCtx)
+	// Start automatic expiry cleanup for commands with TTL
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				server.operations.ExpireExpired()
+			case <-serverCtx.Done():
+				return
+			}
+		}
+	}()
+	// Periodically reap orphaned chunked-upload temp files (.uploads/*.part)
+	// left behind by crashes or abandoned uploads, instead of relying solely
+	// on cleanup-on-next-chunk. Stops when serverCtx is cancelled by Shutdown.
+	startUploadCleanupLoop(serverCtx, dataDir)
 	if rt == nil {
 		server.dockerState = "error"
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", server.health)
+	mux.HandleFunc("GET /ready", server.ready)
 	mux.HandleFunc("GET /metrics", server.metrics)
 	mux.HandleFunc("POST /servers", server.create)
 	mux.HandleFunc("DELETE /servers/{id}", server.delete)
@@ -299,6 +367,7 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 	mux.HandleFunc("POST /api/v1/transfers/{id}/source/push", server.pushTransferSource)
 	mux.HandleFunc("GET /api/v1/transfers/{id}/source/status", server.sourceTransferStatus)
 	mux.HandleFunc("POST /api/v1/transfers/{id}/source/cleanup", server.cleanupTransferSource)
+	mux.HandleFunc("POST /mounts/cleanup", server.cleanupMount)
 	mux.HandleFunc("HEAD /api/v1/transfers/{id}/destination/archive", server.destinationTransferOffset)
 	mux.HandleFunc("PATCH /api/v1/transfers/{id}/destination/archive", server.receiveTransferChunk)
 	mux.HandleFunc("POST /api/v1/transfers/{id}/destination/restore", server.restoreTransferDestination)
@@ -306,10 +375,190 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 	mux.HandleFunc("DELETE /api/v1/transfers/{id}", server.cancelProtocolTransfer)
 	// Global daemon endpoints (/api/*)
 	mux.HandleFunc("GET /api/system", server.getSystem)
+	mux.HandleFunc("GET /api/capabilities", server.handleGetCapabilities)
+	mux.HandleFunc("GET /api/capabilities/delta", server.handleGetCapabilitiesDelta)
+	mux.HandleFunc("POST /api/capabilities", server.handlePostCapabilitiesHeartbeat)
+	mux.HandleFunc("POST /api/enroll", server.handleEnroll)
+	mux.HandleFunc("GET /api/enroll/status", server.handleEnrollmentStatus)
 	mux.HandleFunc("POST /api/update", server.postUpdate)
 	mux.HandleFunc("POST /api/deauthorize-user", server.postDeauthorizeUser)
 	mux.HandleFunc("GET /download/backup", server.downloadBackupWithToken)
-	return server, requestTimeout(server.authenticate(mux))
+	mux.HandleFunc("POST /compose/deploy", server.handleComposeDeploy)
+	mux.HandleFunc("POST /compose/{stackId}/stop", server.handleComposeStop)
+	mux.HandleFunc("POST /compose/{stackId}/start", server.handleComposeStart)
+	mux.HandleFunc("POST /compose/{stackId}/restart", server.handleComposeRestart)
+	mux.HandleFunc("DELETE /compose/{stackId}", server.handleComposeDelete)
+	mux.HandleFunc("GET /compose/{stackId}/status", server.handleComposeStatus)
+	mux.HandleFunc("GET /compose/{stackId}/logs", server.handleComposeLogs)
+	mux.HandleFunc("POST /compose/{stackId}/pull", server.handleComposePull)
+	// Git source deployment endpoints
+	mux.HandleFunc("POST /git/clone", server.handleGitClone)
+	mux.HandleFunc("POST /git/build", server.handleGitBuild)
+	mux.HandleFunc("DELETE /git/cleanup", server.handleGitCleanup)
+	// Database container provisioning endpoints
+	mux.HandleFunc("POST /database/provision", server.handleDatabaseProvision)
+	mux.HandleFunc("DELETE /database/provision", server.handleDatabaseDeProvision)
+	mux.HandleFunc("POST /database/backup", server.handleDatabaseBackup)
+	mux.HandleFunc("GET /database/backups/{backupId}", server.handleDatabaseBackupDownload)
+	mux.HandleFunc("DELETE /database/backups/{backupId}", server.handleDatabaseBackupDelete)
+	mux.HandleFunc("POST /database/restore", server.handleDatabaseRestore)
+	mux.HandleFunc("GET /database/status/{containerId}", server.handleDatabaseStatus)
+	// Build endpoints
+	mux.HandleFunc("POST /build/dockerfile", server.handleDockerfileBuild)
+	mux.HandleFunc("POST /build/nixpacks", server.handleNixpacksBuild)
+	mux.HandleFunc("GET /build/logs", server.handleBuildLogs)
+	mux.HandleFunc("POST /build/cancel", server.handleBuildCancel)
+	mux.HandleFunc("GET /build/status", server.handleBuildStatus)
+	mux.HandleFunc("POST /build/cleanup", server.handleBuildCleanup)
+	mux.HandleFunc("POST /image/push", server.handleImagePush)
+	mux.HandleFunc("GET /image/inspect", server.handleImageInspect)
+	mux.HandleFunc("POST /registry/login", server.handleRegistryLogin)
+	// Edge agent and diagnostics endpoints
+	mux.HandleFunc("GET /api/edge/status", server.handleEdgeStatus)
+	mux.HandleFunc("GET /api/edge/stats", server.handleEdgeStats)
+	mux.HandleFunc("POST /api/edge/connect", server.handleEdgeConnect)
+	mux.HandleFunc("GET /api/diagnostics", server.handleDiagnostics)
+	mux.HandleFunc("GET /api/diagnostics/connectivity", server.handleConnectivityDiagnostics)
+	mux.HandleFunc("GET /api/version", server.handleVersionInventory)
+	mux.HandleFunc("POST /api/upgrade", server.handleUpgradeBegin)
+	mux.HandleFunc("GET /api/upgrade/status", server.handleUpgradeStatus)
+	mux.HandleFunc("POST /api/upgrade/apply", server.handleUpgradeApply)
+	mux.HandleFunc("POST /api/upgrade/rollback", server.handleUpgradeRollback)
+	// Command acknowledgement and progress
+	mux.HandleFunc("POST /api/commands/{id}/ack", server.handleCommandAck)
+	mux.HandleFunc("POST /api/commands/{id}/progress", server.handleCommandProgress)
+	mux.HandleFunc("POST /api/commands/{id}/result", server.handleCommandResult)
+	// Command polling (Beacon pulls pending commands per server)
+	mux.HandleFunc("GET /api/commands/pending", server.handlePendingCommands)
+	// Portainer-inspired container/image/network/volume admin
+	mux.HandleFunc("GET /api/admin/containers", server.handleContainerList)
+	mux.HandleFunc("GET /api/admin/containers/{id}", server.handleContainerInspect)
+	mux.HandleFunc("GET /api/admin/containers/{id}/logs", server.handleContainerLogs)
+	mux.HandleFunc("POST /api/admin/containers/{id}/start", server.handleContainerStart)
+	mux.HandleFunc("POST /api/admin/containers/{id}/stop", server.handleContainerStop)
+	mux.HandleFunc("POST /api/admin/containers/{id}/restart", server.handleContainerRestart)
+	mux.HandleFunc("DELETE /api/admin/containers/{id}", server.handleContainerDelete)
+	mux.HandleFunc("POST /api/admin/containers/{id}/exec", server.handleContainerExec)
+	mux.HandleFunc("GET /api/admin/containers/{id}/top", server.handleContainerTop)
+	mux.HandleFunc("GET /api/admin/containers/{id}/changes", server.handleContainerChanges)
+	mux.HandleFunc("GET /api/admin/containers/{id}/stats", server.handleContainerStats)
+	mux.HandleFunc("GET /api/admin/containers/{id}/files", server.handleContainerFilesList)
+	mux.HandleFunc("POST /api/admin/containers/{id}/files/read", server.handleContainerFilesRead)
+	mux.HandleFunc("POST /api/admin/containers/{id}/files/upload", server.handleContainerFilesUpload)
+	mux.HandleFunc("POST /api/admin/containers/{id}/files/delete", server.handleContainerFilesDelete)
+	mux.HandleFunc("GET /api/admin/images", server.handleImageList)
+	mux.HandleFunc("POST /api/admin/images/build", server.handleImageBuild)
+	mux.HandleFunc("POST /api/admin/images/pull", server.handleImagePull)
+	mux.HandleFunc("DELETE /api/admin/images/{id}", server.handleImageDelete)
+	mux.HandleFunc("POST /api/admin/images/{id}/tag", server.handleImageTag)
+	mux.HandleFunc("POST /api/admin/images/prune", server.handleImagePrune)
+	mux.HandleFunc("GET /api/admin/images/search", server.handleImageSearch)
+	mux.HandleFunc("GET /api/admin/networks", server.handleNetworkList)
+	mux.HandleFunc("GET /api/admin/networks/{id}", server.handleNetworkInspect)
+	mux.HandleFunc("GET /api/admin/volumes", server.handleVolumeList)
+	mux.HandleFunc("GET /api/admin/volumes/{id}", server.handleVolumeInspect)
+	mux.HandleFunc("GET /api/admin/volumes/usage", server.handleVolumeUsage)
+
+	// Host system info endpoints (v1 API)
+	mux.HandleFunc("GET /v1/host/info", server.handleHostInfo)
+	mux.HandleFunc("GET /v1/host/disk", server.handleHostDisk)
+	mux.HandleFunc("GET /v1/host/memory", server.handleHostMemory)
+	mux.HandleFunc("GET /v1/host/network", server.handleHostNetwork)
+	mux.HandleFunc("GET /v1/host/processes", server.handleHostProcesses)
+
+	// Firewall management endpoints (v1 API)
+	mux.HandleFunc("GET /v1/firewall/status", server.handleFirewallStatus)
+	mux.HandleFunc("POST /v1/firewall/enable", server.handleFirewallEnable)
+	mux.HandleFunc("POST /v1/firewall/disable", server.handleFirewallDisable)
+	mux.HandleFunc("GET /v1/firewall/rules", server.handleFirewallListRules)
+	mux.HandleFunc("POST /v1/firewall/rules", server.handleFirewallAddRule)
+	mux.HandleFunc("DELETE /v1/firewall/rules/{id}", server.handleFirewallDeleteRule)
+	mux.HandleFunc("PUT /v1/firewall/rules/{id}", server.handleFirewallUpdateRule)
+	mux.HandleFunc("POST /v1/firewall/port", server.handleFirewallPort)
+	mux.HandleFunc("GET /v1/firewall/forward", server.handleFirewallListForwards)
+	mux.HandleFunc("POST /v1/firewall/forward", server.handleFirewallAddForward)
+	mux.HandleFunc("DELETE /v1/firewall/forward/{id}", server.handleFirewallDeleteForward)
+
+	return server, sanitizeInternalErrors(recoverPanics(securityHeaders(requestTimeout(server.authenticate(mux)))))
+}
+
+// recoverPanics converts a panic in any handler into a 500 response instead of
+// crashing the daemon process, and logs the stack for diagnosis.
+func recoverPanics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				stack := make([]byte, 64*1024)
+				n := stdruntime.Stack(stack, false)
+				log.Printf("beacon: handler panic path=%s panic=%v\n%s", r.URL.Path, rec, stack[:n])
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+type sanitizingResponseWriter struct {
+	http.ResponseWriter
+	internal bool
+	wrote    bool
+}
+
+func (w *sanitizingResponseWriter) WriteHeader(status int) {
+	if w.wrote {
+		return
+	}
+	w.wrote = true
+	if status >= http.StatusInternalServerError {
+		w.internal = true
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Del("Content-Length")
+		w.ResponseWriter.WriteHeader(status)
+		_, _ = io.WriteString(w.ResponseWriter, "internal server error\n")
+		return
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *sanitizingResponseWriter) Write(body []byte) (int, error) {
+	if !w.wrote {
+		w.WriteHeader(http.StatusOK)
+	}
+	if w.internal {
+		return len(body), nil
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *sanitizingResponseWriter) Flush() {
+	if !w.wrote {
+		w.WriteHeader(http.StatusOK)
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *sanitizingResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func sanitizeInternalErrors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if websocket.IsWebSocketUpgrade(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(&sanitizingResponseWriter{ResponseWriter: w}, r)
+	})
+}
+
+// SetVersion sets the build version reported by every Beacon endpoint and
+// used by the upgrade manager. Release builds inject this value from main.
+func (s *Server) SetVersion(version string) {
+	if strings.TrimSpace(version) != "" {
+		s.version = version
+	}
 }
 
 // ReconstructServer restores a panel-returned server into the in-memory
@@ -338,16 +587,32 @@ func (s *Server) Shutdown() {
 	if s == nil {
 		return
 	}
-	s.cancel()
-	if s.operations != nil {
-		s.operations.Shutdown()
-	}
-	s.consoles.Close()
-	s.eventBus.Destroy()
+	s.shutdownOnce.Do(func() {
+		s.cancel()
+		if s.operations != nil {
+			s.operations.Shutdown()
+		}
+		if s.transfers != nil {
+			_ = s.transfers.Close()
+		}
+		s.consoles.Close()
+		s.eventBus.Destroy()
+		if s.runtime != nil {
+			_ = s.runtime.Close()
+		}
+	})
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "daemon", "runtime": s.runtime != nil})
+}
+
+func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
+	if s.runtime == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ready": false, "reason": "runtime unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ready": true})
 }
 
 func (s *Server) sessions() *sessionRegistry { return s.sessionsReg }
@@ -378,25 +643,64 @@ func (s *Server) dockerStatus() string {
 }
 
 func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
-	var mem stdruntime.MemStats
-	stdruntime.ReadMemStats(&mem)
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	_, _ = w.Write([]byte("# HELP game_panel_daemon_uptime_seconds Daemon process uptime.\n"))
-	_, _ = w.Write([]byte("# TYPE game_panel_daemon_uptime_seconds gauge\n"))
-	_, _ = w.Write([]byte("game_panel_daemon_uptime_seconds " + formatFloat(time.Since(s.started).Seconds()) + "\n"))
-	_, _ = w.Write([]byte("# HELP game_panel_daemon_runtime_enabled Docker runtime availability, 1 when enabled.\n"))
-	_, _ = w.Write([]byte("# TYPE game_panel_daemon_runtime_enabled gauge\n"))
+	w.WriteHeader(http.StatusOK)
+
+	process := metrics.CollectProcess(s.started)
+	writeMetric := func(name, help, metricType string, value string) {
+		_, _ = fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s %s\n", name, help, name, metricType, name, value)
+	}
+
+	writeMetric("game_panel_daemon_uptime_seconds", "Daemon process uptime.", "gauge", formatFloat(time.Since(process.StartTime).Seconds()))
 	runtimeEnabled := "0"
 	if s.runtime != nil {
 		runtimeEnabled = "1"
 	}
-	_, _ = w.Write([]byte("game_panel_daemon_runtime_enabled " + runtimeEnabled + "\n"))
-	_, _ = w.Write([]byte("# HELP game_panel_daemon_goroutines Current goroutine count.\n"))
-	_, _ = w.Write([]byte("# TYPE game_panel_daemon_goroutines gauge\n"))
-	_, _ = w.Write([]byte("game_panel_daemon_goroutines " + formatInt(stdruntime.NumGoroutine()) + "\n"))
-	_, _ = w.Write([]byte("# HELP game_panel_daemon_memory_alloc_bytes Current Go heap allocation.\n"))
-	_, _ = w.Write([]byte("# TYPE game_panel_daemon_memory_alloc_bytes gauge\n"))
-	_, _ = w.Write([]byte("game_panel_daemon_memory_alloc_bytes " + formatUint(mem.Alloc) + "\n"))
+	writeMetric("game_panel_daemon_runtime_enabled", "Runtime availability, 1 when enabled.", "gauge", runtimeEnabled)
+	writeMetric("game_panel_daemon_cpu_user_seconds_total", "Cumulative user CPU time consumed by the daemon process.", "counter", formatFloat(process.UserCPUSeconds))
+	writeMetric("game_panel_daemon_cpu_system_seconds_total", "Cumulative system CPU time consumed by the daemon process.", "counter", formatFloat(process.SystemCPUSeconds))
+	writeMetric("game_panel_daemon_goroutines", "Current goroutine count.", "gauge", formatInt(process.Goroutines))
+	writeMetric("game_panel_daemon_memory_alloc_bytes", "Current Go heap allocation.", "gauge", formatUint(process.MemAllocBytes))
+	writeMetric("game_panel_daemon_memory_heap_bytes", "Heap bytes reserved by the Go runtime.", "gauge", formatUint(process.MemHeapBytes))
+	writeMetric("game_panel_daemon_gc_total", "Number of completed garbage collection cycles.", "counter", formatUint(process.NumGC))
+
+	if s.runtime != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		for _, serverID := range s.manager.ServerIDs() {
+			stats, err := s.runtime.Stats(ctx, serverID)
+			if err != nil {
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "# HELP game_panel_daemon_container_cpu_percent Container CPU usage percent.\n")
+			_, _ = fmt.Fprintf(w, "# TYPE game_panel_daemon_container_cpu_percent gauge\n")
+			_, _ = fmt.Fprintf(w, "game_panel_daemon_container_cpu_percent{server_id=%q} %s\n", serverID, formatFloat(stats.CPUPercent))
+			_, _ = fmt.Fprintf(w, "# HELP game_panel_daemon_container_memory_usage_bytes Container memory usage in bytes.\n")
+			_, _ = fmt.Fprintf(w, "# TYPE game_panel_daemon_container_memory_usage_bytes gauge\n")
+			_, _ = fmt.Fprintf(w, "game_panel_daemon_container_memory_usage_bytes{server_id=%q} %s\n", serverID, formatUint(stats.MemoryBytes))
+			_, _ = fmt.Fprintf(w, "# HELP game_panel_daemon_container_memory_limit_bytes Container memory limit in bytes.\n")
+			_, _ = fmt.Fprintf(w, "# TYPE game_panel_daemon_container_memory_limit_bytes gauge\n")
+			_, _ = fmt.Fprintf(w, "game_panel_daemon_container_memory_limit_bytes{server_id=%q} %s\n", serverID, formatUint(stats.MemoryLimit))
+			_, _ = fmt.Fprintf(w, "# HELP game_panel_daemon_container_network_rx_bytes_total Cumulative container network bytes received.\n")
+			_, _ = fmt.Fprintf(w, "# TYPE game_panel_daemon_container_network_rx_bytes_total counter\n")
+			_, _ = fmt.Fprintf(w, "game_panel_daemon_container_network_rx_bytes_total{server_id=%q} %s\n", serverID, formatUint(stats.NetworkRxBytes))
+			_, _ = fmt.Fprintf(w, "# HELP game_panel_daemon_container_network_tx_bytes_total Cumulative container network bytes sent.\n")
+			_, _ = fmt.Fprintf(w, "# TYPE game_panel_daemon_container_network_tx_bytes_total counter\n")
+			_, _ = fmt.Fprintf(w, "game_panel_daemon_container_network_tx_bytes_total{server_id=%q} %s\n", serverID, formatUint(stats.NetworkTxBytes))
+		}
+	}
+
+	// Append anything recorded against the default Prometheus registry (for
+	// example backup durations) so registered collectors are actually exposed.
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err == nil {
+		encoder := expfmt.NewEncoder(w, expfmt.NewFormat(expfmt.TypeTextPlain))
+		for _, family := range families {
+			if err := encoder.Encode(family); err != nil {
+				break
+			}
+		}
+	}
 }
 
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
@@ -417,6 +721,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		} `json:"ports"`
 		Mounts          []mountConfiguration  `json:"mounts"`
 		MemoryMB        int64                 `json:"memoryMb"`
+		MemoryOverhead  float64               `json:"memoryOverhead"`
 		SwapMB          int64                 `json:"swapMb"`
 		CPUShares       int64                 `json:"cpuShares"`
 		CPUPercent      int64                 `json:"cpuPercent"`
@@ -473,14 +778,20 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	memoryOverhead := body.MemoryOverhead
+	if memoryOverhead <= 0 {
+		memoryOverhead = 10.0
+	}
 	createRequest := runtime.CreateRequest{
-		ServerID: body.ServerID,
-		Image:    body.Image,
-		Command:  body.Command,
-		Env:      s.effectiveEnvList(body.ServerID, body.Env),
-		Ports:    ports,
-		Mounts:   mounts,
-		MemoryMB: body.MemoryMB, SwapMB: body.SwapMB, CPUShares: body.CPUShares, CPUPercent: body.CPUPercent,
+		ServerID:       body.ServerID,
+		Image:          body.Image,
+		Command:        body.Command,
+		Env:            s.effectiveEnvList(body.ServerID, body.Env),
+		Ports:          ports,
+		Mounts:         mounts,
+		MemoryMB:       body.MemoryMB,
+		MemoryOverhead: memoryOverhead,
+		SwapMB:         body.SwapMB, CPUShares: body.CPUShares, CPUPercent: body.CPUPercent,
 		CPUSet: body.CPUSet, IOWeight: body.IOWeight, OOMKillDisabled: body.OOMKillDisabled, PIDLimit: body.PIDLimit,
 		StopSignal: body.StopSignal, StopTimeout: time.Duration(body.StopTimeout) * time.Second, UID: body.UID, GID: body.GID,
 		DNS: body.DNS, NetworkName: body.NetworkName, NetworkSubnet: body.NetworkSubnet, NetworkGateway: body.NetworkGateway,
@@ -612,6 +923,12 @@ func (s *Server) runtimeRequestFromConfiguration(serverID string, payload map[st
 	}
 	if value, ok := firstMapValue(build, "oomDisabled", "oom_disabled").(bool); ok {
 		req.OOMKillDisabled = value
+	}
+	if uid, ok := payload["uid"].(float64); ok {
+		req.UID = int(uid)
+	}
+	if gid, ok := payload["gid"].(float64); ok {
+		req.GID = int(gid)
 	}
 	allocations, _ := payload["allocations"].(map[string]any)
 	ports := make([]runtime.PortBinding, 0)
@@ -799,6 +1116,20 @@ func (s *Server) installWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, errRuntimeUnavailable.Error(), http.StatusServiceUnavailable)
 		return
 	}
+
+	// Authenticate WebSocket connection
+	claims, err := s.authenticateWebSocket(w, r)
+	if err != nil {
+		http.Error(w, "authentication required: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Validate token scope for install operations
+	if claims.Scope != tokens.ScopeWebsocket {
+		http.Error(w, "invalid token scope for install websocket connection", http.StatusForbidden)
+		return
+	}
+
 	conn, err := websocketUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -807,6 +1138,15 @@ func (s *Server) installWS(w http.ResponseWriter, r *http.Request) {
 	defer s.trackWebSocket(r, conn)()
 
 	serverID := r.PathValue("id")
+
+	// Validate that the token is for this specific server
+	if claims.ServerID != serverID {
+		conn.WriteJSON(map[string]interface{}{
+			"type": "error",
+			"data": "token not valid for this server",
+		})
+		return
+	}
 
 	// Send initial status
 	conn.WriteJSON(map[string]interface{}{
@@ -975,11 +1315,19 @@ func (s *Server) power(w http.ResponseWriter, r *http.Request) {
 		}
 		op, err := s.operations.EnqueueCommand(r.Context(), commandID, serverID, OperationType(body.Signal))
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			// Return operation ID if available, even on error
+			if op != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error(), "operationId": op.ID})
+			} else {
+				http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			}
 			return
 		}
 		// Preserve the existing error contract while execution continues on the
 		// server context if the caller disconnects.
+		// Add timeout to prevent indefinite blocking
+		waitCtx, waitCancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer waitCancel()
 		for {
 			status, statusErr := s.operations.GetStatus(op.ID)
 			if statusErr != nil {
@@ -992,13 +1340,16 @@ func (s *Server) power(w http.ResponseWriter, r *http.Request) {
 				return
 			case StatusFailed:
 				err := errors.New(status.Error)
-				http.Error(w, err.Error(), runtimeErrorStatus(err, http.StatusConflict))
+				writeJSON(w, runtimeErrorStatus(err, http.StatusConflict), map[string]any{"error": err.Error(), "operationId": op.ID})
 				return
 			}
 			select {
+			case <-waitCtx.Done():
+				http.Error(w, "operation timeout", http.StatusGatewayTimeout)
+				return
 			case <-r.Context().Done():
 				return
-			case <-time.After(10 * time.Millisecond):
+			case <-time.After(500 * time.Millisecond):
 			}
 		}
 	default:
@@ -1025,9 +1376,31 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	serverID := r.PathValue("id")
+	root, err := s.safePath(serverID, "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	s.consoles.Stop(serverID)
 	if err := s.runtime.Delete(r.Context(), serverID); err != nil {
 		http.Error(w, err.Error(), runtimeErrorStatus(err, http.StatusConflict))
+		return
+	}
+	if s.backups != nil {
+		backups, err := s.backups.List(serverID)
+		if err != nil {
+			http.Error(w, "container removed but backup cleanup failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, item := range backups {
+			if err := s.backups.Delete(serverID, item.Name); err != nil {
+				http.Error(w, "container removed but backup cleanup failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+	if err := os.RemoveAll(root); err != nil {
+		http.Error(w, "container removed but server data cleanup failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.manager.Delete(serverID)
@@ -1106,6 +1479,7 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 		ignored = append(ignored, reqBody.IgnoredFiles...)
 	}
 
+	s.backupMu.Lock()
 	if s.eventBus != nil {
 		s.backups.SetProgressCallback(func(p backup.BackupProgress) {
 			s.eventBus.Publish(BackupProgressEvent+":"+serverID, p)
@@ -1113,6 +1487,7 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	info, err := s.backups.Create(r.Context(), root, serverID, name, ignored)
+	s.backupMu.Unlock()
 	if err != nil {
 		http.Error(w, err.Error(), backupErrorStatus(err))
 		return
@@ -1169,7 +1544,8 @@ func (s *Server) downloadBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.URL.Query().Get("name")
-	if !safeBackupName(name) {
+	name, ok := normalizeBackupName(name)
+	if !ok {
 		http.Error(w, "invalid backup name", http.StatusBadRequest)
 		return
 	}
@@ -1244,24 +1620,56 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name     string `json:"name"`
-		Truncate bool   `json:"truncate"`
+		Name     string   `json:"name"`
+		Truncate bool     `json:"truncate"`
+		Paths    []string `json:"paths"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	if !safeBackupName(body.Name) {
+	name, ok := normalizeBackupName(body.Name)
+	if !ok {
 		http.Error(w, "invalid backup name", http.StatusBadRequest)
 		return
 	}
+	body.Name = name
 	serverID := r.PathValue("id")
 	root, err := s.safePath(serverID, "")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := s.backups.Restore(r.Context(), serverID, body.Name, root, body.Truncate); err != nil {
+	// A restore is destructive even when truncate is false because archive
+	// entries replace live files. Persist a complete recovery point first and
+	// serialize it with all other backup operations for this daemon.
+	rollbackName := "pre-restore-" + time.Now().UTC().Format("20060102T150405.000000000Z") + ".zip"
+	s.backupMu.Lock()
+	_, snapshotErr := s.backups.Create(r.Context(), root, serverID, rollbackName, nil)
+	if snapshotErr == nil {
+		if len(body.Paths) > 0 {
+			log.Printf("targeted restore for server %s from %s (paths: %v)", serverID, body.Name, body.Paths)
+		} else {
+			log.Printf("full restore for server %s from %s (truncate=%t)", serverID, body.Name, body.Truncate)
+		}
+		err = s.backups.Restore(r.Context(), serverID, body.Name, root, body.Truncate, body.Paths)
+	}
+	if err != nil {
+		rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Minute)
+		rollbackErr := s.backups.Restore(rollbackCtx, serverID, rollbackName, root, true, nil)
+		cancelRollback()
+		if rollbackErr != nil {
+			err = errors.Join(err, fmt.Errorf("automatic rollback failed: %w", rollbackErr))
+		}
+	}
+	s.backupMu.Unlock()
+	if snapshotErr != nil {
+		log.Printf("pre-restore snapshot failed for server %s: %v", serverID, snapshotErr)
+		http.Error(w, "pre-restore snapshot failed", backupErrorStatus(snapshotErr))
+		return
+	}
+	if err != nil {
+		log.Printf("backup restore failed for server %s: %v", serverID, err)
 		if s.panelClient != nil {
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1270,11 +1678,11 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 					BackupUUID: strings.TrimSuffix(body.Name, ".zip"),
 					ServerUUID: serverID,
 					Successful: false,
-					Error:      err.Error(),
+					Error:      "backup restore failed",
 				})
 			}()
 		}
-		http.Error(w, err.Error(), backupErrorStatus(err))
+		http.Error(w, "backup restore failed", backupErrorStatus(err))
 		return
 	}
 
@@ -1290,7 +1698,10 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": body.Name, "status": "restored"})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "name": body.Name, "status": "restored",
+		"rollbackBackup": rollbackName,
+	})
 }
 
 func (s *Server) deleteBackup(w http.ResponseWriter, r *http.Request) {
@@ -1303,7 +1714,8 @@ func (s *Server) deleteBackup(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = r.URL.Query().Get("name")
 	}
-	if !safeBackupName(name) {
+	name, ok := normalizeBackupName(name)
+	if !ok {
 		http.Error(w, "invalid backup name", http.StatusBadRequest)
 		return
 	}
@@ -1324,6 +1736,20 @@ func (s *Server) statsWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, errRuntimeUnavailable.Error(), http.StatusServiceUnavailable)
 		return
 	}
+
+	// Authenticate WebSocket connection
+	claims, err := s.authenticateWebSocket(w, r)
+	if err != nil {
+		http.Error(w, "authentication required: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Validate token scope for websocket connections
+	if claims.Scope != tokens.ScopeWebsocket {
+		http.Error(w, "invalid token scope for websocket connection", http.StatusForbidden)
+		return
+	}
+
 	conn, err := websocketUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -1337,6 +1763,12 @@ func (s *Server) statsWS(w http.ResponseWriter, r *http.Request) {
 	go pingWebSocket(writer, done)
 
 	serverID := r.PathValue("id")
+
+	// Validate that the token is for this specific server
+	if claims.ServerID != serverID {
+		writeJSONError(writer, serverID, errors.New("token not valid for this server"))
+		return
+	}
 	stream, err := s.runtime.StatsStream(r.Context(), serverID)
 	if err != nil {
 		writeJSONError(writer, serverID, err)
@@ -1373,6 +1805,20 @@ func (s *Server) logsWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, errRuntimeUnavailable.Error(), http.StatusServiceUnavailable)
 		return
 	}
+
+	// Authenticate WebSocket connection
+	claims, err := s.authenticateWebSocket(w, r)
+	if err != nil {
+		http.Error(w, "authentication required: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Validate token scope for websocket connections
+	if claims.Scope != tokens.ScopeWebsocket {
+		http.Error(w, "invalid token scope for websocket connection", http.StatusForbidden)
+		return
+	}
+
 	conn, err := websocketUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -1386,6 +1832,12 @@ func (s *Server) logsWS(w http.ResponseWriter, r *http.Request) {
 	go pingWebSocket(writer, done)
 
 	serverID := r.PathValue("id")
+
+	// Validate that the token is for this specific server
+	if claims.ServerID != serverID {
+		writeJSONError(writer, serverID, errors.New("token not valid for this server"))
+		return
+	}
 	stream, err := s.runtime.LogsStream(r.Context(), serverID, "100")
 	if err != nil {
 		writeJSONError(writer, serverID, err)
@@ -1430,6 +1882,20 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, errRuntimeUnavailable.Error(), http.StatusServiceUnavailable)
 		return
 	}
+
+	// Authenticate WebSocket connection
+	claims, err := s.authenticateWebSocket(w, r)
+	if err != nil {
+		http.Error(w, "authentication required: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Validate token scope for websocket connections
+	if claims.Scope != tokens.ScopeWebsocket {
+		http.Error(w, "invalid token scope for websocket connection", http.StatusForbidden)
+		return
+	}
+
 	conn, err := websocketUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -1443,6 +1909,12 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request) {
 	go pingWebSocket(writer, done)
 
 	serverID := r.PathValue("id")
+
+	// Validate that the token is for this specific server
+	if claims.ServerID != serverID {
+		_ = writer.WriteJSON(map[string]any{"type": "error", "data": "token not valid for this server"})
+		return
+	}
 
 	// The manager owns one attach per running server. Every websocket receives
 	// only this server's bounded replay and live output.
@@ -1472,20 +1944,27 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request) {
 	// Read commands from the WebSocket and forward to Docker.
 	go func() {
 		for {
-			messageType, payload, err := conn.ReadMessage()
-			if err != nil {
-				errs <- err
+			select {
+			case <-r.Context().Done():
+				errs <- r.Context().Err()
 				return
-			}
-			if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
-				continue
-			}
-			cmd := strings.TrimSpace(string(payload))
-			if cmd == "" {
-				continue
-			}
-			if err := s.consoles.Write(serverID, cmd); err != nil {
-				_ = writer.WriteJSON(map[string]any{"type": "error", "data": err.Error()})
+			default:
+				conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+				messageType, payload, err := conn.ReadMessage()
+				if err != nil {
+					errs <- err
+					return
+				}
+				if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
+					continue
+				}
+				cmd := strings.TrimSpace(string(payload))
+				if cmd == "" {
+					continue
+				}
+				if err := s.consoles.Write(serverID, cmd); err != nil {
+					_ = writer.WriteJSON(map[string]any{"type": "error", "data": err.Error()})
+				}
 			}
 		}
 	}()
@@ -1497,6 +1976,20 @@ func (s *Server) backupProgressWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "backup adapter unavailable", http.StatusServiceUnavailable)
 		return
 	}
+
+	// Authenticate WebSocket connection
+	claims, err := s.authenticateWebSocket(w, r)
+	if err != nil {
+		http.Error(w, "authentication required: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Validate token scope for backup operations
+	if claims.Scope != tokens.ScopeWebsocket && claims.Scope != tokens.ScopeBackupDownload {
+		http.Error(w, "invalid token scope for backup websocket connection", http.StatusForbidden)
+		return
+	}
+
 	conn, err := websocketUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -1505,11 +1998,16 @@ func (s *Server) backupProgressWS(w http.ResponseWriter, r *http.Request) {
 	defer s.trackWebSocket(r, conn)()
 	configureWebSocket(conn)
 	writer := &webSocketWriter{conn: conn}
+
+	serverID := r.PathValue("id")
+	// Validate that the token is for this specific server
+	if claims.ServerID != serverID {
+		_ = writer.WriteJSON(map[string]any{"type": "error", "data": "token not valid for this server"})
+		return
+	}
 	done := make(chan struct{})
 	defer close(done)
 	go pingWebSocket(writer, done)
-
-	serverID := r.PathValue("id")
 	ch := s.eventBus.Subscribe(BackupProgressEvent + ":" + serverID)
 	defer s.eventBus.Unsubscribe(BackupProgressEvent+":"+serverID, ch)
 
@@ -1693,6 +2191,10 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInsufficientStorage)
 		return
 	}
+	if err := s.ensureDiskSpaceForSpool(filepath.Join(s.dataDir, serverID), reservation); err != nil {
+		http.Error(w, err.Error(), http.StatusInsufficientStorage)
+		return
+	}
 	if err := fsys.AtomicWrite(name, r.Body, maxFileWriteBytes, 0o640); err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, rootfs.ErrTooLarge) {
@@ -1762,6 +2264,10 @@ func (s *Server) uploadFileChunk(w http.ResponseWriter, r *http.Request) {
 		reservation = maxUploadChunkBytes
 	}
 	if err := s.manager.HasSpaceForWriteFS(serverID, reservation, fsys); err != nil {
+		http.Error(w, err.Error(), http.StatusInsufficientStorage)
+		return
+	}
+	if err := s.ensureDiskSpaceForSpool(filepath.Join(s.dataDir, serverID), reservation); err != nil {
 		http.Error(w, err.Error(), http.StatusInsufficientStorage)
 		return
 	}
@@ -2213,6 +2719,10 @@ func (s *Server) pullRemoteFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInsufficientStorage)
 		return
 	}
+	if err := s.ensureDiskSpaceForSpool(filepath.Join(s.dataDir, serverID), reservation); err != nil {
+		http.Error(w, err.Error(), http.StatusInsufficientStorage)
+		return
+	}
 	finalName := path.Join(target, fileName)
 	if resp.ContentLength >= 0 {
 		err = fsys.AtomicWriteExact(finalName, resp.Body, maxBytes, resp.ContentLength, 0o640)
@@ -2249,7 +2759,7 @@ func (s *Server) startTransfer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	transferMgr := getTransferManager()
+	transferMgr := s.transfers
 	transfer, err := transferMgr.Start(r.Context(), serverID, "local", body.TargetNode, serverRoot, body.TargetURL, s.token, 0)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2260,7 +2770,7 @@ func (s *Server) startTransfer(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getTransferStatus(w http.ResponseWriter, r *http.Request) {
 	transferID := r.PathValue("transferId")
-	transferMgr := getTransferManager()
+	transferMgr := s.transfers
 	transfer, ok := transferMgr.Get(transferID)
 	if !ok {
 		http.Error(w, "transfer not found", http.StatusNotFound)
@@ -2271,7 +2781,7 @@ func (s *Server) getTransferStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) cancelTransfer(w http.ResponseWriter, r *http.Request) {
 	transferID := r.PathValue("transferId")
-	transferMgr := getTransferManager()
+	transferMgr := s.transfers
 	if err := transferMgr.Cancel(transferID); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -2300,17 +2810,20 @@ func (s *Server) receiveTransferArchive(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid transfer id", http.StatusBadRequest)
 		return
 	}
-	resumeOffset := strings.TrimSpace(r.Header.Get("X-Transfer-Resume-Offset"))
-	if resumeOffset != "" {
-		offset, err := strconv.ParseInt(resumeOffset, 10, 64)
-		if err != nil || offset < 0 {
+	var offset int64
+	if value := strings.TrimSpace(r.Header.Get("X-Transfer-Resume-Offset")); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsed < 0 {
 			http.Error(w, "invalid transfer resume offset", http.StatusBadRequest)
 			return
 		}
-		if offset != 0 {
-			http.Error(w, "transfer resume is not supported by the destination", http.StatusNotImplemented)
-			return
-		}
+		offset = parsed
+	}
+	totalSize, err := strconv.ParseInt(strings.TrimSpace(r.Header.Get("X-Transfer-Size")), 10, 64)
+	const transferLimit = int64(32 * 1024 * 1024 * 1024)
+	if err != nil || totalSize < 1 || totalSize > transferLimit || offset > totalSize {
+		http.Error(w, "invalid X-Transfer-Size header", http.StatusBadRequest)
+		return
 	}
 	expectedChecksum := r.Header.Get("X-Checksum")
 	if expectedChecksum == "" {
@@ -2328,25 +2841,58 @@ func (s *Server) receiveTransferArchive(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if err := s.ensureDiskSpaceForSpool(filepath.Join(s.dataDir, serverID), totalSize-offset); err != nil {
+		http.Error(w, err.Error(), http.StatusInsufficientStorage)
+		return
+	}
 	tempName := path.Join(".backups", ".transfer-"+transferID+".tar.gz")
-	out, err := fsys.OpenFile(tempName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o640)
+	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	if offset > 0 {
+		info, statErr := fsys.Stat(tempName)
+		if statErr != nil || info.Size() != offset {
+			http.Error(w, "transfer resume offset does not match persisted bytes", http.StatusConflict)
+			return
+		}
+		flags = os.O_WRONLY | os.O_APPEND
+	}
+	out, err := fsys.OpenFile(tempName, flags, 0o640)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	written, copyErr := io.Copy(out, io.LimitReader(r.Body, totalSize-offset+1))
+	closeErr := out.Close()
+	persisted := offset + written
+	if closeErr != nil || persisted > totalSize {
+		_ = fsys.RemoveAll(tempName)
+		if persisted > totalSize {
+			http.Error(w, "transfer archive too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, closeErr.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	if copyErr != nil {
+		http.Error(w, copyErr.Error(), http.StatusBadRequest)
+		return
+	}
+	if persisted < totalSize {
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"ok": false, "serverId": serverID, "transferId": transferID,
+			"offset": persisted, "totalBytes": totalSize,
+		})
+		return
+	}
+	archive, err := fsys.Open(tempName)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	hasher := sha256.New()
-	const transferLimit = int64(32 * 1024 * 1024 * 1024)
-	written, copyErr := io.Copy(io.MultiWriter(out, hasher), io.LimitReader(r.Body, transferLimit+1))
-	closeErr := out.Close()
-	if copyErr != nil || closeErr != nil || written > transferLimit {
-		_ = fsys.RemoveAll(tempName)
-		if written > transferLimit {
-			http.Error(w, "transfer archive too large", http.StatusRequestEntityTooLarge)
-		} else if copyErr != nil {
-			http.Error(w, copyErr.Error(), http.StatusBadRequest)
-		} else {
-			http.Error(w, closeErr.Error(), http.StatusInternalServerError)
-		}
+	_, hashErr := io.Copy(hasher, archive)
+	closeErr = archive.Close()
+	if hashErr != nil || closeErr != nil {
+		http.Error(w, "failed to verify transfer archive", http.StatusInternalServerError)
 		return
 	}
 	actualChecksum := hex.EncodeToString(hasher.Sum(nil))
@@ -2366,7 +2912,7 @@ func (s *Server) receiveTransferArchive(w http.ResponseWriter, r *http.Request) 
 		"ok":         true,
 		"serverId":   serverID,
 		"transferId": transferID,
-		"bytes":      written,
+		"bytes":      persisted,
 		"checksum":   actualChecksum,
 	})
 }
@@ -2508,12 +3054,37 @@ func safeBackupName(name string) bool {
 	return true
 }
 
-func randomHex(size int) string {
+// normalizeBackupName validates a backup identifier and canonicalizes it to
+// the on-disk archive name. Stored archives always carry a ".zip" suffix, but
+// callers may send a bare identifier (UUID or timestamp name) without one;
+// the suffix is appended here so restore/delete/download work for both forms.
+// Path traversal and absolute paths are always rejected.
+func normalizeBackupName(name string) (string, bool) {
+	if name == "" || len(name) > 128 || strings.Contains(name, "..") ||
+		strings.HasPrefix(name, "/") || strings.ContainsAny(name, `/\`) {
+		return "", false
+	}
+	for _, char := range name {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' {
+			continue
+		}
+		return "", false
+	}
+	if !strings.HasSuffix(name, ".zip") {
+		name += ".zip"
+	}
+	if len(name) > 128 {
+		return "", false
+	}
+	return name, true
+}
+
+func randomHex(size int) (string, error) {
 	buf := make([]byte, size)
 	if _, err := rand.Read(buf); err != nil {
-		return time.Now().UTC().Format("20060102150405")
+		return "", fmt.Errorf("secure random source unavailable: %w", err)
 	}
-	return hex.EncodeToString(buf)
+	return hex.EncodeToString(buf), nil
 }
 
 func formatFloat(value float64) string {
@@ -2856,44 +3427,158 @@ func configureWebSocket(conn *websocket.Conn) {
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.token == "" || r.URL.Path == "/health" || r.URL.Path == "/metrics" || r.URL.Path == "/download/backup" || (strings.HasPrefix(r.URL.Path, "/api/v1/transfers/") && r.URL.Path != "/api/v1/transfers/credentials") {
+		if r.Method == http.MethodGet && r.URL.Path == "/metrics" {
+			expected := "Bearer " + s.metricsToken
+			if s.metricsToken == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(expected)) != 1 {
+				http.Error(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
-		var body []byte
-		var err error
-		if isStreamingUpload(r) {
-			body = nil
-		} else {
-			body, err = io.ReadAll(io.LimitReader(r.Body, 1024*1024))
-		}
-		if err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+		// Only the exact GET health and readiness routes are public. Metrics
+		// contain operational information and require the same signed
+		// authentication as other API routes.
+		if s.token == "" || (r.Method == http.MethodGet && (r.URL.Path == "/health" || r.URL.Path == "/ready")) || r.URL.Path == "/download/backup" || isScopedTokenRoute(r.URL.Path) || (strings.HasPrefix(r.URL.Path, "/api/v1/transfers/") && r.URL.Path != "/api/v1/transfers/credentials") {
+			next.ServeHTTP(w, r)
 			return
 		}
-		if !isStreamingUpload(r) {
-			_ = r.Body.Close()
-			r.Body = io.NopCloser(bytes.NewReader(body))
-		}
-
 		timestamp := r.Header.Get("X-Panel-Timestamp")
+		nonce := r.Header.Get("X-Panel-Nonce")
 		signature := r.Header.Get("X-Panel-Signature")
 		parsed, err := time.Parse(time.RFC3339, timestamp)
-		if err != nil || time.Since(parsed) > 5*time.Minute || time.Until(parsed) > 5*time.Minute {
+		if err != nil || time.Since(parsed) > 5*time.Minute || time.Until(parsed) > 5*time.Minute || !validRequestNonce(nonce) {
 			http.Error(w, "invalid signature timestamp", http.StatusUnauthorized)
 			return
 		}
-		expected := sign(s.token, r.Method, r.URL.RequestURI(), timestamp, body)
-		if !hmac.Equal([]byte(signature), []byte(expected)) {
-			http.Error(w, "invalid signature", http.StatusUnauthorized)
+		var body []byte
+		if isStreamingUpload(r) {
+			// Streaming clients authenticate the request metadata with an empty
+			// body signature. Verify it before reading a single body byte so an
+			// unauthenticated caller cannot force multi-gigabyte disk spooling.
+			expected := sign(s.token, r.Method, r.URL.RequestURI(), timestamp, nil, nonce)
+			if !hmac.Equal([]byte(signature), []byte(expected)) {
+				http.Error(w, "invalid signature", http.StatusUnauthorized)
+				return
+			}
+			if r.ContentLength > maxSignedStreamingBodyBytes {
+				http.Error(w, "streaming request body exceeds size limit", http.StatusRequestEntityTooLarge)
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, maxSignedStreamingBodyBytes)
+		} else {
+			body, err = io.ReadAll(io.LimitReader(r.Body, 1024*1024+1))
+			if err != nil || len(body) > 1024*1024 {
+				http.Error(w, "invalid request body", http.StatusBadRequest)
+				return
+			}
+			_ = r.Body.Close()
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			expected := sign(s.token, r.Method, r.URL.RequestURI(), timestamp, body, nonce)
+			if !hmac.Equal([]byte(signature), []byte(expected)) {
+				http.Error(w, "invalid signature", http.StatusUnauthorized)
+				return
+			}
+		}
+		if !s.acceptRequestNonce(nonce, parsed) {
+			http.Error(w, "replayed request", http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
+func validRequestNonce(nonce string) bool {
+	if len(nonce) != 32 {
+		return false
+	}
+	_, err := hex.DecodeString(nonce)
+	return err == nil
+}
+
+// maxSeenNonces bounds the in-memory replay cache. Entries already expire
+// after the 5-minute skew window, so the cap only matters under sustained
+// request volume; when full, the oldest entry is evicted.
+const maxSeenNonces = 4096
+
+func (s *Server) acceptRequestNonce(nonce string, timestamp time.Time) bool {
+	s.nonceMu.Lock()
+	defer s.nonceMu.Unlock()
+	now := time.Now()
+	for value, expires := range s.seenNonces {
+		if !expires.After(now) {
+			delete(s.seenNonces, value)
+		}
+	}
+	if _, exists := s.seenNonces[nonce]; exists {
+		return false
+	}
+	if len(s.seenNonces) >= maxSeenNonces {
+		oldest, oldestExpiry := "", time.Time{}
+		for value, expires := range s.seenNonces {
+			if oldest == "" || expires.Before(oldestExpiry) {
+				oldest, oldestExpiry = value, expires
+			}
+		}
+		delete(s.seenNonces, oldest)
+	}
+	s.seenNonces[nonce] = timestamp.Add(5 * time.Minute)
+	return true
+}
+
+// The only signed streaming route accepts file-upload chunks, whose handler
+// enforces the same 8 MiB ceiling. Keeping the authentication-layer cap in
+// lockstep prevents oversized chunked bodies from reaching application code.
+const maxSignedStreamingBodyBytes = int64(maxUploadChunkBytes)
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		if r.TLS != nil {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isScopedTokenRoute(path string) bool {
+	return strings.HasPrefix(path, "/servers/") && (strings.Contains(path, "/ws/") || strings.HasSuffix(path, "/install/ws"))
+}
+
 func isStreamingUpload(r *http.Request) bool {
 	return r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/files/upload")
+}
+
+// authenticateWebSocket validates JWT token for WebSocket connections.
+// Token can be provided via query parameter "token" or Authorization header.
+func (s *Server) authenticateWebSocket(w http.ResponseWriter, r *http.Request) (*tokens.Claims, error) {
+	if s.tokenGenerator == nil {
+		return nil, errors.New("token generator not configured")
+	}
+
+	// Try to get token from query parameter first (common for WebSocket connections)
+	tokenStr := r.URL.Query().Get("token")
+	if tokenStr == "" {
+		// Fall back to Authorization header
+		auth := r.Header.Get("Authorization")
+		if strings.HasPrefix(auth, "Bearer ") {
+			tokenStr = strings.TrimPrefix(auth, "Bearer ")
+		}
+	}
+
+	if tokenStr == "" {
+		return nil, errors.New("missing token")
+	}
+
+	claims, err := s.tokenGenerator.Validate(tokenStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid token: %w", err)
+	}
+
+	return claims, nil
 }
 
 type webSocketWriter struct {
@@ -2916,6 +3601,13 @@ func (w *webSocketWriter) WriteJSON(value any) error {
 	defer w.mu.Unlock()
 	_ = w.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	return w.conn.WriteJSON(value)
+}
+
+func (w *webSocketWriter) WriteBinary(data []byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_ = w.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	return w.conn.WriteMessage(websocket.BinaryMessage, data)
 }
 
 func (w *webSocketWriter) Ping() error {
@@ -2963,13 +3655,261 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func sign(token, method, requestURI, timestamp string, body []byte) string {
+// ---- Edge Agent Handlers ----
+
+func (s *Server) handleEdgeStatus(w http.ResponseWriter, r *http.Request) {
+	s.edgeMu.RLock()
+	agent := s.edgeAgent
+	s.edgeMu.RUnlock()
+	if agent == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"state": "not-started"})
+		return
+	}
+	state := agent.State()
+	writeJSON(w, http.StatusOK, map[string]any{"state": string(state), "service": "edge-agent"})
+}
+
+func (s *Server) handleEdgeStats(w http.ResponseWriter, r *http.Request) {
+	s.edgeMu.RLock()
+	agent := s.edgeAgent
+	s.edgeMu.RUnlock()
+	if agent == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"state": "not-started"})
+		return
+	}
+	stats := agent.Stats()
+	writeJSON(w, http.StatusOK, stats)
+}
+
+func (s *Server) handleEdgeConnect(w http.ResponseWriter, r *http.Request) {
+	s.edgeMu.RLock()
+	agent := s.edgeAgent
+	s.edgeMu.RUnlock()
+	if agent == nil {
+		writeError(w, http.StatusServiceUnavailable, "edge agent not initialized")
+		return
+	}
+	agent.ConnectNow()
+	writeJSON(w, http.StatusOK, map[string]any{"connected": true})
+}
+
+func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
+	diag := s.RunConnectivityDiagnostics(r.Context(), os.Getenv("PANEL_API_URL"))
+	diag.EdgeState = string(EdgeStateDisconnected)
+	s.edgeMu.RLock()
+	if s.edgeAgent != nil {
+		diag.EdgeState = string(s.edgeAgent.State())
+	}
+	s.edgeMu.RUnlock()
+	diag.AgentConnected = s.runtime != nil
+	writeJSON(w, http.StatusOK, diag)
+}
+
+func (s *Server) handleConnectivityDiagnostics(w http.ResponseWriter, r *http.Request) {
+	// Never accept a caller-controlled probe target. Besides being an SSRF
+	// primitive, the authentication probe carries the node credential.
+	diag := s.RunConnectivityDiagnostics(r.Context(), os.Getenv("PANEL_API_URL"))
+	writeJSON(w, http.StatusOK, diag)
+}
+
+// Command acknowledgement: Beacon confirms it received a command.
+func (s *Server) handleCommandAck(w http.ResponseWriter, r *http.Request) {
+	commandID := r.PathValue("id")
+	if commandID == "" {
+		writeError(w, http.StatusBadRequest, "command id is required")
+		return
+	}
+	if err := s.operations.AckCommand(commandID); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"acknowledged": true})
+}
+
+// Command progress: Beacon reports step-level progress for a command.
+func (s *Server) handleCommandProgress(w http.ResponseWriter, r *http.Request) {
+	commandID := r.PathValue("id")
+	if commandID == "" {
+		writeError(w, http.StatusBadRequest, "command id is required")
+		return
+	}
+	var body struct {
+		Progress    string `json:"progress"`
+		ProgressPct int    `json:"progressPct"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid progress payload")
+		return
+	}
+	if err := s.operations.SetProgress(commandID, body.Progress, body.ProgressPct); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"updated": true})
+}
+
+// Command result: Beacon delivers terminal command output.
+func (s *Server) handleCommandResult(w http.ResponseWriter, r *http.Request) {
+	commandID := r.PathValue("id")
+	if commandID == "" {
+		writeError(w, http.StatusBadRequest, "command id is required")
+		return
+	}
+	var body struct {
+		ResultData string `json:"resultData"`
+		Status     string `json:"status,omitempty"`
+		Error      string `json:"error,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid result payload")
+		return
+	}
+	if body.Status == "failed" || body.Error != "" {
+		qErr := s.operations.SetError(commandID, body.Error)
+		if qErr != nil {
+			writeError(w, http.StatusNotFound, qErr.Error())
+			return
+		}
+	}
+	if err := s.operations.SetResult(commandID, body.ResultData); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"delivered": true})
+}
+
+// Pending commands: Beacon polls for commands that need to be processed.
+// A serverID query parameter can be provided to filter by server.
+func (s *Server) handlePendingCommands(w http.ResponseWriter, r *http.Request) {
+	serverID := r.URL.Query().Get("serverId")
+	if serverID != "" {
+		writeJSON(w, http.StatusOK, s.operations.ListPendingByServer(serverID))
+		return
+	}
+	all := s.operations.ServersWithPending()
+	result := make(map[string][]Operation)
+	for _, sid := range all {
+		pending := s.operations.ListPendingByServer(sid)
+		if len(pending) > 0 {
+			result[sid] = pending
+		}
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+type VersionInventory struct {
+	BeaconVersion string         `json:"beaconVersion"`
+	APIVersion    string         `json:"apiVersion,omitempty"`
+	GoVersion     string         `json:"goVersion"`
+	OS            string         `json:"os"`
+	Architecture  string         `json:"architecture"`
+	Capabilities  []string       `json:"capabilities"`
+	Upgrades      *UpgradeStatus `json:"upgrades,omitempty"`
+	EdgeState     string         `json:"edgeState"`
+	UptimeSeconds int64          `json:"uptimeSeconds"`
+}
+
+func (s *Server) handleVersionInventory(w http.ResponseWriter, r *http.Request) {
+	inv := VersionInventory{
+		BeaconVersion: s.version,
+		GoVersion:     stdruntime.Version(),
+		OS:            stdruntime.GOOS,
+		Architecture:  stdruntime.GOARCH,
+		Capabilities:  []string{"docker", "sftp", "backups", "transfers", "stats", "console", "files", "compose", "build", "edge-agent", "upgrade"},
+		UptimeSeconds: int64(time.Since(s.started).Seconds()),
+		EdgeState:     "unknown",
+	}
+	s.edgeMu.RLock()
+	if s.edgeAgent != nil {
+		inv.EdgeState = string(s.edgeAgent.State())
+	}
+	s.edgeMu.RUnlock()
+	s.upgradeMu.Lock()
+	if s.upgradeMgr != nil {
+		status := s.upgradeMgr.Status()
+		inv.Upgrades = &status
+	}
+	s.upgradeMu.Unlock()
+	writeJSON(w, http.StatusOK, inv)
+}
+
+func (s *Server) handleUpgradeBegin(w http.ResponseWriter, r *http.Request) {
+	var payload UpgradePayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid upgrade payload")
+		return
+	}
+	if payload.Version == "" || payload.DownloadURL == "" {
+		writeError(w, http.StatusBadRequest, "version and downloadUrl are required")
+		return
+	}
+	s.upgradeMu.Lock()
+	if s.upgradeMgr == nil {
+		binPath, _ := os.Executable()
+		s.upgradeMgr = NewUpgradeManager(s.version, binPath, s.dataDir)
+	}
+	manager := s.upgradeMgr
+	s.upgradeMu.Unlock()
+	if err := manager.Begin(r.Context(), payload); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, manager.Status())
+}
+
+func (s *Server) handleUpgradeStatus(w http.ResponseWriter, r *http.Request) {
+	s.upgradeMu.Lock()
+	manager := s.upgradeMgr
+	s.upgradeMu.Unlock()
+	if manager == nil {
+		writeJSON(w, http.StatusOK, UpgradeStatus{State: UpgradeStateIdle})
+		return
+	}
+	status := manager.Status()
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handleUpgradeApply(w http.ResponseWriter, r *http.Request) {
+	s.upgradeMu.Lock()
+	manager := s.upgradeMgr
+	s.upgradeMu.Unlock()
+	if manager == nil {
+		writeError(w, http.StatusBadRequest, "no upgrade in progress")
+		return
+	}
+	if err := manager.Apply(r.Context()); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, manager.Status())
+}
+
+func (s *Server) handleUpgradeRollback(w http.ResponseWriter, r *http.Request) {
+	s.upgradeMu.Lock()
+	manager := s.upgradeMgr
+	s.upgradeMu.Unlock()
+	if manager == nil {
+		writeError(w, http.StatusBadRequest, "no upgrade to roll back")
+		return
+	}
+	if err := manager.Rollback(r.Context()); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, manager.Status())
+}
+
+func sign(token, method, requestURI, timestamp string, body []byte, nonce ...string) string {
 	mac := hmac.New(sha256.New, []byte(token))
 	_, _ = mac.Write([]byte(method))
 	_, _ = mac.Write([]byte("\n"))
 	_, _ = mac.Write([]byte(requestURI))
 	_, _ = mac.Write([]byte("\n"))
 	_, _ = mac.Write([]byte(timestamp))
+	_, _ = mac.Write([]byte("\n"))
+	if len(nonce) > 0 {
+		_, _ = mac.Write([]byte(nonce[0]))
+	}
 	_, _ = mac.Write([]byte("\n"))
 	_, _ = mac.Write(body)
 	return hex.EncodeToString(mac.Sum(nil))

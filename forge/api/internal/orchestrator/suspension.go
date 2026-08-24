@@ -17,6 +17,7 @@ type SuspensionManager interface {
 type SuspensionStore interface {
 	GetServer(ctx context.Context, serverID string) (store.Server, error)
 	SetServerSuspension(ctx context.Context, serverID string, suspended bool) error
+	CompareAndSetServerSuspension(ctx context.Context, serverID string, expected, suspended bool) (bool, error)
 	ServerControlTarget(ctx context.Context, serverID string) (store.ServerControlTarget, error)
 }
 
@@ -39,11 +40,23 @@ func SuspendServer(ctx context.Context, store SuspensionStore, runtime Suspensio
 	if server.Suspended {
 		return errors.New("server already suspended")
 	}
-
 	target, err := store.ServerControlTarget(ctx, serverID)
 	if err != nil {
 		return err
 	}
+	changed, err := store.CompareAndSetServerSuspension(ctx, serverID, false, true)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return errors.New("server suspension state changed concurrently")
+	}
+	rollback := true
+	defer func() {
+		if rollback {
+			_, _ = store.CompareAndSetServerSuspension(context.WithoutCancel(ctx), serverID, true, false)
+		}
+	}()
 
 	if _, err := runtime.StopServer(ctx, gpruntime.Target{
 		NodeURL:   target.NodeURL,
@@ -53,14 +66,14 @@ func SuspendServer(ctx context.Context, store SuspensionStore, runtime Suspensio
 		return err
 	}
 
-	if err := store.SetServerSuspension(ctx, serverID, true); err != nil {
-		return err
-	}
+	rollback = false
 
 	if publisher != nil {
-		_ = publisher.Publish(ctx, events.NewEnvelope(events.EventServerStopped, "orchestrator", "server", serverID, map[string]any{
+		if err := publisher.Publish(ctx, events.NewEnvelope(events.EventServerStopped, "orchestrator", "server", serverID, map[string]any{
 			"suspended": true,
-		}))
+		})); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -79,14 +92,20 @@ func UnsuspendServer(ctx context.Context, store SuspensionStore, publisher event
 		return errors.New("server not suspended")
 	}
 
-	if err := store.SetServerSuspension(ctx, serverID, false); err != nil {
+	changed, err := store.CompareAndSetServerSuspension(ctx, serverID, true, false)
+	if err != nil {
 		return err
+	}
+	if !changed {
+		return errors.New("server suspension state changed concurrently")
 	}
 
 	if publisher != nil {
-		_ = publisher.Publish(ctx, events.NewEnvelope(events.EventDesiredStateChanged, "orchestrator", "server", serverID, map[string]any{
+		if err := publisher.Publish(ctx, events.NewEnvelope(events.EventDesiredStateChanged, "orchestrator", "server", serverID, map[string]any{
 			"suspended": false,
-		}))
+		})); err != nil {
+			return err
+		}
 	}
 
 	return nil

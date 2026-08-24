@@ -1,22 +1,23 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useToast } from "@/components/ui/toast";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import {
   AlertTriangle, Ban, Box, Cpu, Database, ExternalLink, HardDrive, Info,
-  KeyRound, Layers, Network, Plus, RefreshCw, Trash2, Zap,
+  KeyRound, Layers, Network, Plus, RefreshCw, Server, Trash2, Zap,
 } from "lucide-react";
 import {
   type ApiServer, type ApiNode, type ApiAllocation, type ApiEgg,
-  type ApiUser, type ApiMount, type ApiRegion, type ApiTemplate,
+  type ApiUser, type ApiMount, type ApiRegion,
   fetchServer, fetchServers, fetchNodes, fetchEggs, fetchAllocations, fetchUsers,
   fetchTemplates, fetchRegions, fetchMounts, fetchServerMounts, fetchServerDatabases, fetchServerStartup,
   assignServerAllocation, assignServerMount, fetchServerAllocations, removeServerMount, searchUsers, createServer, createServerDatabase,
   rotateServerDatabasePasswordByBody, deleteServerDatabaseWithSuffix, setPrimaryServerAllocation, unassignServerAllocation, updateServerStartupVariable,
   cancelServerTransfer, deleteServer, fetchServerTransferStatus, suspendServer, transferServer, unsuspendServer, reinstallServer, updateServer,
-  ApiUserSearchResult,
 } from "@/lib/api";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, Textarea, cn } from "./admin-ui";
+import { AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, Textarea, cn } from "./admin-ui";
 
 type ServerTab = "about" | "details" | "build" | "startup" | "allocations" | "database" | "mounts" | "manage" | "delete";
 const SERVER_TABS: Array<{ id: ServerTab; label: string; danger?: boolean }> = [
@@ -32,17 +33,29 @@ const SERVER_TABS: Array<{ id: ServerTab; label: string; danger?: boolean }> = [
 ];
 
 export function AdminServers() {
-  const { data: servers = [], isLoading } = useQuery({ queryKey: ["servers"], queryFn: fetchServers });
-  const { data: users = [] } = useQuery({ queryKey: ["users"], queryFn: fetchUsers });
-  const { data: nodes = [] } = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
-  const { data: allocations = [] } = useQuery({ queryKey: ["allocations"], queryFn: fetchAllocations });
-  const { data: eggs = [] } = useQuery<ApiEgg[]>({
+  const serversQuery = useQuery({ queryKey: ["servers"], queryFn: fetchServers });
+  const servers = useMemo(() => Array.isArray(serversQuery.data) ? serversQuery.data : [], [serversQuery.data]);
+  const isLoading = serversQuery.isLoading;
+  const isError = serversQuery.isError;
+  const error = serversQuery.error;
+  const refetch = serversQuery.refetch;
+  const usersQuery = useQuery({ queryKey: ["users"], queryFn: fetchUsers });
+  const users = useMemo(() => Array.isArray(usersQuery.data) ? usersQuery.data : [], [usersQuery.data]);
+  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
+  const nodes = useMemo(() => Array.isArray(nodesQuery.data) ? nodesQuery.data : [], [nodesQuery.data]);
+  const allocsQuery = useQuery({ queryKey: ["allocations"], queryFn: fetchAllocations });
+  const allocations = useMemo(() => Array.isArray(allocsQuery.data) ? allocsQuery.data : [], [allocsQuery.data]);
+  const eggsQuery = useQuery<ApiEgg[]>({
     queryKey: ["eggs"],
     queryFn: () => fetchEggs("*"),
   });
-  const { data: templates = [] } = useQuery({ queryKey: ["templates"], queryFn: fetchTemplates });
-  const { data: regions = [] } = useQuery({ queryKey: ["regions"], queryFn: fetchRegions });
-  const { data: mounts = [] } = useQuery({ queryKey: ["mounts"], queryFn: fetchMounts });
+  const eggs = useMemo(() => Array.isArray(eggsQuery.data) ? eggsQuery.data : [], [eggsQuery.data]);
+  const templatesQuery = useQuery({ queryKey: ["templates"], queryFn: fetchTemplates });
+  const templates = useMemo(() => Array.isArray(templatesQuery.data) ? templatesQuery.data : [], [templatesQuery.data]);
+  const regionsQuery = useQuery({ queryKey: ["regions"], queryFn: fetchRegions });
+  const regions = useMemo(() => Array.isArray(regionsQuery.data) ? regionsQuery.data : [], [regionsQuery.data]);
+  const mountsQuery = useQuery({ queryKey: ["mounts"], queryFn: fetchMounts });
+  const mounts = useMemo(() => Array.isArray(mountsQuery.data) ? mountsQuery.data : [], [mountsQuery.data]);
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
@@ -67,6 +80,8 @@ export function AdminServers() {
         </div>
         {isLoading ? (
           <div className="p-8 text-center text-sm text-slate-500">Loading servers…</div>
+        ) : isError ? (
+          <div className="p-4"><div className="flex items-start justify-between gap-4 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-200"><span>Could not load servers: {error?.message ?? "Unknown error"}</span><Btn size="sm" tone="ghost" onClick={() => void refetch()}>Retry</Btn></div></div>
         ) : filtered.length === 0 ? (
           <EmptyState icon={Layers} message="No servers yet." />
         ) : (
@@ -133,12 +148,13 @@ function CreateServerModal({ users, nodes, allocations, templates, eggs, regions
   users: ApiUser[];
   nodes: ApiNode[];
   allocations: ApiAllocation[];
-  templates: any[];
+  templates: ApiEgg[];
   eggs: ApiEgg[];
   regions: ApiRegion[];
   onClose: () => void;
 }) {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [name, setName] = useState("");
   const [ownerId, setOwnerId] = useState("");
   const [nodeId, setNodeId] = useState("");
@@ -192,55 +208,123 @@ function CreateServerModal({ users, nodes, allocations, templates, eggs, regions
       void qc.invalidateQueries({ queryKey: ["allocations"] });
       onClose();
     },
+    onError: (error) => toast({ tone: "error", title: "Create failed", message: error instanceof Error ? error.message : "Could not create server" }),
   });
 
+  const inputBase = "h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15";
+  const selectBase = "h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15";
+
+  const iconClasses = "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500";
+
   return (
-    <Modal title="Create Server" onClose={onClose} wide>
-      <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); if (!validationError) createMut.mutate(); }}>
-        <div className="grid gap-4 md:grid-cols-2">
-          <Input label="Server Name" value={name} onChange={setName} required />
-          <label className="block text-sm font-medium text-slate-300">
-            <span className="mb-1.5 block">Owner</span>
-            <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100" value={ownerId} onChange={(event) => setOwnerId(event.target.value)} required>
-              <option value="">Select owner…</option>
-              {users.map((user) => <option key={user.id} value={user.id}>{user.email}</option>)}
-            </select>
-          </label>
-          <label className="block text-sm font-medium text-slate-300">
-            <span className="mb-1.5 block">Node</span>
-            <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100" value={nodeId} onChange={(event) => { setNodeId(event.target.value); setAllocationId(""); }}>
-              <option value="">Select node…</option>
-              {nodes.filter((node) => !regionId || node.regionId === regionId || node.region === regions.find((region) => region.id === regionId)?.slug).map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}
-            </select>
-          </label>
-          <label className="block text-sm font-medium text-slate-300">
-            <span className="mb-1.5 block">Region</span>
-            <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100" value={regionId} onChange={(event) => { setRegionId(event.target.value); setNodeId(""); setAllocationId(""); }}>
-              <option value="">Select region…</option>
-              {regions.filter((region) => region.enabled).map((region) => <option key={region.id} value={region.id}>{region.name}</option>)}
-            </select>
-          </label>
-          <label className="block text-sm font-medium text-slate-300">
-            <span className="mb-1.5 block">Template / Egg</span>
-            <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100" value={templateId} onChange={(event) => setTemplateId(event.target.value)} required>
-              <option value="">Select template…</option>
-              {templateOptions.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}
-            </select>
-          </label>
-          <label className="block text-sm font-medium text-slate-300">
-            <span className="mb-1.5 block">Available Allocation</span>
-            <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100" value={allocationId} onChange={(event) => setAllocationId(event.target.value)} required>
-              <option value="">Select allocation…</option>
-              {availableAllocations.map((allocation) => <option key={allocation.id} value={allocation.id}>{allocation.ip}:{allocation.port}</option>)}
-            </select>
-          </label>
-          <Input label="Memory (MiB)" value={memoryMb} onChange={setMemoryMb} type="number" required />
-          <Input label="CPU Shares" value={cpuShares} onChange={setCpuShares} type="number" required />
-          <Input label="Disk (MiB)" value={diskMb} onChange={setDiskMb} type="number" required />
+    <Modal title={<span className="text-base font-semibold text-slate-100">Create Server</span>} onClose={onClose} wide>
+      <form className="space-y-6" onSubmit={(event) => { event.preventDefault(); if (!validationError) createMut.mutate(); }}>
+        <div>
+          <label className="mb-3 block text-xs font-semibold uppercase tracking-wider text-slate-400">Server Identity</label>
+          <div className="grid gap-5 sm:grid-cols-2">
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Server Name</label>
+              <div className="relative">
+                <Server size={14} className={iconClasses} strokeWidth={1.5} />
+                <input className={cn(inputBase, "pl-9")} value={name} onChange={(e) => setName(e.target.value)} placeholder="My Game Server" required />
+              </div>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Owner</label>
+              <select className={selectBase + " px-3"} value={ownerId} onChange={(event) => setOwnerId(event.target.value)} required>
+                <option value="">Select owner&hellip;</option>
+                {users.map((user) => <option key={user.id} value={user.id}>{user.email}</option>)}
+              </select>
+            </div>
+          </div>
         </div>
-        {validationError && <p className="text-sm text-amber-300">{validationError}</p>}
-        {createMut.error && <p className="text-sm text-red-300">{createMut.error instanceof Error ? createMut.error.message : "Server creation failed."}</p>}
-        <ModalFooter onCancel={onClose} onConfirm={() => { if (!validationError) createMut.mutate(); }} confirmLabel={createMut.isPending ? "Creating…" : "Create Server"} disabled={Boolean(validationError) || createMut.isPending} />
+
+        <div>
+          <label className="mb-3 block text-xs font-semibold uppercase tracking-wider text-slate-400">Deployment</label>
+          <div className="grid gap-5 sm:grid-cols-2">
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Node</label>
+              <select className={selectBase + " px-3"} value={nodeId} onChange={(event) => { setNodeId(event.target.value); setAllocationId(""); }}>
+                <option value="">Select node&hellip;</option>
+                {nodes.filter((node) => !regionId || node.regionId === regionId || node.region === regions.find((region) => region.id === regionId)?.slug).map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Region</label>
+              <select className={selectBase + " px-3"} value={regionId} onChange={(event) => { setRegionId(event.target.value); setNodeId(""); setAllocationId(""); }}>
+                <option value="">Select region&hellip;</option>
+                {regions.filter((region) => region.enabled).map((region) => <option key={region.id} value={region.id}>{region.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Template / Egg</label>
+              <select className={selectBase + " px-3"} value={templateId} onChange={(event) => setTemplateId(event.target.value)} required>
+                <option value="">Select template&hellip;</option>
+                {templateOptions.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Allocation</label>
+              <select className={selectBase + " px-3"} value={allocationId} onChange={(event) => setAllocationId(event.target.value)} required>
+                <option value="">Select allocation&hellip;</option>
+                {availableAllocations.map((allocation) => <option key={allocation.id} value={allocation.id}>{allocation.ip}:{allocation.port}</option>)}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <label className="mb-3 block text-xs font-semibold uppercase tracking-wider text-slate-400">Resources</label>
+          <div className="grid gap-5 sm:grid-cols-3">
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">
+                Memory <span className="font-normal normal-case text-slate-500">(MiB)</span>
+              </label>
+              <div className="relative">
+                <HardDrive size={14} className={iconClasses} strokeWidth={1.5} />
+                <input className={cn(inputBase, "pl-9 [&::-webkit-inner-spin-button]:appearance-none")} type="number" min={64} step={64} value={memoryMb} onChange={(e) => setMemoryMb(e.target.value)} required />
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500">Minimum 64 MiB</p>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">
+                CPU <span className="font-normal normal-case text-slate-500">(shares)</span>
+              </label>
+              <div className="relative">
+                <Cpu size={14} className={iconClasses} strokeWidth={1.5} />
+                <input className={cn(inputBase, "pl-9 [&::-webkit-inner-spin-button]:appearance-none")} type="number" min={1} value={cpuShares} onChange={(e) => setCpuShares(e.target.value)} required />
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500">Relative CPU weight (default 1024)</p>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">
+                Disk <span className="font-normal normal-case text-slate-500">(MiB)</span>
+              </label>
+              <div className="relative">
+                <Database size={14} className={iconClasses} strokeWidth={1.5} />
+                <input className={cn(inputBase, "pl-9 [&::-webkit-inner-spin-button]:appearance-none")} type="number" min={64} step={64} value={diskMb} onChange={(e) => setDiskMb(e.target.value)} required />
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500">Minimum 64 MiB</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-800/50">
+              <Server className="h-5 w-5 text-slate-400" strokeWidth={1.5} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-slate-200">{name || "Unnamed Server"}</p>
+              <p className="text-xs text-slate-500">{memoryMb || "2048"} MiB &middot; {cpuShares || "1024"} CPU &middot; {diskMb || "10240"} MiB disk{templateId ? ` \u00b7 ${templateOptions.find((t) => t.id === templateId)?.label ?? ""}` : ""}</p>
+            </div>
+          </div>
+        </div>
+
+        {validationError && <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/20 bg-amber-950/10 p-3.5 text-sm text-amber-200"><span>{validationError}</span></div>}
+        {createMut.error && <div className="flex items-start gap-2.5 rounded-lg border border-red-500/20 bg-red-950/10 p-3.5 text-sm text-red-200"><span>{createMut.error instanceof Error ? createMut.error.message : "Server creation failed."}</span></div>}
+
+        <ModalFooter onCancel={onClose} onConfirm={() => { if (!validationError) createMut.mutate(); }} confirmLabel={createMut.isPending ? "Creating..." : "Create Server"} disabled={Boolean(validationError) || createMut.isPending} />
       </form>
     </Modal>
   );
@@ -250,7 +334,7 @@ function ServerStatusBadge({ server }: { server: ApiServer }) {
   if (server.suspended) return <Pill tone="red">Suspended</Pill>;
   if (server.status === "installing") return <Pill tone="yellow">Installing</Pill>;
   if (server.status === "running") return <Pill tone="green">Active</Pill>;
-  return <Pill tone="blue">{server.status}</Pill>;
+  return <Pill tone="neutral">{server.status}</Pill>;
 }
 
 function ServerDetailContent({ serverId, tab, setTab, users, nodes, allocations, mounts, onClose }: {
@@ -259,15 +343,15 @@ function ServerDetailContent({ serverId, tab, setTab, users, nodes, allocations,
   mounts: ApiMount[]; onClose: () => void;
 }) {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const { data: server, isLoading } = useQuery({ queryKey: ["server", serverId], queryFn: () => fetchServer(serverId) });
-  const deleteMut = useMutation({ mutationFn: () => deleteServer(serverId, false), onSuccess: () => { qc.invalidateQueries({ queryKey: ["servers"] }); onClose(); } });
-  const forceDeleteMut = useMutation({ mutationFn: () => deleteServer(serverId, true), onSuccess: () => { qc.invalidateQueries({ queryKey: ["servers"] }); onClose(); } });
-  const suspendMut = useMutation({ mutationFn: () => suspendServer(serverId), onSuccess: () => qc.invalidateQueries({ queryKey: ["server", serverId] }) });
-  const unsuspendMut = useMutation({ mutationFn: () => unsuspendServer(serverId), onSuccess: () => qc.invalidateQueries({ queryKey: ["server", serverId] }) });
-  const reinstallMut = useMutation({ mutationFn: () => reinstallServer(serverId), onSuccess: () => qc.invalidateQueries({ queryKey: ["server", serverId] }) });
+  const deleteMut = useMutation({ mutationFn: () => deleteServer(serverId, false), onSuccess: () => { qc.invalidateQueries({ queryKey: ["servers"] }); onClose(); }, onError: (error) => toast({ tone: "error", title: "Delete failed", message: error instanceof Error ? error.message : "Could not delete server" }) });
+  const forceDeleteMut = useMutation({ mutationFn: () => deleteServer(serverId, true), onSuccess: () => { qc.invalidateQueries({ queryKey: ["servers"] }); onClose(); }, onError: (error) => toast({ tone: "error", title: "Force delete failed", message: error instanceof Error ? error.message : "Could not force delete server" }) });
+  const suspendMut = useMutation({ mutationFn: () => suspendServer(serverId), onSuccess: () => qc.invalidateQueries({ queryKey: ["server", serverId] }), onError: (error) => toast({ tone: "error", title: "Suspend failed", message: error instanceof Error ? error.message : "Could not suspend server" }) });
+  const unsuspendMut = useMutation({ mutationFn: () => unsuspendServer(serverId), onSuccess: () => qc.invalidateQueries({ queryKey: ["server", serverId] }), onError: (error) => toast({ tone: "error", title: "Unsuspend failed", message: error instanceof Error ? error.message : "Could not unsuspend server" }) });
+  const reinstallMut = useMutation({ mutationFn: () => reinstallServer(serverId), onSuccess: () => qc.invalidateQueries({ queryKey: ["server", serverId] }), onError: (error) => toast({ tone: "error", title: "Reinstall failed", message: error instanceof Error ? error.message : "Could not reinstall server" }) });
 
   if (isLoading || !server) return <div className="p-8 text-center text-sm text-slate-500">Loading…</div>;
-  const installed = server.status !== "installing";
 
   return (
     <div className="space-y-4">
@@ -280,29 +364,7 @@ function ServerDetailContent({ serverId, tab, setTab, users, nodes, allocations,
           Open console <ExternalLink size={12} />
         </a>
       </div>
-      <div className="flex gap-1 border-b border-white/[0.06] overflow-x-auto" role="tablist" aria-label="Server sections">
-        {SERVER_TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.id}
-            disabled={!installed && t.id !== "about" && t.id !== "manage" && t.id !== "delete"}
-            className={cn(
-              "whitespace-nowrap px-3 py-2 text-sm font-medium transition",
-              tab === t.id
-                ? t.danger
-                  ? "border-b-2 border-red-500 text-red-400"
-                  : "border-b-2 border-[#dc2626] text-[#dc2626]"
-                : "text-slate-400 hover:text-slate-200",
-              "disabled:opacity-50"
-            )}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <AdminTabs tabs={SERVER_TABS} active={tab} onChange={(id) => setTab(id as ServerTab)} label="Server sections" />
       {tab === "about" && <ServerAboutTab server={server} users={users} nodes={nodes} allocations={allocations} />}
       {tab === "details" && <ServerDetailsTab server={server} users={users} />}
       {tab === "build" && <ServerBuildTab server={server} users={users} allocations={allocations} />}
@@ -325,53 +387,89 @@ function ServerDetailContent({ serverId, tab, setTab, users, nodes, allocations,
   );
 }
 
-function InfoRow({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
-  return (
-    <li className="flex items-center justify-between px-4 py-3 text-sm">
-      <span className="text-slate-400">{label}</span>
-      <span className={cn("text-slate-200", mono && "font-mono text-xs")}>{value}</span>
-    </li>
-  );
-}
-
 function ServerAboutTab({ server, users, nodes, allocations }: { server: ApiServer; users: ApiUser[]; nodes: ApiNode[]; allocations: ApiAllocation[] }) {
   const owner = users.find((u) => u.id === server.owner)?.email ?? server.owner ?? "—";
   const node = nodes.find((n) => n.id === server.node)?.name ?? server.node ?? "—";
   const alloc = allocations.find((a) => a.id === server.allocation);
+  const fieldClasses = "h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] text-sm leading-10 shadow-inner shadow-black/10";
+  const iconClasses = "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500";
   return (
-    <div className="grid gap-4 lg:grid-cols-3">
-      <Card>
-        <CardHeader title="Information" icon={Info} />
-        <ul className="divide-y divide-white/[0.04]">
-          <InfoRow label="Internal ID" value={server.id.slice(0, 8) + "…"} mono />
-          <InfoRow label="UUID" value={server.uuid ?? server.id} mono />
-          <InfoRow label="Server Name" value={server.name} />
-          <InfoRow label="Memory" value={server.memoryMb != null ? `${server.memoryMb} MiB` : "—"} />
-          <InfoRow label="Disk" value={server.diskMb != null ? `${server.diskMb} MiB` : "—"} />
-          <InfoRow label="Default Connection" value={alloc ? `${alloc.ip}:${alloc.port}` : "—"} mono />
-        </ul>
-      </Card>
-      <div className="space-y-3">
-        <SmallBox color={server.suspended ? "red" : "blue"} label={server.suspended ? "Suspended" : "Status"} value={server.suspended ? "YES" : server.status} />
-        <SmallBox color="purple" label="Owner" value={owner} />
-        <SmallBox color="emerald" label="Node" value={node} />
+    <div className="space-y-5">
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
+        <label className="mb-4 block text-xs font-semibold uppercase tracking-wider text-slate-400">Server Identity</label>
+        <div className="grid gap-5 sm:grid-cols-2">
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Internal ID</label>
+            <div className="relative">
+              <Info size={14} className={iconClasses} strokeWidth={1.5} />
+              <div className={cn(fieldClasses, "pl-9 font-mono text-slate-400")}>{server.id.slice(0, 8)}&hellip;</div>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">UUID</label>
+            <div className="relative">
+              <KeyRound size={14} className={iconClasses} strokeWidth={1.5} />
+              <div className={cn(fieldClasses, "pl-9 font-mono text-slate-400 truncate")}>{server.uuid ?? server.id}</div>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Server Name</label>
+            <div className="relative">
+              <Server size={14} className={iconClasses} strokeWidth={1.5} />
+              <div className={cn(fieldClasses, "pl-9 text-slate-100")}>{server.name}</div>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Default Connection</label>
+            <div className="relative">
+              <Network size={14} className={iconClasses} strokeWidth={1.5} />
+              <div className={cn(fieldClasses, "pl-9 font-mono text-slate-400")}>{alloc ? `${alloc.ip}:${alloc.port}` : "\u2014"}</div>
+            </div>
+          </div>
+        </div>
       </div>
-    </div>
-  );
-}
 
-function SmallBox({ color, label, value }: { color: "orange" | "blue" | "purple" | "emerald" | "red"; label: string; value: string }) {
-  const map: Record<string, string> = {
-    orange: "bg-orange-500/10 text-orange-400 border-orange-500/30",
-    blue: "bg-sky-500/10 text-sky-400 border-sky-500/30",
-    purple: "bg-purple-500/10 text-purple-400 border-purple-500/30",
-    emerald: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
-    red: "bg-red-500/10 text-red-400 border-red-500/30",
-  };
-  return (
-    <div className={cn("rounded-lg border p-4", map[color])}>
-      <div className="text-[10px] font-bold uppercase tracking-widest opacity-70">{label}</div>
-      <div className="mt-1 text-lg font-bold">{value}</div>
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
+        <label className="mb-4 block text-xs font-semibold uppercase tracking-wider text-slate-400">Resources</label>
+        <div className="grid gap-5 sm:grid-cols-2">
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">
+              Memory <span className="font-normal normal-case text-slate-500">(MiB)</span>
+            </label>
+            <div className="relative">
+              <HardDrive size={14} className={iconClasses} strokeWidth={1.5} />
+              <div className={cn(fieldClasses, "pl-9 text-slate-100")}>{server.memoryMb != null ? `${server.memoryMb} MiB` : "\u2014"}</div>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">
+              Disk <span className="font-normal normal-case text-slate-500">(MiB)</span>
+            </label>
+            <div className="relative">
+              <Database size={14} className={iconClasses} strokeWidth={1.5} />
+              <div className={cn(fieldClasses, "pl-9 text-slate-100")}>{server.diskMb != null ? `${server.diskMb} MiB` : "\u2014"}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+          <label className="mb-2 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Status</label>
+          <div className="flex items-center gap-2">
+            <span className={cn("inline-block h-2 w-2 rounded-full", server.suspended ? "bg-red-400" : server.status === "running" ? "bg-emerald-400" : server.status === "installing" ? "bg-amber-400" : "bg-slate-500")} />
+            <span className="text-sm font-semibold text-slate-200">{server.suspended ? "Suspended" : server.status}</span>
+          </div>
+        </div>
+        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+          <label className="mb-2 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Owner</label>
+          <span className="text-sm font-semibold text-slate-200">{owner}</span>
+        </div>
+        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+          <label className="mb-2 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Node</label>
+          <span className="text-sm font-semibold text-slate-200">{node}</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -389,6 +487,7 @@ function ServerDetailsTab({ server, users }: { server: ApiServer; users: ApiUser
     enabled: userSearch.length > 0,
   });
   const canSafelyUpdate = Boolean(ownerId && server.memoryMb !== undefined && server.cpuShares !== undefined && server.diskMb !== undefined);
+  const { toast } = useToast();
   const saveMut = useMutation({
     mutationFn: () => {
       if (!canSafelyUpdate) throw new Error("Current server resource values are unavailable.");
@@ -402,6 +501,7 @@ function ServerDetailsTab({ server, users }: { server: ApiServer; users: ApiUser
       });
     },
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["server", server.id] }); void qc.invalidateQueries({ queryKey: ["servers"] }); },
+    onError: (error) => toast({ tone: "error", title: "Update failed", message: error instanceof Error ? error.message : "Could not update server details" }),
   });
   return (
     <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); if (canSafelyUpdate && name.trim()) saveMut.mutate(); }}>
@@ -442,6 +542,7 @@ function ServerDetailsTab({ server, users }: { server: ApiServer; users: ApiUser
 
 function ServerBuildTab({ server, users, allocations }: { server: ApiServer; users: ApiUser[]; allocations: ApiAllocation[] }) {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const ownerId = server.ownerId ?? users.find((user) => user.id === server.owner || user.email === server.owner)?.id ?? "";
   const [memory, setMemory] = useState(server.memoryMb === undefined ? "" : String(server.memoryMb));
   const [disk, setDisk] = useState(server.diskMb === undefined ? "" : String(server.diskMb));
@@ -465,6 +566,7 @@ function ServerBuildTab({ server, users, allocations }: { server: ApiServer; use
       });
     },
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["server", server.id] }); void qc.invalidateQueries({ queryKey: ["servers"] }); },
+    onError: (error) => toast({ tone: "error", title: "Build update failed", message: error instanceof Error ? error.message : "Could not update build configuration" }),
   });
   return (
     <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); if (canSafelyUpdate) saveMut.mutate(); }}>
@@ -511,9 +613,10 @@ function ServerBuildTab({ server, users, allocations }: { server: ApiServer; use
 
 function ServerStartupTab({ server }: { server: ApiServer }) {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const { data: startup } = useQuery({ queryKey: ["server-startup", server.id], queryFn: () => fetchServerStartup(server.id) });
   const [vars, setVars] = useState<Record<string, string>>({});
-  const imageEntries = Object.entries(startup?.docker_images ?? {});
+  const imageEntries = Object.entries(startup?.docker_images ?? {}) as Array<[string, string]>;
   const updateVar = (name: string, value: string) => setVars((current) => ({ ...current, [name]: value }));
   const saveMut = useMutation({
     mutationFn: async () => {
@@ -525,6 +628,7 @@ function ServerStartupTab({ server }: { server: ApiServer }) {
       setVars({});
       void qc.invalidateQueries({ queryKey: ["server-startup", server.id] });
     },
+    onError: (error) => toast({ tone: "error", title: "Startup update failed", message: error instanceof Error ? error.message : "Could not update startup variables" }),
   });
   return (
     <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); if (Object.keys(vars).length > 0) saveMut.mutate(); }}>
@@ -554,18 +658,23 @@ function ServerStartupTab({ server }: { server: ApiServer }) {
         <Card>
           <CardHeader title="Service Variables" icon={KeyRound} />
           <div className="space-y-3 p-4">
-            {startup.variables.map((variable: any) => (
-              <label className="block text-sm font-medium text-slate-300" key={variable.env_variable}>
-                <span className="mb-1.5 block">{variable.name} ({variable.env_variable})</span>
-                <input
-                  className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                  disabled={!variable.is_editable}
-                  onChange={(event) => updateVar(variable.env_variable, event.target.value)}
-                  value={vars[variable.env_variable] ?? variable.server_value}
-                />
-                {variable.description && <span className="mt-1 block text-xs text-slate-500">{variable.description}</span>}
-              </label>
-            ))}
+            {startup.variables.map((variable) => {
+              const envVarKey = variable.env_variable || variable.envVariable || "";
+              const isEditable = variable.is_editable ?? variable.isEditable ?? false;
+              const serverValue = variable.server_value ?? variable.serverValue ?? "";
+              return (
+                <label className="block text-sm font-medium text-slate-300" key={envVarKey}>
+                  <span className="mb-1.5 block">{variable.name} ({envVarKey})</span>
+                  <input
+                    className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={!isEditable}
+                    onChange={(event) => updateVar(envVarKey, event.target.value)}
+                    value={vars[envVarKey] ?? serverValue}
+                  />
+                  {variable.description && <span className="mt-1 block text-xs text-slate-500">{variable.description}</span>}
+                </label>
+              );
+            })}
           </div>
         </Card>
       )}
@@ -587,24 +696,30 @@ function ServerAllocationsTab({ server, allocations }: { server: ApiServer; allo
   const available = allocations.filter((allocation) => !allocation.server && !assignedIds.has(allocation.id) && allocation.node === server.node);
   const [allocationId, setAllocationId] = useState("");
   const refresh = () => { void qc.invalidateQueries({ queryKey: ["server-allocations", server.id] }); void qc.invalidateQueries({ queryKey: ["allocations"] }); void qc.invalidateQueries({ queryKey: ["server", server.id] }); };
-  const assignMut = useMutation({ mutationFn: () => assignServerAllocation(server.id, allocationId), onSuccess: () => { setAllocationId(""); refresh(); } });
-  const unassignMut = useMutation({ mutationFn: (id: string) => unassignServerAllocation(server.id, id), onSuccess: refresh });
-  const primaryMut = useMutation({ mutationFn: (id: string) => setPrimaryServerAllocation(server.id, id), onSuccess: refresh });
+  const { toast } = useToast();
+  const [confirm, renderConfirm] = useConfirm();
+  const assignMut = useMutation({ mutationFn: () => assignServerAllocation(server.id, allocationId), onSuccess: () => { setAllocationId(""); refresh(); }, onError: (error) => toast({ tone: "error", title: "Assign failed", message: error instanceof Error ? error.message : "Could not assign allocation" }) });
+  const unassignMut = useMutation({ mutationFn: (id: string) => unassignServerAllocation(server.id, id), onSuccess: refresh, onError: (error) => toast({ tone: "error", title: "Unassign failed", message: error instanceof Error ? error.message : "Could not unassign allocation" }) });
+  const primaryMut = useMutation({ mutationFn: (id: string) => setPrimaryServerAllocation(server.id, id), onSuccess: refresh, onError: (error) => toast({ tone: "error", title: "Set primary failed", message: error instanceof Error ? error.message : "Could not set primary allocation" }) });
   const primaryId = server.primaryAllocationId ?? server.allocationId;
-  return <div className="space-y-4"><Card><CardHeader title="Assigned Allocations" icon={Network}/>{assigned.length === 0 ? <EmptyState icon={Network} message="No allocations assigned."/> : <div className="overflow-x-auto"><table className="w-full text-sm"><tbody className="divide-y divide-white/[0.04]">{assigned.map((allocation) => { const primary = allocation.id === primaryId || allocation.primary || allocation.isPrimary; return <tr key={allocation.id}><td className="px-4 py-3 font-mono text-xs">{allocation.ip}:{allocation.port}</td><td className="px-4 py-3">{primary ? <Pill tone="green">Primary</Pill> : <Btn size="sm" tone="ghost" onClick={() => primaryMut.mutate(allocation.id)}>Make primary</Btn>}</td><td className="px-4 py-3 text-right"><Btn size="sm" tone="danger" disabled={Boolean(primary) || unassignMut.isPending} onClick={() => { if (confirm("Unassign this allocation?")) unassignMut.mutate(allocation.id); }}>Unassign</Btn></td></tr>; })}</tbody></table></div>}</Card><Card><CardHeader title="Assign Allocation" icon={Plus}/><div className="flex flex-col gap-3 p-4 sm:flex-row"><select className="h-9 flex-1 rounded border border-white/10 bg-[#161b28] px-3 text-sm" value={allocationId} onChange={(event) => setAllocationId(event.target.value)}><option value="">Select an unassigned allocation…</option>{available.map((allocation) => <option key={allocation.id} value={allocation.id}>{allocation.ip}:{allocation.port}</option>)}</select><Btn disabled={!allocationId || assignMut.isPending} onClick={() => assignMut.mutate()}>Assign</Btn></div></Card></div>;
+  return <div className="space-y-4"><Card><CardHeader title="Assigned Allocations" icon={Network}/>{assigned.length === 0 ? <EmptyState icon={Network} message="No allocations assigned."/> : <div className="overflow-x-auto"><table className="w-full text-sm"><tbody className="divide-y divide-white/[0.04]">{assigned.map((allocation) => { const primary = allocation.id === primaryId || allocation.primary || allocation.isPrimary; return <tr key={allocation.id}><td className="px-4 py-3 font-mono text-xs">{allocation.ip}:{allocation.port}</td><td className="px-4 py-3">{primary ? <Pill tone="green">Primary</Pill> : <Btn size="sm" tone="ghost" onClick={() => primaryMut.mutate(allocation.id)}>Make primary</Btn>}</td><td className="px-4 py-3 text-right"><Btn size="sm" tone="danger" disabled={Boolean(primary) || unassignMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: `Unassign ${allocation.ip}:${allocation.port}?`, description: "The allocation will be released from this server.", danger: true, confirmLabel: "Unassign" })) unassignMut.mutate(allocation.id); })(); }}>Unassign</Btn></td></tr>; })}</tbody></table></div>}</Card><Card><CardHeader title="Assign Allocation" icon={Plus}/><div className="flex flex-col gap-3 p-4 sm:flex-row"><select className="h-9 flex-1 rounded border border-white/10 bg-[#161b28] px-3 text-sm" value={allocationId} onChange={(event) => setAllocationId(event.target.value)}><option value="">Select an unassigned allocation…</option>{available.map((allocation) => <option key={allocation.id} value={allocation.id}>{allocation.ip}:{allocation.port}</option>)}</select><Btn disabled={!allocationId || assignMut.isPending} onClick={() => assignMut.mutate()}>Assign</Btn></div></Card>{renderConfirm()}</div>;
 }
 
 function ServerDatabaseTab({ serverId }: { serverId: string }) {
   const qc = useQueryClient();
-  const { data: dbs = [] } = useQuery({ queryKey: ["server-dbs", serverId], queryFn: () => fetchServerDatabases(serverId) });
+  const { toast } = useToast();
+  const dbsQuery = useQuery({ queryKey: ["server-dbs", serverId], queryFn: () => fetchServerDatabases(serverId) });
+  const dbs = dbsQuery.data ?? [];
   const [dbName, setDbName] = useState("");
   const [remote, setRemote] = useState("%");
   const createMut = useMutation({
-    mutationFn: () => createServerDatabase(serverId, { database: dbName.trim(), remote: remote.trim() || "%" } as any),
+    mutationFn: () => createServerDatabase(serverId, { database: dbName.trim(), remote: remote.trim() || "%" }),
     onSuccess: () => { setDbName(""); void qc.invalidateQueries({ queryKey: ["server-dbs", serverId] }); },
+    onError: (error) => toast({ tone: "error", title: "Create failed", message: error instanceof Error ? error.message : "Could not create database" }),
   });
-  const rotateMut = useMutation({ mutationFn: (dbId: string) => rotateServerDatabasePasswordByBody(serverId, dbId), onSuccess: () => qc.invalidateQueries({ queryKey: ["server-dbs", serverId] }) });
-  const deleteMut = useMutation({ mutationFn: (dbId: string) => deleteServerDatabaseWithSuffix(serverId, dbId), onSuccess: () => qc.invalidateQueries({ queryKey: ["server-dbs", serverId] }) });
+  const rotateMut = useMutation({ mutationFn: (dbId: string) => rotateServerDatabasePasswordByBody(serverId, dbId), onSuccess: () => qc.invalidateQueries({ queryKey: ["server-dbs", serverId] }), onError: (error) => toast({ tone: "error", title: "Rotate failed", message: error instanceof Error ? error.message : "Could not rotate database password" }) });
+  const deleteMut = useMutation({ mutationFn: (dbId: string) => deleteServerDatabaseWithSuffix(serverId, dbId), onSuccess: () => qc.invalidateQueries({ queryKey: ["server-dbs", serverId] }), onError: (error) => toast({ tone: "error", title: "Delete failed", message: error instanceof Error ? error.message : "Could not delete database" }) });
+  const [confirm, renderConfirm] = useConfirm();
   return (
     <div className="space-y-4">
       <Card>
@@ -630,10 +745,10 @@ function ServerDatabaseTab({ serverId }: { serverId: string }) {
                   <td className="px-4 py-2 font-mono text-xs">{d.host ?? "—"}</td>
                   <td className="px-4 py-2 text-xs">{d.remote}</td>
                   <td className="px-4 py-2 text-right space-x-2">
-                    <Btn tone="ghost" onClick={() => { if (confirm("Rotate password?")) rotateMut.mutate(d.id); }}>
+                    <Btn tone="ghost" onClick={() => { void (async () => { if (await confirm({ title: `Rotate password for ${d.database}?`, description: "Existing clients will stop connecting with the old password.", confirmLabel: "Rotate" })) rotateMut.mutate(d.id); })(); }}>
                       Rotate
                     </Btn>
-                    <Btn tone="danger" onClick={() => { if (confirm("Delete database?")) deleteMut.mutate(d.id); }}>
+                    <Btn tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Delete database ${d.database}?`, description: "The database and its data will be removed. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMut.mutate(d.id); })(); }}>
                       Delete
                     </Btn>
                   </td>
@@ -658,6 +773,7 @@ function ServerDatabaseTab({ serverId }: { serverId: string }) {
           </Btn>
         </form>
       </Card>
+      {renderConfirm()}
     </div>
   );
 }
@@ -665,7 +781,11 @@ function ServerDatabaseTab({ serverId }: { serverId: string }) {
 function ServerMountsTab({ server, mounts }: { server: ApiServer; mounts: ApiMount[] }) {
   const qc = useQueryClient();
   const serverId = server.id;
-  const { data: serverMounts = [], isError: isMountsError, error: mountsError } = useQuery({ queryKey: ["server-mounts", serverId], queryFn: () => fetchServerMounts(serverId) });
+  const smQuery = useQuery({ queryKey: ["server-mounts", serverId], queryFn: () => fetchServerMounts(serverId) });
+  const serverMounts = smQuery.data ?? [];
+  const isMountsError = smQuery.isError;
+  const mountsError = smQuery.error;
+  const refetchMounts = smQuery.refetch;
   const mountIds = new Set(serverMounts.map((mount) => mount.id));
   const nodeId = server.nodeId;
   const eggId = server.template;
@@ -697,11 +817,11 @@ function ServerMountsTab({ server, mounts }: { server: ApiServer; mounts: ApiMou
     <Card>
       <CardHeader title="Eligible Mounts" icon={HardDrive} />
       <div className="border-b border-white/[0.06] px-4 py-3 text-xs text-slate-400">
-        Only mounts attached to this server's node and egg are shown. Assignment makes the mount available to the server; it does not confirm a runtime mount.
+        Only mounts attached to this server&apos;s node and egg are shown. Assignment makes the mount available to the server; it does not confirm a runtime mount.
       </div>
       {server.configSyncPending ? <div className="m-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100" role="status">Mount configuration is pending runtime synchronization{server.configSyncError ? `: ${server.configSyncError}` : "."}</div> : null}
       {syncNotice ? <div className="m-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-100" role="status">{syncNotice}</div> : null}
-      {isMountsError ? <div className="m-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200" role="alert">{errorText(mountsError, "Server mount assignments could not be loaded.")}</div> : null}
+      {isMountsError ? <div className="mx-4 mb-4 flex items-start justify-between gap-4 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-200" role="alert"><span>Could not load mount assignments: {errorText(mountsError, "Server mount assignments could not be loaded.")}</span><Btn size="sm" tone="ghost" onClick={() => void refetchMounts()}>Retry</Btn></div> : null}
       {actionError ? <div className="m-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200" role="alert">{errorText(actionError, "Mount assignment failed. The persisted change may be pending runtime synchronization.")}</div> : null}
       {eligibleMounts.length === 0 ? (
         <div className="p-6 text-sm text-slate-400">
@@ -730,7 +850,7 @@ function ServerMountsTab({ server, mounts }: { server: ApiServer; mounts: ApiMou
                   <td className="px-4 py-2 font-mono text-xs">{mount.source}</td>
                   <td className="px-4 py-2 font-mono text-xs">{mount.target}</td>
                   <td className="px-4 py-2">
-                    {assigned ? <Pill tone="green">Assigned</Pill> : <Pill tone="blue">Not assigned</Pill>}
+                    {assigned ? <Pill tone="green">Assigned</Pill> : <Pill tone="neutral">Not assigned</Pill>}
                   </td>
                   <td className="px-4 py-2 text-right">
                     {assigned ? (
@@ -751,12 +871,14 @@ function ServerMountsTab({ server, mounts }: { server: ApiServer; mounts: ApiMou
 
 function ServerManageTab({ server, reinstallMut, suspendMut, unsuspendMut, nodes, allocations }: { server: ApiServer; reinstallMut: { mutate: () => void; isPending: boolean }; suspendMut: { mutate: () => void; isPending: boolean }; unsuspendMut: { mutate: () => void; isPending: boolean }; nodes: ApiNode[]; allocations: ApiAllocation[] }) {
   const qc = useQueryClient();
+  const { toast } = useToast();
+  const [confirm, renderConfirm] = useConfirm();
   const transferQuery = useQuery({ queryKey: ["server-transfer", server.id], queryFn: () => fetchServerTransferStatus(server.id), retry: false, refetchInterval: server.transferring ? 5000 : false });
   const [targetNodeId, setTargetNodeId] = useState(server.transferTargetNodeId ?? "");
   const [primaryAllocationId, setPrimaryAllocationId] = useState("");
   const targetAllocations = allocations.filter((allocation) => allocation.node === targetNodeId && !allocation.server);
-  const transferMut = useMutation({ mutationFn: () => transferServer(server.id, targetNodeId), onSuccess: () => { void transferQuery.refetch(); void qc.invalidateQueries({ queryKey: ["server", server.id] }); } });
-  const cancelMut = useMutation({ mutationFn: () => cancelServerTransfer(server.id), onSuccess: () => { void transferQuery.refetch(); void qc.invalidateQueries({ queryKey: ["server", server.id] }); } });
+  const transferMut = useMutation({ mutationFn: () => transferServer(server.id, targetNodeId, primaryAllocationId || undefined), onSuccess: () => { void transferQuery.refetch(); void qc.invalidateQueries({ queryKey: ["server", server.id] }); }, onError: (error) => toast({ tone: "error", title: "Transfer failed", message: error instanceof Error ? error.message : "Could not transfer server" }) });
+  const cancelMut = useMutation({ mutationFn: () => cancelServerTransfer(server.id), onSuccess: () => { void transferQuery.refetch(); void qc.invalidateQueries({ queryKey: ["server", server.id] }); }, onError: (error) => toast({ tone: "error", title: "Cancel failed", message: error instanceof Error ? error.message : "Could not cancel transfer" }) });
   const transfer = transferQuery.data;
   return (
     <div className="grid gap-4 md:grid-cols-2">
@@ -764,7 +886,7 @@ function ServerManageTab({ server, reinstallMut, suspendMut, unsuspendMut, nodes
         <CardHeader title="Reinstall Server" icon={RefreshCw} />
         <div className="space-y-3 p-4">
           <p className="text-xs text-slate-400">Re-runs the egg install script. Container will be destroyed and recreated.</p>
-          <Btn tone="danger" onClick={() => { if (confirm("Reinstall this server?")) reinstallMut.mutate(); }} disabled={reinstallMut.isPending}>
+          <Btn tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Reinstall ${server.name ?? server.id.slice(0, 8)}?`, description: "The container will be destroyed and recreated, and the egg install script will re-run. This can overwrite server files.", danger: true, confirmLabel: "Reinstall" })) reinstallMut.mutate(); })(); }} disabled={reinstallMut.isPending}>
             {reinstallMut.isPending ? "Reinstalling…" : "Reinstall Server"}
           </Btn>
         </div>
@@ -790,21 +912,23 @@ function ServerManageTab({ server, reinstallMut, suspendMut, unsuspendMut, nodes
           {transfer?.error ? <p className="text-xs text-red-300">{transfer.error}</p> : null}
           <label className="block text-xs text-slate-400">Target node<select className="mt-1 h-9 w-full rounded border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100" value={targetNodeId} onChange={(event) => { setTargetNodeId(event.target.value); setPrimaryAllocationId(""); }}><option value="">Select…</option>{nodes.filter((node) => node.id !== server.nodeId && node.name !== server.node).map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}</select></label>
           <label className="block text-xs text-slate-400">Primary allocation<select className="mt-1 h-9 w-full rounded border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100" value={primaryAllocationId} onChange={(event) => setPrimaryAllocationId(event.target.value)}><option value="">Select…</option>{targetAllocations.map((allocation) => <option key={allocation.id} value={allocation.id}>{allocation.ip}:{allocation.port}</option>)}</select></label>
-          {transfer?.transferring ? <Btn tone="danger" disabled={cancelMut.isPending} onClick={() => { if (confirm("Cancel this transfer?")) cancelMut.mutate(); }}>Cancel Transfer</Btn> : <Btn disabled={!targetNodeId || !primaryAllocationId || transferMut.isPending} onClick={() => { if (confirm("Start this server transfer?")) transferMut.mutate(); }}>Start Transfer</Btn>}
+          {transfer?.transferring ? <Btn tone="danger" disabled={cancelMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: "Cancel this transfer?", description: "The in-progress server transfer will be aborted.", danger: true, confirmLabel: "Cancel Transfer" })) cancelMut.mutate(); })(); }}>Cancel Transfer</Btn> : <Btn disabled={!targetNodeId || !primaryAllocationId || transferMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: "Start this server transfer?", description: `The server will move to the selected node. Services may be interrupted.`, confirmLabel: "Start Transfer" })) transferMut.mutate(); })(); }}>Start Transfer</Btn>}
         </div>
       </Card>
+      {renderConfirm()}
     </div>
   );
 }
 
 function ServerDeleteTab({ deleteMut, forceDeleteMut, serverName }: { deleteMut: { mutate: () => void; isPending: boolean }; forceDeleteMut: { mutate: () => void; isPending: boolean }; serverName: string }) {
+  const [confirm, renderConfirm] = useConfirm();
   return (
     <div className="grid gap-4 md:grid-cols-2">
       <Card>
         <CardHeader title="Safely Delete" icon={Trash2} />
         <div className="space-y-3 p-4">
           <p className="text-xs text-slate-400">Removes the server record. Container and files are cleaned up by the daemon asynchronously.</p>
-          <Btn tone="danger" onClick={() => { if (confirm(`Safely delete ${serverName}?`)) deleteMut.mutate(); }} disabled={deleteMut.isPending}>
+          <Btn tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Safely delete ${serverName}?`, description: "The server record will be removed and the container cleaned up by the daemon. This cannot be undone.", danger: true, confirmLabel: "Safely Delete" })) deleteMut.mutate(); })(); }} disabled={deleteMut.isPending}>
             {deleteMut.isPending ? "Deleting…" : "Safely Delete"}
           </Btn>
         </div>
@@ -813,11 +937,12 @@ function ServerDeleteTab({ deleteMut, forceDeleteMut, serverName }: { deleteMut:
         <CardHeader title="Force Delete" icon={AlertTriangle} action={<Pill tone="red">Danger</Pill>} />
         <div className="space-y-3 p-4">
           <p className="text-xs text-red-400">Bypasses daemon cleanup. Files may be orphaned on the node.</p>
-          <Btn tone="danger" onClick={() => { if (confirm(`FORCE delete ${serverName}? Files may be orphaned.`)) forceDeleteMut.mutate(); }} disabled={forceDeleteMut.isPending}>
+          <Btn tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Force delete ${serverName}?`, description: "Daemon cleanup is bypassed. Files may be orphaned on the node. This cannot be undone.", danger: true, confirmLabel: "Force Delete" })) forceDeleteMut.mutate(); })(); }} disabled={forceDeleteMut.isPending}>
             {forceDeleteMut.isPending ? "Deleting…" : "Forcibly Delete"}
           </Btn>
         </div>
       </Card>
+      {renderConfirm()}
     </div>
   );
 }

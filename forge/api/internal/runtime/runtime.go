@@ -100,6 +100,8 @@ type ServerConfiguration struct {
 	Allocations map[string]any
 	Config      map[string]any
 	Mounts      []Mount
+	UID         int
+	GID         int
 }
 
 type PowerResponse struct {
@@ -170,4 +172,5 @@ type Runtime interface {
 }
 
 var ErrRuntimeUnavailable = errors.New("runtime unavailable")
-var ErrNotImplemented = errors.New("runtime operation not implemented")
+var ErrMigrationManagedByControlPlane = errors.New("migration is managed by the control-plane migration service")
+var ErrUnsupportedRuntimeOperation = errors.New("runtime operation is unsupported")

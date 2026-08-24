@@ -17,7 +17,7 @@ func loadBalancerError(c *fiber.Ctx, err error) error {
 	case errors.Is(err, loadbalancer.ErrNoHealthyTarget):
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error()})
 	default:
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return respondInternalError(c, err)
 	}
 }
 

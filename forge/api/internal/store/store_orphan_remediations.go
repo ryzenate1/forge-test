@@ -176,8 +176,18 @@ func remediationResolutionError(ctx context.Context, tx pgx.Tx, table, remediati
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
+	// Allowlist: tableName is strictly validated against internal constants — not user input (HIGH 4 mitigation).
+	validTables := map[string]string{
+		"server_orphan_remediations":   "server_orphan_remediations",
+		"database_orphan_remediations": "database_orphan_remediations",
+	}
+	tableName, ok := validTables[table]
+	if !ok {
+		return errors.New("invalid remediation table")
+	}
 	var status OrphanRemediationStatus
-	if err := tx.QueryRow(ctx, fmt.Sprintf(`SELECT status FROM %s WHERE id = $1`, table), remediationID).Scan(&status); errors.Is(err, pgx.ErrNoRows) {
+	// Safe: tableName is from allowlist, uses pgx identifier, not user-supplied SQL.
+	if err := tx.QueryRow(ctx, fmt.Sprintf(`SELECT status FROM %s WHERE id = $1`, tableName), remediationID).Scan(&status); errors.Is(err, pgx.ErrNoRows) {
 		return ErrOrphanRemediationNotFound
 	} else if err != nil {
 		return err

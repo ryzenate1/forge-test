@@ -1,21 +1,25 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Activity, AlertCircle, ChevronRight, Cpu, Database, Eye, EyeOff, Globe, KeyRound, Lock, Mail,
-  Network, Plus, Search, Settings as SettingsIcon, Shield, Trash2, Unlock, Wrench,
+  Activity, AlertCircle, AlertTriangle, ChevronRight, Cpu, Database, Eye, EyeOff, Globe, History, Layers, GitCompare, KeyRound, Lock, Mail,
+  Network, Plus, Search, Settings as SettingsIcon, Shield, Trash2, Unlock, Wrench, Zap,
 } from "lucide-react";
 import {
   fetchNodes, createNode, deleteNode, fetchServers, fetchLocations, fetchRegions, fetchNode, updateNode, rotateNodeToken,
   fetchNodeAllocations, fetchNodeServers, fetchNodeLifecycle,
-  fetchNodeSystemInformation, setAllocationAlias, deleteAllocationsBulk, getBeaconPanelURL,
+  fetchNodeSystemInformation, setAllocationAlias, deleteAllocationsBulk, getBeaconAPIURL,
   type ApiNode, type ApiAllocation, type ApiLocation, type ApiRegion, type ApiServer,
+  type CreateNodeInput, type UpdateNodeInput,
 } from "@/lib/api";
+import { fetchCapability, fetchCapabilityDelta, fetchCapabilityHistory, probeCapabilities } from "@/lib/api/capabilities";
 import { useToast } from "@/components/ui/toast";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, SectionHeader, Textarea, cn } from "./admin-ui";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { copySecret } from "@/lib/clipboard";
+import { AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, SectionHeader, Textarea, cn, Pill, AdminLoadingState, AdminErrorState } from "./admin-ui";
 
-type Tab = "about" | "settings" | "configuration" | "allocation" | "servers";
+type Tab = "about" | "settings" | "configuration" | "allocation" | "servers" | "capabilities";
 
 const ADMIN_TABS: Array<{ id: Tab; label: string }> = [
   { id: "about", label: "About" },
@@ -23,6 +27,7 @@ const ADMIN_TABS: Array<{ id: Tab; label: string }> = [
   { id: "configuration", label: "Configuration" },
   { id: "allocation", label: "Allocation" },
   { id: "servers", label: "Servers" },
+  { id: "capabilities", label: "Capabilities" },
 ];
 
 function validateNodeForm(name: string, locationId: string, fqdn: string, scheme: string, memoryMb: string, diskMb: string, daemonListen: string, daemonSftp: string): string | null {
@@ -44,18 +49,20 @@ function validateNodeForm(name: string, locationId: string, fqdn: string, scheme
 
 export function AdminNodes() {
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
-  const nodes = nodesQuery.data ?? [];
+  const nodes = useMemo(() => Array.isArray(nodesQuery.data) ? nodesQuery.data : [], [nodesQuery.data]);
   const locationsQuery = useQuery({ queryKey: ["locations"], queryFn: fetchLocations });
-  const locations = locationsQuery.data ?? [];
-  const { data: regions = [] } = useQuery({ queryKey: ["regions"], queryFn: fetchRegions });
+  const locations = useMemo(() => Array.isArray(locationsQuery.data) ? locationsQuery.data : [], [locationsQuery.data]);
+  const regionsQuery = useQuery({ queryKey: ["regions"], queryFn: fetchRegions });
+  const regions = useMemo(() => Array.isArray(regionsQuery.data) ? regionsQuery.data : [], [regionsQuery.data]);
   const serversQuery = useQuery({ queryKey: ["servers"], queryFn: fetchServers });
-  const servers = serversQuery.data ?? [];
+  const servers = useMemo(() => Array.isArray(serversQuery.data) ? serversQuery.data : [], [serversQuery.data]);
   const [search, setSearch] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
 
-  const filtered = nodes.filter((n) =>
-    !search || n.name.toLowerCase().includes(search.toLowerCase())
+  const filtered = useMemo(() =>
+    nodes.filter((n) => !search || n.name.toLowerCase().includes(search.toLowerCase())),
+    [nodes, search],
   );
 
   return (
@@ -205,18 +212,25 @@ function NodeRow({ node, locations, regions, onClick, serverCount }: {
   );
 }
 
-function NodeDetailView({ nodeId, onClose }: { nodeId: string; onClose: () => void }) {
+export function NodeDetailView({ nodeId, onClose }: { nodeId: string; onClose: () => void }) {
   const nodeQuery = useQuery({ queryKey: ["node", nodeId], queryFn: () => fetchNode(nodeId) });
   const { data: node, isLoading } = nodeQuery;
-  const { data: allocations = [] } = useQuery({ queryKey: ["node-allocations", nodeId], queryFn: () => fetchNodeAllocations(nodeId) });
+  const allocQuery = useQuery({ queryKey: ["node-allocations", nodeId], queryFn: () => fetchNodeAllocations(nodeId) });
+  const allocations = useMemo(() => Array.isArray(allocQuery.data) ? allocQuery.data : [], [allocQuery.data]);
   const [tab, setTab] = useState<Tab>("about");
   const qc = useQueryClient();
   const { toast } = useToast();
+  const [confirm, renderConfirm] = useConfirm();
   const deleteMut = useMutation({
     mutationFn: () => deleteNode(nodeId),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["nodes"] }); onClose(); },
     onError: (e: Error) => toast({ tone: "error", title: "Failed to delete node", message: e.message }),
   });
+  const requestDelete = () => {
+    void (async () => {
+      if (await confirm({ title: `Delete ${node?.name ?? "this node"}?`, description: "This is only allowed after its servers and allocations are removed. This action cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteMut.mutate();
+    })();
+  };
 
   if (isLoading) {
     return <Modal title="Node" onClose={onClose}><div className="p-8 text-center text-sm text-slate-500">Loading…</div></Modal>;
@@ -237,30 +251,16 @@ function NodeDetailView({ nodeId, onClose }: { nodeId: string; onClose: () => vo
   return (
     <Modal title={node.name} onClose={onClose} wide>
       <div className="space-y-6">
-        <div className="flex justify-end"><Btn tone="danger" size="sm" type="button" disabled={deleteMut.isPending} onClick={() => { if (confirm(`Delete ${node.name}? This is only allowed after its servers and allocations are removed.`)) deleteMut.mutate(); }}><Trash2 size={14} /> {deleteMut.isPending ? "Deleting…" : "Delete Node"}</Btn></div>
-        <div className="flex gap-1 border-b border-white/[0.06]" role="tablist" aria-label="Node sections">
-          {ADMIN_TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              aria-selected={tab === t.id}
-              className={cn(
-                "px-3 py-2 text-sm font-medium transition",
-                tab === t.id ? "border-b-2 border-[#dc2626] text-[#dc2626]" : "text-slate-400 hover:text-slate-200"
-              )}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <div className="flex justify-end"><Btn tone="danger" size="sm" type="button" disabled={deleteMut.isPending} onClick={requestDelete}><Trash2 size={14} /> {deleteMut.isPending ? "Deleting…" : "Delete Node"}</Btn></div>
+        <AdminTabs tabs={ADMIN_TABS} active={tab} onChange={(id) => setTab(id as Tab)} label="Node sections" />
         {tab === "about" && <NodeAboutTab nodeId={nodeId} />}
         {tab === "settings" && <NodeSettingsTab node={node} />}
         {tab === "configuration" && <NodeConfigurationTab node={node} />}
         {tab === "allocation" && <NodeAllocationTab node={node} allocations={allocations} />}
         {tab === "servers" && <NodeServersTab nodeId={nodeId} />}
+        {tab === "capabilities" && <NodeCapabilitiesTab nodeId={nodeId} />}
       </div>
+      {renderConfirm()}
     </Modal>
   );
 }
@@ -281,7 +281,7 @@ function NodeAboutTab({ nodeId }: { nodeId: string }) {
     queryKey: ["node-servers", nodeId],
     queryFn: () => fetchNodeServers(nodeId),
   });
-  const filteredServers = serversQuery.data ?? [];
+  const filteredServers = useMemo(() => Array.isArray(serversQuery.data) ? serversQuery.data : [], [serversQuery.data]);
 
   return (
     <div className="grid gap-4 lg:grid-cols-3">
@@ -318,6 +318,70 @@ function NodeAboutTab({ nodeId }: { nodeId: string }) {
             <li className="flex justify-between px-4 py-3 text-sm">
               <span className="text-slate-400">FQDN</span>
               <span className="font-mono text-slate-200">{node?.fqdn ?? "—"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Runtime / scheduler</span>
+              <span className="text-right font-mono text-slate-200">{node?.runtimeProvider ?? node?.schedulerType ?? "Docker"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Beacon version</span>
+              <span className="text-right font-mono text-slate-200">{sys?.version ?? node?.version ?? "Not reported"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Last seen</span>
+              <span className="text-right font-mono text-slate-200">{node?.lastSeenAt ? new Date(node.lastSeenAt).toLocaleString() : "Not reported"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Labels</span>
+              <span className="max-w-[60%] text-right font-mono text-xs text-slate-200">{node?.labels?.length ? node.labels.map((label) => `${label.key}=${label.value}`).join(", ") : "None"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Desired state</span>
+              <span className="text-right font-mono text-slate-200 capitalize">{node?.desiredState ?? node?.draining ? "draining" : node?.maintenanceMode ? "maintenance" : "active"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Daemon ports</span>
+              <span className="text-right font-mono text-slate-200">{node?.daemonListen ?? "9090"} / {node?.daemonSftp ?? "2022"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Behind proxy</span>
+              <span className="text-right font-mono text-slate-200">{node?.behindProxy ? "Yes" : "No"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Public</span>
+              <span className="text-right font-mono text-slate-200">{node?.public ?? node?.isPublic ? "Yes" : "No"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Public hostname</span>
+              <span className="text-right font-mono text-slate-200">{node?.publicHostname || "—"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Display name</span>
+              <span className="text-right font-mono text-slate-200">{node?.displayName || "—"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Scheduler</span>
+              <span className="text-right font-mono text-slate-200 capitalize">{node?.schedulerType ?? "docker"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Upload limit</span>
+              <span className="text-right font-mono text-slate-200">{node?.uploadSizeMb ? `${node.uploadSizeMb} MiB` : "Default"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Memory overallocation</span>
+              <span className="text-right font-mono text-slate-200">{node?.memoryOverallocate != null ? `${node.memoryOverallocate}%` : "0%"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Disk overallocation</span>
+              <span className="text-right font-mono text-slate-200">{node?.diskOverallocate != null ? `${node.diskOverallocate}%` : "0%"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">CPU overallocation</span>
+              <span className="text-right font-mono text-slate-200">{node?.cpuOverallocate != null ? `${node.cpuOverallocate}%` : "0%"}</span>
+            </li>
+            <li className="flex justify-between gap-4 px-4 py-3 text-sm">
+              <span className="text-slate-400">Tags</span>
+              <span className="text-right font-mono text-xs text-slate-200">{node?.tags?.length ? node.tags.join(", ") : "None"}</span>
             </li>
           </ul>
         </Card>
@@ -364,24 +428,19 @@ function NodeAboutTab({ nodeId }: { nodeId: string }) {
         )}
       </div>
       <div className="space-y-3">
-        <SmallBox color="orange" label="Maintenance" value={node?.maintenanceMode ? "ENABLED" : "Normal"} />
-        <SmallBox color="blue" label="Total Servers" value={String(filteredServers.length)} />
-        <SmallBox color="purple" label="Memory Limit" value={`${node?.memoryMb ?? 0} MiB`} />
-        <SmallBox color="emerald" label="Disk Limit" value={`${node?.diskMb ?? 0} MiB`} />
+        <SmallBox tone={node?.maintenanceMode ? "warning" : "neutral"} label="Maintenance" value={node?.maintenanceMode ? "Enabled" : "Normal"} />
+        <SmallBox tone="neutral" label="Total Servers" value={String(filteredServers.length)} />
+        <SmallBox tone="neutral" label="Memory Limit" value={`${node?.memoryMb ?? 0} MiB`} />
+        <SmallBox tone="neutral" label="Disk Limit" value={`${node?.diskMb ?? 0} MiB`} />
       </div>
     </div>
   );
 }
 
-function SmallBox({ color, label, value }: { color: "orange" | "blue" | "purple" | "emerald"; label: string; value: string }) {
-  const map: Record<string, string> = {
-    orange: "bg-orange-500/10 text-orange-400 border-orange-500/30",
-    blue: "bg-sky-500/10 text-sky-400 border-sky-500/30",
-    purple: "bg-purple-500/10 text-purple-400 border-purple-500/30",
-    emerald: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
-  };
+function SmallBox({ tone, label, value }: { tone: "neutral" | "warning"; label: string; value: string }) {
+  const map: Record<string, string> = { neutral: "border-white/[0.08] bg-white/[0.02] text-slate-100", warning: "border-amber-500/30 bg-amber-500/[0.08] text-amber-100" };
   return (
-    <div className={cn("rounded-lg border p-4", map[color])}>
+    <div className={cn("rounded-xl border p-4", map[tone])}>
       <div className="text-[10px] font-bold uppercase tracking-widest opacity-70">{label}</div>
       <div className="mt-1 text-lg font-bold">{value}</div>
     </div>
@@ -391,7 +450,7 @@ function SmallBox({ color, label, value }: { color: "orange" | "blue" | "purple"
 function NodeSettingsTab({ node }: { node: ApiNode }) {
   const qc = useQueryClient();
   const locationsQuery = useQuery({ queryKey: ["locations"], queryFn: fetchLocations });
-  const locations = locationsQuery.data ?? [];
+  const locations = useMemo(() => Array.isArray(locationsQuery.data) ? locationsQuery.data : [], [locationsQuery.data]);
   const [name, setName] = useState(node.name);
   const [description, setDescription] = useState(node.description ?? "");
   const [locationId, setLocationId] = useState(node.locationId ?? "");
@@ -400,10 +459,24 @@ function NodeSettingsTab({ node }: { node: ApiNode }) {
   const [behindProxy, setBehindProxy] = useState(node.behindProxy ?? false);
   const [desiredState, setDesiredState] = useState(node.desiredState ?? (node.draining ? "draining" : node.maintenanceMode ? "maintenance" : "active"));
   const [rotatedToken, setRotatedToken] = useState<string | null>(null);
+  const [credentialCopied, setCredentialCopied] = useState(false);
+  const [credentialMasked, setCredentialMasked] = useState(false);
+  const [confirm, renderConfirm] = useConfirm();
+  useEffect(() => {
+    const hide = () => setCredentialMasked(true);
+    const onVisibilityChange = () => { if (document.visibilityState === "hidden") hide(); };
+    window.addEventListener("blur", hide);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("blur", hide);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
   const [memoryMb, setMemoryMb] = useState(String(node.memoryMb));
   const [diskMb, setDiskMb] = useState(String(node.diskMb));
   const [daemonListen, setDaemonListen] = useState(String(node.daemonListen ?? 9090));
   const [daemonSftp, setDaemonSftp] = useState(String(node.daemonSftp ?? 2022));
+  const [schedulerType, setSchedulerType] = useState(node.schedulerType ?? "docker");
   const { toast } = useToast();
   const saveMut = useMutation({
     mutationFn: () => {
@@ -424,7 +497,8 @@ function NodeSettingsTab({ node }: { node: ApiNode }) {
       daemonBase: node.daemonBase,
       daemonListen: Number(daemonListen),
       daemonSftp: Number(daemonSftp),
-      });
+      schedulerType,
+      } as UpdateNodeInput);
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["node", node.id] });
@@ -482,10 +556,18 @@ function NodeSettingsTab({ node }: { node: ApiNode }) {
           </label>
           <label className="block text-sm">
             <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">Lifecycle state</span>
-            <select className="h-10 w-full rounded-lg border border-white/10 bg-[#141824] px-3 text-slate-100" value={desiredState} onChange={(e) => setDesiredState(e.target.value)}>
+            <select className="h-10 w-full rounded-lg border border-white/10 bg-[#141824] px-3 text-slate-100" value={desiredState} onChange={(e) => setDesiredState(e.target.value as "active" | "draining" | "maintenance")}>
               <option value="active">Active — eligible when healthy</option>
               <option value="draining">Draining — exclude from placement</option>
               <option value="maintenance">Maintenance — exclude from placement</option>
+            </select>
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">Scheduler Backend</span>
+            <select className="h-10 w-full rounded-lg border border-white/10 bg-[#141824] px-3 text-slate-100" value={schedulerType} onChange={(e) => setSchedulerType(e.target.value)}>
+              <option value="docker">Docker (default)</option>
+              <option value="k3s">K3s (Kubernetes)</option>
+              <option value="nomad">Nomad (HashiCorp)</option>
             </select>
           </label>
 
@@ -507,7 +589,7 @@ function NodeSettingsTab({ node }: { node: ApiNode }) {
           </div>
         </Card>
         <div className="flex justify-between">
-          <Btn tone="ghost" onClick={() => { if (confirm("Rotate the node token? The current daemon credential will stop working.")) rotateMut.mutate(); }} type="button">
+          <Btn tone="ghost" onClick={() => { void (async () => { if (await confirm({ title: "Rotate node token?", description: "The current daemon credential will stop working immediately. This action cannot be undone.", danger: true, confirmLabel: "Rotate" })) rotateMut.mutate(); })(); }} type="button">
             <KeyRound size={14} /> Rotate Token
           </Btn>
           <Btn tone="primary" type="submit" disabled={saveMut.isPending || !locationId || locationsQuery.isPending || locationsQuery.isError}>
@@ -515,13 +597,14 @@ function NodeSettingsTab({ node }: { node: ApiNode }) {
           </Btn>
         </div>
       </div>
-      {rotatedToken ? <div className="md:col-span-2 rounded-lg border border-amber-500/30 bg-amber-950/20 p-4"><p className="text-sm font-semibold text-amber-200">New complete credential — shown once</p><pre className="mt-2 overflow-auto rounded bg-black/30 p-3 text-xs text-emerald-300">{rotatedToken}</pre><div className="mt-3 flex gap-2"><Btn size="sm" tone="ghost" type="button" onClick={() => { void navigator.clipboard?.writeText(rotatedToken); toast({ tone: "success", title: "Credential copied" }); }}>Copy credential</Btn><Btn size="sm" tone="ghost" type="button" onClick={() => setRotatedToken(null)}>I stored it</Btn></div></div> : null}
+      {rotatedToken ? <div className="md:col-span-2 rounded-lg border border-amber-500/30 bg-amber-950/20 p-4"><p className="text-sm font-semibold text-amber-200">New complete credential — shown once</p><pre className="mt-2 overflow-auto rounded bg-black/30 p-3 text-xs text-emerald-300">{credentialMasked ? "••••••••••••••••••••••••" : rotatedToken}</pre><div className="mt-3 flex gap-2"><Btn size="sm" tone="ghost" type="button" onClick={() => setCredentialMasked((masked) => !masked)}>{credentialMasked ? <><Eye size={14} /> Reveal credential</> : <><EyeOff size={14} /> Hide credential</>}</Btn><Btn size="sm" tone="ghost" type="button" onClick={async () => { if (await copySecret(rotatedToken)) { setCredentialCopied(true); setTimeout(() => setCredentialCopied(false), 2000); } }}>{credentialCopied ? "Credential copied" : "Copy credential"}</Btn><Btn size="sm" tone="ghost" type="button" onClick={() => setRotatedToken(null)}>I stored it</Btn></div><p className="mt-2 text-xs text-amber-200/70">Copied credentials are wiped from the clipboard 15s after copying and when this window loses focus.</p></div> : null}
+      {renderConfirm()}
     </form>
   );
 }
 
 function NodeConfigurationTab({ node }: { node: ApiNode }) {
-  const panelURL = getBeaconPanelURL();
+  const panelURL = getBeaconAPIURL();
   return (
     <div className="space-y-4">
       <Card>
@@ -549,11 +632,16 @@ DAEMON_ALLOW_INSECURE_NO_AUTH=false
 function NodeAllocationTab({ node, allocations }: { node: ApiNode; allocations: ApiAllocation[] }) {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const [confirm, renderConfirm] = useConfirm();
   const [filter, setFilter] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [aliases, setAliases] = useState<Record<string, string>>({});
 
-  const filtered = allocations.filter((a) => !filter || a.ip.includes(filter) || a.port.toString().includes(filter));
+  const safeAllocations = useMemo(() => Array.isArray(allocations) ? allocations : [], [allocations]);
+  const filtered = useMemo(() =>
+    safeAllocations.filter((a) => !filter || a.ip.includes(filter) || a.port.toString().includes(filter)),
+    [safeAllocations, filter],
+  );
   const deletable = filtered.filter((allocation) => !allocation.server);
   const toggle = (id: string) => {
     const next = new Set(selected);
@@ -597,7 +685,7 @@ function NodeAllocationTab({ node, allocations }: { node: ApiNode; allocations: 
       <div className="flex items-center gap-3">
         <Input placeholder="Filter IP or port" value={filter} onChange={setFilter} />
         {selected.size > 0 && (
-          <Btn tone="danger" disabled={deleteBulkMut.isPending} onClick={() => { if (confirm(`Delete ${selected.size} allocation(s)?`)) deleteBulkMut.mutate(); }}>
+          <Btn tone="danger" disabled={deleteBulkMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: `Delete ${selected.size} allocation${selected.size === 1 ? "" : "s"}?`, description: "Free allocations only — allocations attached to a server are excluded. This action cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteBulkMut.mutate(); })(); }}>
             <Trash2 size={14} /> {deleteBulkMut.isPending ? "Deleting…" : `Delete ${selected.size}`}
           </Btn>
         )}
@@ -641,6 +729,7 @@ function NodeAllocationTab({ node, allocations }: { node: ApiNode; allocations: 
           </tbody>
         </table>
       </Card>
+      {renderConfirm()}
     </div>
   );
 }
@@ -650,7 +739,7 @@ function NodeServersTab({ nodeId }: { nodeId: string }) {
     queryKey: ["node-servers-list", nodeId],
     queryFn: () => fetchNodeServers(nodeId),
   });
-  const filtered = serversQuery.data ?? [];
+  const filtered = useMemo(() => Array.isArray(serversQuery.data) ? serversQuery.data : [], [serversQuery.data]);
   return (
     <Card>
       <CardHeader title={`Servers (${filtered.length})`} icon={Database} />
@@ -687,6 +776,169 @@ function NodeServersTab({ nodeId }: { nodeId: string }) {
   );
 }
 
+function NodeCapabilitiesTab({ nodeId }: { nodeId: string }) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const capQ = useQuery({
+    queryKey: ["node-capability", nodeId],
+    queryFn: () => fetchCapability(nodeId),
+    retry: false,
+  });
+  const histQ = useQuery({
+    queryKey: ["node-capability-history", nodeId],
+    queryFn: () => fetchCapabilityHistory(nodeId, 10),
+    retry: false,
+  });
+  const deltaQ = useQuery({
+    queryKey: ["node-capability-delta", nodeId],
+    queryFn: () => fetchCapabilityDelta(nodeId),
+    retry: false,
+  });
+  const probeMut = useMutation({
+    mutationFn: () => probeCapabilities(nodeId),
+    onSuccess: (data) => {
+      if (!data.online) toast({ tone: "error", title: "Node offline", message: (data as { error?: string }).error ?? "beacon unreachable" });
+      else toast({ tone: "success", title: "Probe succeeded", message: `Capabilities refreshed @ ${new Date().toLocaleTimeString()}` });
+      void qc.invalidateQueries({ queryKey: ["node-capability"] });
+      void qc.invalidateQueries({ queryKey: ["node-capability-history"] });
+      void qc.invalidateQueries({ queryKey: ["node-capability-delta"] });
+      void qc.invalidateQueries({ queryKey: ["admin-capabilities-global"] });
+      void deltaQ.refetch();
+      void histQ.refetch();
+      void capQ.refetch();
+    },
+    onError: (e: Error) => toast({ tone: "error", title: "Probe failed", message: e.message }),
+  });
+  const d = deltaQ.data;
+  const hasDrift = d ? d.added.length > 0 || d.removed.length > 0 || d.changed.length > 0 : false;
+
+  return (
+    <div className="space-y-4">
+      {/* Amber drift banner — visible when delta shows drift */}
+      {hasDrift ? (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200" role="alert">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-400" />
+          <span>Capability drift detected — {d!.added.length} added · {d!.removed.length} removed · {d!.changed.length} changed since last snapshot. Use Probe to refresh or compare the two newest history rows.</span>
+        </div>
+      ) : null}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-[var(--text-subtle)]">GET /capabilities/:nodeId · history · delta · probe — per-node view of the global capabilities inventory.</p>
+        <Btn size="sm" tone="primary" loading={probeMut.isPending} onClick={() => probeMut.mutate()}>
+          <Zap size={12} /> Probe live
+        </Btn>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card className="border border-[var(--line)] bg-[var(--surface)]">
+          <CardHeader title="Current snapshot — GET /capabilities/:nodeId" icon={Layers} action={<Btn size="sm" tone="ghost" onClick={() => void capQ.refetch()}>Reload</Btn>} />
+          {capQ.isLoading ? (
+            <div className="p-4"><AdminLoadingState label="Loading capability…" /></div>
+          ) : capQ.isError ? (
+            <div className="p-4"><AdminErrorState message={(capQ.error as Error).message} retry={() => void capQ.refetch()} /></div>
+          ) : capQ.data ? (
+            <div className="space-y-3 p-4">
+              <div className="grid gap-2 text-xs">
+                <div className="flex justify-between"><span className="text-[var(--text-subtle)]">Beacon</span><span className="font-mono text-[var(--text)]">{capQ.data.beaconVersion || "—"}</span></div>
+                <div className="flex justify-between"><span className="text-[var(--text-subtle)]">OS / Arch</span><span className="font-mono text-[var(--text)]">{capQ.data.os} / {capQ.data.architecture}</span></div>
+                <div className="flex justify-between"><span className="text-[var(--text-subtle)]">CPU / Memory</span><span className="font-mono text-[var(--text)]">{capQ.data.cpuThreads} threads · {capQ.data.memoryMb} MiB</span></div>
+                <div className="flex justify-between"><span className="text-[var(--text-subtle)]">Runtime</span><span className={capQ.data.runtimeAvailable ? "font-mono text-emerald-300" : "font-mono text-red-300"}>{capQ.data.runtimeAvailable ? capQ.data.runtimeStatus || "available" : "unavailable"}</span></div>
+                <div className="flex justify-between"><span className="text-[var(--text-subtle)]">Fetched</span><span className="font-mono text-[var(--text)]">{capQ.data.fetchedAt ? new Date(capQ.data.fetchedAt).toLocaleString() : "—"}</span></div>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                <Pill tone={capQ.data.dockerBuildEnabled ? "green" : "neutral"}>dockerBuild</Pill>
+                <Pill tone={capQ.data.nixpacksEnabled ? "green" : "neutral"}>nixpacks</Pill>
+                <Pill tone={capQ.data.composeEnabled ? "blue" : "neutral"}>compose</Pill>
+                <Pill tone={capQ.data.localBackups ? "green" : "neutral"}>localBackups</Pill>
+                <Pill tone={capQ.data.s3Backups ? "blue" : "neutral"}>s3Backups</Pill>
+                <Pill tone={capQ.data.transferEnabled ? "green" : "neutral"}>transfer</Pill>
+                <Pill tone={capQ.data.sftpEnabled ? "blue" : "neutral"}>sftp</Pill>
+                <Pill tone={capQ.data.webSocketEnabled ? "blue" : "neutral"}>websocket</Pill>
+                <Pill tone={capQ.data.consoleEnabled ? "blue" : "neutral"}>console</Pill>
+                <Pill tone={capQ.data.databaseProvisioningEnabled ? "green" : "neutral"}>dbProvisioning</Pill>
+              </div>
+              <pre className="max-h-40 overflow-auto rounded bg-black/20 p-2 font-mono text-[11px] leading-5 text-[var(--text-subtle)]">{JSON.stringify(capQ.data.rawReport ?? capQ.data, null, 2)}</pre>
+            </div>
+          ) : (
+            <div className="p-4 text-sm text-[var(--text-subtle)]">No capability snapshot yet — probe the node or wait for heartbeat.</div>
+          )}
+        </Card>
+
+        <Card className="border border-[var(--line)] bg-[var(--surface)]">
+          <CardHeader title="Delta — GET /capabilities/:nodeId/delta" icon={GitCompare} action={<Btn size="sm" tone="ghost" onClick={() => void deltaQ.refetch()}>Recompute</Btn>} />
+          {deltaQ.isLoading ? (
+            <div className="p-4"><AdminLoadingState label="Computing delta…" /></div>
+          ) : deltaQ.isError ? (
+            <div className="p-4"><AdminErrorState message={(deltaQ.error as Error).message} retry={() => void deltaQ.refetch()} /></div>
+          ) : d ? (
+            <div className="space-y-3 p-4">
+              <div className="flex flex-wrap gap-2 text-xs">
+                <Pill tone="green">+ {d.added.length} added</Pill>
+                <Pill tone="red">− {d.removed.length} removed</Pill>
+                <Pill tone="yellow">~ {d.changed.length} changed</Pill>
+                <Pill tone="neutral">= {d.unchanged.length} unchanged</Pill>
+                <span className="ml-auto font-mono text-[11px] text-[var(--text-subtle)]">fetchedAt {d.fetchedAt ? new Date(d.fetchedAt).toLocaleString() : "—"}</span>
+              </div>
+              {!hasDrift ? <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-200">No drift — capability snapshot is stable.</div> : null}
+              <div className="grid gap-2">
+                <DeltaSection title="Added" items={d.added} tone="green" />
+                <DeltaSection title="Removed" items={d.removed} tone="red" />
+                <DeltaSection title="Changed" items={d.changed} tone="yellow" />
+                <DeltaSection title="Unchanged" items={d.unchanged} tone="neutral" />
+              </div>
+              <p className="text-xs leading-5 text-[var(--text-subtle)]">
+                Drift is derived from <code className="font-mono text-[11px]">node_capability_history</code> (newest 2 rows). When only one snapshot exists the delta reports everything as <code className="font-mono">added</code> — the honest “no baseline” signal.
+              </p>
+            </div>
+          ) : (
+            <div className="p-4 text-sm text-[var(--text-subtle)]">No delta yet — probe or wait for a second snapshot.</div>
+          )}
+        </Card>
+      </div>
+
+      <Card className="border border-[var(--line)] bg-[var(--surface)]">
+        <CardHeader title="History — GET /capabilities/:nodeId/history" icon={History} action={<Btn size="sm" tone="ghost" onClick={() => void histQ.refetch()}>Reload</Btn>} />
+        {histQ.isLoading ? (
+          <div className="p-4 text-xs text-[var(--text-subtle)]">Loading history…</div>
+        ) : histQ.isError ? (
+          <div className="p-4"><AdminErrorState message={(histQ.error as Error).message} retry={() => void histQ.refetch()} /></div>
+        ) : (histQ.data?.length ?? 0) === 0 ? (
+          <div className="p-4 text-sm text-[var(--text-subtle)]">No history — probe or wait for heartbeat to generate snapshots.</div>
+        ) : (
+          <ol className="space-y-2 p-4">
+            {(histQ.data ?? []).map((h) => (
+              <li key={h.id} className="rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] px-3 py-2">
+                <div className="flex items-center gap-2 font-mono text-xs">
+                  <span className="font-medium text-[var(--text)]">{new Date(h.observedAt).toLocaleString()}</span>
+                  <span className="text-[var(--text-subtle)]">· {h.beaconVersion}</span>
+                </div>
+                <pre className="mt-1 overflow-auto text-[11px] leading-5 text-[var(--text-subtle)]">{JSON.stringify(h.capabilities, null, 2)?.slice(0, 600)}</pre>
+              </li>
+            ))}
+          </ol>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function DeltaSection({ title, items, tone }: { title: string; items: unknown[]; tone: "green" | "red" | "yellow" | "neutral" }) {
+  const map: Record<string, string> = { green: "border-emerald-500/20 bg-emerald-500/10", red: "border-red-500/20 bg-red-500/10", yellow: "border-amber-500/20 bg-amber-500/10", neutral: "border-[var(--line)] bg-[var(--surface-raised)]" };
+  return (
+    <div className={`rounded-xl border p-3 ${map[tone]}`}>
+      <div className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-subtle)]">{title} · {items.length}</div>
+      {items.length === 0 ? <div className="mt-2 text-xs text-[var(--text-subtle)]">—</div> : (
+        <ul className="mt-2 space-y-1">
+          {items.map((it, i) => (
+            <li key={i} className="rounded border border-white/[0.06] bg-black/20 px-2 py-1 font-mono text-[11px] leading-5 text-[var(--text-subtle)]">
+              {JSON.stringify(it, null, 2).slice(0, 400)}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function CreateNodeModal({ open, onClose, locations, locationsError, onRetryLocations }: {
   open: boolean;
   onClose: () => void;
@@ -695,44 +947,136 @@ function CreateNodeModal({ open, onClose, locations, locationsError, onRetryLoca
   onRetryLocations: () => void;
 }) {
   const qc = useQueryClient();
+
+  // — Basic Details
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [locationId, setLocationId] = useState("");
+  const [publicNode, setPublicNode] = useState(true);
+
+  // — Network
   const [fqdn, setFqdn] = useState("");
   const [scheme, setScheme] = useState("https");
   const [behindProxy, setBehindProxy] = useState(false);
+  const [publicHostname, setPublicHostname] = useState("");
+  const [allowedIps, setAllowedIps] = useState("");
+  const [networkInterface, setNetworkInterface] = useState("");
+
+  // — Resource Limits
   const [memoryMb, setMemoryMb] = useState("0");
   const [diskMb, setDiskMb] = useState("0");
+  const [memoryOverallocate, setMemoryOverallocate] = useState("0");
+  const [diskOverallocate, setDiskOverallocate] = useState("0");
+  const [cpuOverallocate, setCpuOverallocate] = useState("0");
+  const [uploadSizeMb, setUploadSizeMb] = useState("100");
+  const [reservedMemoryMb, setReservedMemoryMb] = useState("0");
+  const [reservedDiskMb, setReservedDiskMb] = useState("0");
+
+  // — Daemon
   const [daemonBase, setDaemonBase] = useState("/var/lib/beacon/servers");
   const [daemonListen, setDaemonListen] = useState("9090");
   const [daemonSftp, setDaemonSftp] = useState("2022");
+  const [daemonSftpAlias, setDaemonSftpAlias] = useState("");
+  const [daemonConnect, setDaemonConnect] = useState("8080");
+
+  // — Allocation
+  const [defaultAllocationIp, setDefaultAllocationIp] = useState("0.0.0.0");
+  const [allocationPortMin, setAllocationPortMin] = useState("25565");
+  const [allocationPortMax, setAllocationPortMax] = useState("26565");
+  const [autoAllocate, setAutoAllocate] = useState(false);
+
+  // — Scheduler
+  const [schedulerType, setSchedulerType] = useState("docker");
+
+  // — Monitoring
+  const [enableHealthChecks, setEnableHealthChecks] = useState(true);
+  const [enableMetrics, setEnableMetrics] = useState(true);
+  const [prometheusEndpoint, setPrometheusEndpoint] = useState("");
+  const [alertThresholdCpu, setAlertThresholdCpu] = useState("90");
+  const [alertThresholdMemory, setAlertThresholdMemory] = useState("90");
+  const [alertThresholdDisk, setAlertThresholdDisk] = useState("90");
+
+  // — Maintenance
+  const [maintenanceMode, setMaintenanceMode] = useState(false);
+  const [maintenanceMessage, setMaintenanceMessage] = useState("");
+  const [drainBeforeMaintenance, setDrainBeforeMaintenance] = useState(false);
+
+  // — Security
+  const [tokenRotationPolicy, setTokenRotationPolicy] = useState("manual");
+  const [tlsSetting, setTlsSetting] = useState("auto");
+  const [tags, setTags] = useState("");
+
   const [onboarding, setOnboarding] = useState<{ id: string; token: string } | null>(null);
   const [copied, setCopied] = useState(false);
-
+  const [credentialMasked, setCredentialMasked] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-  const panelURL = getBeaconPanelURL();
+  const panelURL = getBeaconAPIURL();
+
+  useEffect(() => {
+    const hide = () => setCredentialMasked(true);
+    const onVisibilityChange = () => { if (document.visibilityState === "hidden") hide(); };
+    window.addEventListener("blur", hide);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("blur", hide);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
+
   const createMut = useMutation({
     mutationFn: () => {
       const validationError = validateNodeForm(name, locationId, fqdn, scheme, memoryMb, diskMb, daemonListen, daemonSftp);
       if (validationError) throw new Error(validationError);
       const location = locations.find((candidate) => candidate.id === locationId);
       if (!location) throw new Error("Select a valid location before creating the node.");
+      const tagsArr = tags.split(",").map((t) => t.trim()).filter(Boolean);
+      const allowedIpsArr = allowedIps.split(",").map((t) => t.trim()).filter(Boolean);
       return createNode({
         name: name.trim(),
-        // `region` remains required by the create contract; the API derives it from locationId.
         region: location.short,
         locationId: location.id,
         description: description.trim(),
+        displayName: displayName.trim() || undefined,
+        public: publicNode,
         baseUrl: `${scheme}://${fqdn.trim()}`,
         fqdn: fqdn.trim(),
         scheme,
         behindProxy,
+        publicHostname: publicHostname.trim() || undefined,
+        allowedIps: allowedIpsArr.length > 0 ? allowedIpsArr : undefined,
+        networkInterface: networkInterface.trim() || undefined,
         memoryMb: Number(memoryMb),
         diskMb: Number(diskMb),
+        memoryOverallocate: Number(memoryOverallocate),
+        diskOverallocate: Number(diskOverallocate),
+        cpuOverallocate: Number(cpuOverallocate),
+        uploadSizeMb: Number(uploadSizeMb),
+        reservedMemoryMb: Number(reservedMemoryMb),
+        reservedDiskMb: Number(reservedDiskMb),
         daemonBase,
         daemonListen: Number(daemonListen),
         daemonSftp: Number(daemonSftp),
-      });
+        daemonSftpAlias: daemonSftpAlias.trim() || undefined,
+        daemonConnect: Number(daemonConnect),
+        defaultAllocationIp: defaultAllocationIp.trim() || undefined,
+        allocationPortMin: Number(allocationPortMin),
+        allocationPortMax: Number(allocationPortMax),
+        autoAllocate,
+        schedulerType,
+        enableHealthChecks,
+        enableMetrics,
+        prometheusEndpoint: prometheusEndpoint.trim() || undefined,
+        alertThresholdCpu: Number(alertThresholdCpu),
+        alertThresholdMemory: Number(alertThresholdMemory),
+        alertThresholdDisk: Number(alertThresholdDisk),
+        maintenanceMode,
+        maintenanceMessage: maintenanceMessage.trim() || undefined,
+        drainBeforeMaintenance,
+        tokenRotationPolicy,
+        tlsSetting,
+        tags: tagsArr.length > 0 ? tagsArr : undefined,
+      } as CreateNodeInput);
     },
     onSuccess: ({ node, token }) => { qc.invalidateQueries({ queryKey: ["nodes"] }); setOnboarding({ id: node.id, token }); setCreateError(null); },
     onError: (e: Error) => { console.error("Failed to create node:", e); setCreateError(e.message || "Unknown error"); },
@@ -740,14 +1084,14 @@ function CreateNodeModal({ open, onClose, locations, locationsError, onRetryLoca
 
   if (!open) return null;
   return (
-    <Modal title="New Node" onClose={onClose} wide>
+    <Modal title="New Node" onClose={onClose} className="max-w-6xl">
       {onboarding ? (
         <div className="space-y-4">
-          <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 p-4 text-sm text-amber-100">Save this credential now. Forge will not show it again; rotate the token if it is lost.</div>
+          <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 p-4 text-sm text-amber-100">Save this credential now. Forge will not show it again; rotate the token if it is lost. Revealed values are hidden automatically when this window loses focus.</div>
           <pre className="overflow-auto rounded bg-[#0a0e16] p-4 text-xs leading-relaxed text-emerald-300">{`# /etc/forge/beacon.env (mode 0600)
 APP_ENV=production
 DAEMON_NODE_ID=${onboarding.id}
-DAEMON_NODE_TOKEN=${onboarding.token}
+DAEMON_NODE_TOKEN=${credentialMasked ? "••••••••••••••••" : onboarding.token}
 PANEL_API_URL=${panelURL}
 DAEMON_ADDR=:${daemonListen}
 DAEMON_SFTP_ADDR=:${daemonSftp}
@@ -756,64 +1100,209 @@ DAEMON_ALLOW_INSECURE_NO_AUTH=false
 
 # Configure Beacon's systemd EnvironmentFile= or container env_file, then restart Beacon.`}</pre>
           <div className="flex justify-end gap-2">
-            <Btn tone="ghost" onClick={() => { if (navigator.clipboard) void navigator.clipboard.writeText(onboarding.token).then(() => setCopied(true)); }}>{copied ? "Credential copied" : "Copy credential"}</Btn>
+            <Btn tone="ghost" onClick={() => setCredentialMasked((masked) => !masked)}>{credentialMasked ? <><Eye size={14} /> Reveal credential</> : <><EyeOff size={14} /> Hide credential</>}</Btn>
+            <Btn tone="ghost" onClick={async () => { if (await copySecret(onboarding.token)) { setCopied(true); setTimeout(() => setCopied(false), 2000); } }}>{copied ? "Credential copied" : "Copy credential"}</Btn>
             <Btn tone="primary" onClick={onClose}>I stored this credential</Btn>
           </div>
         </div>
       ) : <form
-        className="grid gap-4 md:grid-cols-2"
+        className="space-y-8"
         onSubmit={(e) => { e.preventDefault(); createMut.mutate(); }}
       >
-        <Card>
-          <CardHeader title="Basic Details" icon={Shield} />
-          <div className="space-y-3 p-4">
-            <Input label="Name" value={name} onChange={setName} required />
-            <Textarea label="Description" value={description} onChange={setDescription} rows={3} />
-            <label className="block text-sm">
-              <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">Location</span>
-              <select className="h-10 w-full rounded-lg border border-white/10 bg-[#141824] px-3 text-slate-100" value={locationId} onChange={(e) => setLocationId(e.target.value)} required disabled={locations.length === 0 || locationsError !== null}>
-                <option value="">Select…</option>
-                {locations.map((location) => <option key={location.id} value={location.id}>{location.short} — {location.long}</option>)}
-              </select>
-              {locationsError ? (
-                <div className="mt-2 flex items-start justify-between gap-3 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-xs text-red-200">
-                  <span>Could not load locations: {locationsError.message}</span>
-                  <Btn size="sm" tone="ghost" type="button" onClick={onRetryLocations}>Retry</Btn>
-                </div>
-              ) : locations.length === 0 ? <p className="mt-1 text-xs text-amber-300">Create a location first before adding a node.</p> : null}
-            </label>
-            <Input label="FQDN" value={fqdn} onChange={setFqdn} placeholder="node1.example.com" required />
-            <label className="block text-sm">
-              <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">SSL</span>
-              <select className="h-10 w-full rounded-lg border border-white/10 bg-[#141824] px-3 text-slate-100" value={scheme} onChange={(e) => setScheme(e.target.value)}>
-                <option value="https">https</option>
-                <option value="http">http</option>
-              </select>
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={behindProxy} onChange={(e) => setBehindProxy(e.target.checked)} className="accent-[#dc2626]" />
-              <span>Behind Proxy</span>
-            </label>
-
-          </div>
-        </Card>
-        <div className="space-y-4">
+        <div className="grid gap-6 md:grid-cols-2">
           <Card>
-            <CardHeader title="Configuration" icon={SettingsIcon} />
-            <div className="space-y-3 p-4">
-              <Input label="Daemon Server File Directory" value={daemonBase} onChange={setDaemonBase} />
-              <Input label="Total Memory (MiB)" value={memoryMb} onChange={setMemoryMb} type="number" />
-              <Input label="Total Disk Space (MiB)" value={diskMb} onChange={setDiskMb} type="number" />
-              <Input label="Daemon Port" value={daemonListen} onChange={setDaemonListen} type="number" />
-              <Input label="Daemon SFTP Port" value={daemonSftp} onChange={setDaemonSftp} type="number" />
+            <CardHeader title="Basic Details" icon={Shield} />
+            <div className="space-y-5 p-5">
+              <Input label="Name" value={name} onChange={setName} placeholder="nyc-dal-01" required />
+              <Input label="Display Name" value={displayName} onChange={setDisplayName} placeholder="NYC Dallas Node 1" />
+              <Textarea label="Description" value={description} onChange={setDescription} rows={2} placeholder="Optional description for this node" />
+              <label className="block text-sm">
+                <span className="mb-1.5 block text-sm font-medium text-slate-300">Location</span>
+                <select className="h-10 w-full rounded-lg border border-white/10 bg-surface-card-header px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15" value={locationId} onChange={(e) => setLocationId(e.target.value)} required disabled={locations.length === 0 || locationsError !== null}>
+                  <option value="">Select…</option>
+                  {locations.map((location) => <option key={location.id} value={location.id}>{location.short} — {location.long}</option>)}
+                </select>
+                {locationsError ? (
+                  <div className="mt-2 flex items-start justify-between gap-3 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-xs text-red-200">
+                    <span>Could not load locations: {locationsError.message}</span>
+                    <Btn size="sm" tone="ghost" type="button" onClick={onRetryLocations}>Retry</Btn>
+                  </div>
+                ) : locations.length === 0 ? <p className="mt-1 text-xs text-amber-300">Create a location first before adding a node.</p> : null}
+              </label>
+              <label className="flex cursor-pointer items-center gap-2.5 text-sm text-slate-300">
+                <input type="checkbox" checked={publicNode} onChange={(e) => setPublicNode(e.target.checked)} className="h-4 w-4 accent-[#dc2626]" />
+                <span>Public node</span>
+              </label>
             </div>
           </Card>
-          <div className="flex justify-end">
+
+          <Card>
+            <CardHeader title="Network" icon={Globe} />
+            <div className="space-y-5 p-5">
+              <Input label="FQDN" value={fqdn} onChange={setFqdn} placeholder="node1.example.com" required />
+              <Input label="Public Hostname" value={publicHostname} onChange={setPublicHostname} placeholder="Optional public-facing hostname" />
+              <label className="block text-sm">
+                <span className="mb-1.5 block text-sm font-medium text-slate-300">SSL</span>
+                <select className="h-10 w-full rounded-lg border border-white/10 bg-surface-card-header px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15" value={scheme} onChange={(e) => setScheme(e.target.value)}>
+                  <option value="https">https</option>
+                  <option value="http">http</option>
+                </select>
+              </label>
+              <label className="flex cursor-pointer items-center gap-2.5 text-sm text-slate-300">
+                <input type="checkbox" checked={behindProxy} onChange={(e) => setBehindProxy(e.target.checked)} className="h-4 w-4 accent-[#dc2626]" />
+                <span>Behind Proxy</span>
+              </label>
+              <Input label="Allowed IPs" value={allowedIps} onChange={setAllowedIps} placeholder="Comma-separated, e.g. 10.0.0.0/8, 192.168.1.0/24" />
+              <Input label="Network Interface" value={networkInterface} onChange={setNetworkInterface} placeholder="e.g. eth0, bond0" />
+            </div>
+          </Card>
+        </div>
+
+        <div className="grid gap-6 md:grid-cols-2">
+          <Card>
+            <CardHeader title="Resource Limits" icon={Cpu} />
+            <div className="space-y-5 p-5">
+              <div className="grid grid-cols-2 gap-4">
+                <Input label="Total Memory (MiB)" value={memoryMb} onChange={setMemoryMb} type="number" />
+                <Input label="Total Disk (MiB)" value={diskMb} onChange={setDiskMb} type="number" />
+              </div>
+              <div className="grid grid-cols-3 gap-4">
+                <Input label="Memory Overalloc. %" value={memoryOverallocate} onChange={setMemoryOverallocate} type="number" />
+                <Input label="Disk Overalloc. %" value={diskOverallocate} onChange={setDiskOverallocate} type="number" />
+                <Input label="CPU Overalloc. %" value={cpuOverallocate} onChange={setCpuOverallocate} type="number" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <Input label="Upload Size (MiB)" value={uploadSizeMb} onChange={setUploadSizeMb} type="number" />
+                <Input label="Reserved Memory (MiB)" value={reservedMemoryMb} onChange={setReservedMemoryMb} type="number" />
+              </div>
+              <Input label="Reserved Disk (MiB)" value={reservedDiskMb} onChange={setReservedDiskMb} type="number" />
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader title="Daemon" icon={Wrench} />
+            <div className="space-y-5 p-5">
+              <Input label="Server File Directory" value={daemonBase} onChange={setDaemonBase} />
+              <div className="grid grid-cols-2 gap-4">
+                <Input label="Daemon Port" value={daemonListen} onChange={setDaemonListen} type="number" />
+                <Input label="SFTP Port" value={daemonSftp} onChange={setDaemonSftp} type="number" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <Input label="SFTP Alias" value={daemonSftpAlias} onChange={setDaemonSftpAlias} placeholder="Optional SFTP hostname alias" />
+                <Input label="Connect Port" value={daemonConnect} onChange={setDaemonConnect} type="number" />
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        <div className="grid gap-6 md:grid-cols-3">
+          <Card>
+            <CardHeader title="Allocation" icon={Network} />
+            <div className="space-y-5 p-5">
+              <Input label="Default IP" value={defaultAllocationIp} onChange={setDefaultAllocationIp} />
+              <div className="grid grid-cols-2 gap-4">
+                <Input label="Port Min" value={allocationPortMin} onChange={setAllocationPortMin} type="number" />
+                <Input label="Port Max" value={allocationPortMax} onChange={setAllocationPortMax} type="number" />
+              </div>
+              <label className="flex cursor-pointer items-center gap-2.5 text-sm text-slate-300">
+                <input type="checkbox" checked={autoAllocate} onChange={(e) => setAutoAllocate(e.target.checked)} className="h-4 w-4 accent-[#dc2626]" />
+                <span>Auto-allocate ports</span>
+              </label>
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader title="Scheduler" icon={SettingsIcon} />
+            <div className="space-y-5 p-5">
+              <label className="block text-sm">
+                <span className="mb-1.5 block text-sm font-medium text-slate-300">Backend</span>
+                <select className="h-10 w-full rounded-lg border border-white/10 bg-surface-card-header px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15" value={schedulerType} onChange={(e) => setSchedulerType(e.target.value)}>
+                  <option value="docker">Docker</option>
+                  <option value="k3s">K3s (Kubernetes)</option>
+                  <option value="nomad">Nomad (HashiCorp)</option>
+                </select>
+              </label>
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader title="Tags" icon={Activity} />
+            <div className="space-y-5 p-5">
+              <Input label="Tags" value={tags} onChange={setTags} placeholder="ssd, gpu, low-latency" />
+              <p className="text-xs text-slate-500">Tags let you filter and group nodes for scheduling constraints.</p>
+            </div>
+          </Card>
+        </div>
+
+        <div className="grid gap-6 md:grid-cols-2">
+          <Card>
+            <CardHeader title="Monitoring & Alerts" icon={Activity} />
+            <div className="space-y-5 p-5">
+              <label className="flex cursor-pointer items-center gap-2.5 text-sm text-slate-300">
+                <input type="checkbox" checked={enableHealthChecks} onChange={(e) => setEnableHealthChecks(e.target.checked)} className="h-4 w-4 accent-[#dc2626]" />
+                <span>Enable health checks</span>
+              </label>
+              <label className="flex cursor-pointer items-center gap-2.5 text-sm text-slate-300">
+                <input type="checkbox" checked={enableMetrics} onChange={(e) => setEnableMetrics(e.target.checked)} className="h-4 w-4 accent-[#dc2626]" />
+                <span>Enable metrics collection</span>
+              </label>
+              <Input label="Prometheus Endpoint" value={prometheusEndpoint} onChange={setPrometheusEndpoint} placeholder="Optional Prometheus scrape URL" />
+              <div>
+                <p className="mb-3 text-xs font-medium text-slate-400">Alert thresholds (0–100%)</p>
+                <div className="grid grid-cols-3 gap-4">
+                  <Input label="CPU %" value={alertThresholdCpu} onChange={setAlertThresholdCpu} type="number" />
+                  <Input label="Memory %" value={alertThresholdMemory} onChange={setAlertThresholdMemory} type="number" />
+                  <Input label="Disk %" value={alertThresholdDisk} onChange={setAlertThresholdDisk} type="number" />
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader title="Maintenance & Security" icon={Lock} />
+            <div className="space-y-5 p-5">
+              <label className="flex cursor-pointer items-center gap-2.5 text-sm text-slate-300">
+                <input type="checkbox" checked={maintenanceMode} onChange={(e) => setMaintenanceMode(e.target.checked)} className="h-4 w-4 accent-[#dc2626]" />
+                <span>Maintenance mode</span>
+              </label>
+              {maintenanceMode && (
+                <div className="space-y-4 rounded-lg border border-white/[0.06] bg-white/[0.02] p-4">
+                  <label className="flex cursor-pointer items-center gap-2.5 text-sm text-slate-300">
+                    <input type="checkbox" checked={drainBeforeMaintenance} onChange={(e) => setDrainBeforeMaintenance(e.target.checked)} className="h-4 w-4 accent-[#dc2626]" />
+                    <span>Drain before maintenance</span>
+                  </label>
+                  <Input label="Maintenance Message" value={maintenanceMessage} onChange={setMaintenanceMessage} placeholder="Displayed to users during maintenance" />
+                </div>
+              )}
+              <label className="block text-sm">
+                <span className="mb-1.5 block text-sm font-medium text-slate-300">Token Rotation</span>
+                <select className="h-10 w-full rounded-lg border border-white/10 bg-surface-card-header px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15" value={tokenRotationPolicy} onChange={(e) => setTokenRotationPolicy(e.target.value)}>
+                  <option value="manual">Manual</option>
+                  <option value="auto">Auto</option>
+                </select>
+              </label>
+              <label className="block text-sm">
+                <span className="mb-1.5 block text-sm font-medium text-slate-300">TLS Setting</span>
+                <select className="h-10 w-full rounded-lg border border-white/10 bg-surface-card-header px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15" value={tlsSetting} onChange={(e) => setTlsSetting(e.target.value)}>
+                  <option value="auto">Auto</option>
+                  <option value="manual">Manual</option>
+                  <option value="disabled">Disabled</option>
+                </select>
+              </label>
+            </div>
+          </Card>
+        </div>
+
+        <div className="flex items-start justify-between gap-4 border-t border-white/[0.06] pt-6">
+          <div className="min-w-0 flex-1">
+            {createError ? <div className="inline-flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-xs text-red-200"><AlertCircle size={14} className="mt-0.5 shrink-0" /> <span>{createError}</span></div> : null}
+          </div>
+          <div className="flex shrink-0 gap-3">
+            <Btn tone="ghost" type="button" onClick={onClose}>Cancel</Btn>
             <Btn tone="primary" type="submit" disabled={createMut.isPending || !locationId || locationsError !== null}>
               {createMut.isPending ? "Creating…" : "Create Node"}
             </Btn>
           </div>
-          {createError ? <div className="md:col-span-2 flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-xs text-red-200"><AlertCircle size={14} className="mt-0.5 shrink-0" /> <span>{createError}</span></div> : null}
         </div>
       </form>}
     </Modal>

@@ -1,7 +1,10 @@
 package http
 
 import (
+	"net/url"
+
 	"gamepanel/forge/internal/services/recovery"
+	"gamepanel/forge/internal/store"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -22,6 +25,10 @@ type accountRecoveryResponse struct {
 
 func registerAccountRecoveryRoutes(v1 fiber.Router, cfg Config, authLimiter fiber.Handler) {
 	v1.Post("/auth/recovery/initiate", authLimiter, func(c *fiber.Ctx) error {
+		if cfg.Store == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+		}
+
 		var req accountRecoveryRequest
 		if err := c.BodyParser(&req); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
@@ -41,7 +48,7 @@ func registerAccountRecoveryRoutes(v1 fiber.Router, cfg Config, authLimiter fibe
 		}
 
 		if cfg.MailTriggerService != nil {
-			resetURL := cfg.PanelURL + "/account/recovery?token=" + token + "&email=" + req.Email
+			resetURL := cfg.PanelURL + "/account/recovery#token=" + url.QueryEscape(token) + "&email=" + url.QueryEscape(req.Email)
 			cfg.MailTriggerService.SendPasswordReset(ctx, req.Email, resetURL, user.Email)
 		}
 
@@ -49,13 +56,17 @@ func registerAccountRecoveryRoutes(v1 fiber.Router, cfg Config, authLimiter fibe
 	})
 
 	v1.Post("/auth/recovery/verify", authLimiter, func(c *fiber.Ctx) error {
+		if cfg.Store == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+		}
+
 		var req accountRecoveryVerifyRequest
 		if err := c.BodyParser(&req); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 		}
 
-		if len(req.Password) < 8 {
-			return fiber.NewError(fiber.StatusBadRequest, "password must be at least 8 characters")
+		if err := store.ValidatePassword(req.Password); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
 
 		ctx, cancel := requestContext()
@@ -72,12 +83,14 @@ func registerAccountRecoveryRoutes(v1 fiber.Router, cfg Config, authLimiter fibe
 
 		cfg.RecoveryTokenService.InvalidateUserTokens(ctx, userID, recovery.TokenPasswordReset)
 
+		cfg.Store.RevokeAllUserSessionsExceptCurrent(ctx, userID, "", "account recovered")
+
 		_ = cfg.Store.AppendAudit(ctx, &userID, "account.recovered", "user", &userID, safeAuditMeta(map[string]string{}))
 
 		return c.JSON(accountRecoveryResponse{Status: "ok", Message: "Account recovered successfully"})
 	})
 
-	protected := v1.Group("", authMiddleware(cfg.AuthSecret, cfg.Store))
+	protected := v1.Group("", authMiddleware(cfg.AuthSecret, cfg.Store), csrfMiddleware(LoadSessionCookieConfig()))
 	protected.Post("/account/2fa/recovery-codes", func(c *fiber.Ctx) error {
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {

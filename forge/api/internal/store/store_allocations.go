@@ -42,6 +42,51 @@ func (s *Store) ListAllocations(ctx context.Context) ([]Allocation, error) {
 	return s.ListAllocationsPaginated(ctx, 0, 1000)
 }
 
+func (s *Store) GetAllocation(ctx context.Context, id string) (Allocation, error) {
+	var allocation Allocation
+	var server, alias sql.NullString
+	err := s.db.QueryRow(ctx, `
+		SELECT a.id::text, n.name, s.name, a.ip::text, a.port, a.container_port,
+		       a.protocol, a.alias, COALESCE(a.notes, '')
+		FROM allocations a
+		JOIN nodes n ON n.id=a.node_id
+		LEFT JOIN servers s ON s.id=a.server_id
+		WHERE a.id=$1
+	`, id).Scan(&allocation.ID, &allocation.Node, &server, &allocation.IP, &allocation.Port,
+		&allocation.ContainerPort, &allocation.Protocol, &alias, &allocation.Notes)
+	if err != nil {
+		return Allocation{}, err
+	}
+	if server.Valid {
+		allocation.Server = &server.String
+	}
+	if alias.Valid && alias.String != "" {
+		allocation.Alias = &alias.String
+	}
+	return allocation, nil
+}
+
+func (s *Store) ListAllocationsWithTotal(ctx context.Context, page, perPage int) ([]Allocation, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if perPage <= 0 {
+		perPage = 50
+	}
+	offset := (page - 1) * perPage
+
+	var total int
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM allocations`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	allocations, err := s.ListAllocationsPaginated(ctx, offset, perPage)
+	if err != nil {
+		return nil, 0, err
+	}
+	return allocations, total, nil
+}
+
 func (s *Store) ListAllocationsPaginated(ctx context.Context, offset, limit int) ([]Allocation, error) {
 	if limit <= 0 {
 		limit = 1000
@@ -243,20 +288,16 @@ func (s *Store) UpdateServerAllocation(ctx context.Context, serverID, allocation
 		return Allocation{}, errors.New("allocation is not assigned to this server")
 	}
 	_ = s.AppendAudit(ctx, actorID, "server allocation updated", "server", &serverID, fmt.Sprintf(`{"allocationId":"%s","alias":"%s"}`, allocationID, strings.TrimSpace(req.Alias)))
-	for _, allocation := range mustListServerAllocations(ctx, s, serverID) {
+	allocations, err := s.ListServerAllocations(ctx, serverID)
+	if err != nil {
+		return Allocation{}, err
+	}
+	for _, allocation := range allocations {
 		if allocation.ID == allocationID {
 			return allocation, nil
 		}
 	}
 	return Allocation{ID: allocationID, Alias: alias, Notes: notes}, nil
-}
-
-func mustListServerAllocations(ctx context.Context, s *Store, serverID string) []Allocation {
-	allocations, err := s.ListServerAllocations(ctx, serverID)
-	if err != nil {
-		return nil
-	}
-	return allocations
 }
 
 func (s *Store) ListServerAllocations(ctx context.Context, serverID string) ([]Allocation, error) {
