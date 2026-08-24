@@ -32,7 +32,7 @@ export function NodeSelect({
   }, [value, nodes, onChange]);
 
   if (nodesQuery.isLoading) {
-    return <span className="text-xs text-slate-500">Loading nodes...</span>;
+    return <span className="text-xs text-[var(--text-subtle)]">Loading nodes...</span>;
   }
   if (nodes.length === 0) {
     return <span className="text-xs text-amber-400">No nodes registered</span>;
@@ -40,10 +40,10 @@ export function NodeSelect({
 
   return (
     <label className={cn("inline-flex items-center gap-2", className)}>
-      <Server className="shrink-0 text-slate-500" size={14} />
+      <Server className="shrink-0 text-[var(--text-subtle)]" size={14} />
       <span className="sr-only">Target node</span>
       <select
-        className="h-9 rounded-lg border border-white/10 bg-[#0d131d] px-2 text-xs text-white outline-none focus:border-red-400/70 transition-all"
+        className="h-9 rounded-lg border border-[var(--line)] bg-[var(--surface-input)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand-subtle)] transition-all"
         onChange={(event) => onChange(event.target.value)}
         value={value}
       >

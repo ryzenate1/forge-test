@@ -4,8 +4,8 @@ import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Trash2, RefreshCw, Plus, Eraser } from "lucide-react";
 import { listVolumes, createVolume, deleteVolume, pruneVolumes, type DockerVolume } from "@/lib/api/docker";
-import { Btn, Card, EmptyState, Input, Modal, ModalFooter } from "@/components/admin/admin-ui";
-import { ConfirmDialog, Alert } from "@/components/ui/primitives";
+import { Btn, Card, EmptyState, Input, Modal, ModalFooter, AdminLoadingState } from "@/components/admin/admin-ui";
+import { ConfirmDialog, Alert, Pagination } from "@/components/ui/primitives";
 
 function formatDate(ts: string): string {
   if (!ts) return "";
@@ -56,6 +56,15 @@ export function VolumesView() {
     [volumes, search],
   );
 
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 10;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const paginated = useMemo(() => {
+    const start = (safePage - 1) * PAGE_SIZE;
+    return filtered.slice(start, start + PAGE_SIZE);
+  }, [filtered, safePage]);
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
@@ -75,7 +84,7 @@ export function VolumesView() {
 
       <Card>
         {volumesQuery.isLoading ? (
-          <div className="p-8 text-center text-sm text-slate-500">Loading volumes...</div>
+          <div className="p-4"><AdminLoadingState label="Loading volumes…" /></div>
         ) : volumesQuery.isError ? (
           <div className="p-4 text-sm text-red-400">Failed to load volumes.</div>
         ) : filtered.length === 0 ? (
@@ -84,7 +93,7 @@ export function VolumesView() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500">
+                <tr className="border-b border-[var(--line)] bg-[var(--surface-raised)] text-left text-[10px] uppercase tracking-widest text-slate-500">
                   <th className="px-4 py-3">Name</th>
                   <th className="px-4 py-3">Driver</th>
                   <th className="px-4 py-3">Mount Point</th>
@@ -94,7 +103,7 @@ export function VolumesView() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((v, idx) => (
+                {paginated.map((v, idx) => (
                   <tr key={`${v.name}-${v.nodeId}-${idx}`} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
                     <td className="px-4 py-3 font-medium text-slate-200">{v.name}</td>
                     <td className="px-4 py-3 text-slate-400">{v.driver}</td>
@@ -108,6 +117,11 @@ export function VolumesView() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {filtered.length > PAGE_SIZE && (
+          <div className="mt-4">
+            <Pagination page={safePage} pageCount={totalPages} onPageChange={setPage} label="Volumes pagination" />
           </div>
         )}
       </Card>

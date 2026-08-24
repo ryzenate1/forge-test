@@ -230,10 +230,14 @@ export async function deleteJSON<T = void>(path: string, body?: unknown): Promis
 
 export function serverWebSocketURL(
   serverId: string,
-  stream: "stats" | "logs" | "console",
+  stream: "stats" | "logs" | "console" | "install" | "backup",
 ): string {
   const protocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
   const wsBase = API_BASE_URL.replace(/^https?:/, protocol);
+  // Beacon canonical path for install is /servers/:id/install/ws; panel normalizes
+  // to /servers/:id/ws/install + legacy alias /servers/:id/install/ws both proxied
+  // via realtimeProxy (stream=install) — keep normalized URL for ticket flow.
+  if (stream === "install") return `${wsBase}/servers/${encodeURIComponent(serverId)}/ws/install`;
   return `${wsBase}/servers/${encodeURIComponent(serverId)}/ws/${stream}`;
 }
 
@@ -353,6 +357,13 @@ export async function fetchNodeCapacity(id: string): Promise<ApiNodeCapacity> {
   return apiFetch<ApiNodeCapacity>(`/nodes/${encodeURIComponent(id)}/capacity`);
 }
 
+/**
+ * Legacy alias — POST /servers/:id/files/download (PufferPanel-compat).
+ * Prefer `pullServerFile` from `@/lib/api/files` which targets the canonical
+ * POST /servers/:id/files/pull (spec contract). Backend accepts both routes
+ * (handlers_servers.go registers /files/pull and /files/download as identical
+ * `PullRemoteFile` handlers) so this alias remains for backwards compat.
+ */
 export async function downloadFileToServer(
   serverId: string,
   url: string,
@@ -400,6 +411,24 @@ export type PaginatedResponse<T> = {
     pagination?: PaginationMetadata;
   };
 };
+
+export function getTotalPages(meta?: { per_page?: number; total_records?: number; total_pages?: number; total?: number; current?: number; count?: number } | PaginationMetadata): number {
+  if (!meta) return 1;
+  const perPage = (meta as { per_page?: number }).per_page;
+  const totalRecords = (meta as { total_records?: number }).total_records;
+  if (typeof perPage === "number" && typeof totalRecords === "number" && perPage > 0) {
+    return Math.max(1, Math.ceil(totalRecords / perPage));
+  }
+  const totalPages = (meta as { total_pages?: number }).total_pages;
+  if (typeof totalPages === "number" && totalPages > 0) return totalPages;
+  const total = (meta as { total?: number }).total;
+  if (typeof total === "number" && total > 0) {
+    // If per_page also available, derive pages, else treat total as pages
+    if (typeof perPage === "number" && perPage > 0) return Math.max(1, Math.ceil(total / perPage));
+    return total;
+  }
+  return 1;
+}
 
 /** Fetch one server page and retain the response pagination metadata. */
 export async function fetchServersPage(
@@ -885,9 +914,10 @@ export async function fetchWSTicket(
 
 export async function connectServerWebSocket(
   serverId: string,
-  stream: "console" | "stats" | "logs",
+  stream: "console" | "stats" | "logs" | "install" | "backup",
 ): Promise<WebSocket> {
   const ticketResponse = await fetchWSTicket(serverId, stream);
+  // Normalized panel route for install is /ws/install; legacy alias /install/ws also valid
   const url = serverWebSocketURL(serverId, stream) + `?token=${encodeURIComponent(ticketResponse.token)}`;
   return new WebSocket(url);
 }

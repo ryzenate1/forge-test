@@ -125,8 +125,9 @@ export async function installApp(req: InstallRequest): Promise<AppStoreInstall> 
   });
 }
 
-export async function uninstallApp(id: string): Promise<{ data: string }> {
-  return apiFetch<{ data: string }>(`/app-store/${encodeURIComponent(id)}/uninstall`, {
+export async function uninstallApp(id: string, force?: boolean): Promise<{ data: string }> {
+  const qs = force ? "?force=true" : "";
+  return apiFetch<{ data: string }>(`/app-store/${encodeURIComponent(id)}/uninstall${qs}`, {
     method: "POST",
   });
 }

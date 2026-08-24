@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"gamepanel/forge/internal/domain"
@@ -105,6 +106,25 @@ func registerSchedulerRoutes(protected fiber.Router, cfg Config, scorer *schedul
 			}
 			constraintScheduler.SetConstraints(constraints)
 			return c.JSON(fiber.Map{"data": constraints})
+		})
+
+		sc.Delete("/constraints/:id", mutationLimiter, requireRole("admin"), requireAdminScope("scheduler.write"), func(c *fiber.Ctx) error {
+			id := c.Params("id")
+			constraints := constraintScheduler.GetConstraints()
+			if idx, err := strconv.Atoi(id); err == nil {
+				if idx < 0 || idx >= len(constraints) {
+					return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "constraint not found"})
+				}
+				constraintScheduler.RemoveConstraint(idx)
+				return c.SendStatus(fiber.StatusNoContent)
+			}
+			for i, cons := range constraints {
+				if cons.Key == id || string(cons.Type) == id || cons.Value == id {
+					constraintScheduler.RemoveConstraint(i)
+					return c.SendStatus(fiber.StatusNoContent)
+				}
+			}
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "constraint not found"})
 		})
 	}
 

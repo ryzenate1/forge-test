@@ -188,13 +188,13 @@ export function AdminToolbar({ children, className }: { children: React.ReactNod
 export function AdminTable({ children, label, className }: { children: React.ReactNode; label?: string; className?: string }) {
   return <div className={cn("overflow-x-auto", className)}><table aria-label={label} className="w-full text-sm">{children}</table></div>;
 }
-export function AdminTHead({ children }: { children: React.ReactNode }) { return <thead><tr className="border-b border-white/[0.06] text-left text-xs uppercase tracking-wider text-slate-500">{children}</tr></thead>; }
-export function AdminTh({ children, className }: { children: React.ReactNode; className?: string }) { return <th className={cn("px-4 py-3 font-medium", className)}>{children}</th>; }
-export function AdminTBody({ children }: { children: React.ReactNode }) { return <tbody className="divide-y divide-white/[0.04]">{children}</tbody>; }
-export function AdminTr({ children, onClick, className }: { children: React.ReactNode; onClick?: () => void; className?: string }) {
+export function AdminTHead({ children }: { children?: React.ReactNode }) { return <thead><tr className="border-b border-white/[0.06] text-left text-xs uppercase tracking-wider text-slate-500">{children}</tr></thead>; }
+export function AdminTh({ children, className }: { children?: React.ReactNode; className?: string }) { return <th className={cn("px-4 py-3 font-medium", className)}>{children}</th>; }
+export function AdminTBody({ children }: { children?: React.ReactNode }) { return <tbody className="divide-y divide-white/[0.04]">{children}</tbody>; }
+export function AdminTr({ children, onClick, className }: { children?: React.ReactNode; onClick?: () => void; className?: string }) {
   return <tr className={cn(className, onClick && "cursor-pointer hover:bg-white/[0.02]")} onClick={onClick}>{children}</tr>;
 }
-export function AdminTd({ children, className }: { children: React.ReactNode; className?: string }) { return <td className={cn("px-4 py-3 text-slate-200", className)}>{children}</td>; }
+export function AdminTd({ children, className }: { children?: React.ReactNode; className?: string }) { return <td className={cn("px-4 py-3 text-slate-200", className)}>{children}</td>; }
 
 export const selectStyle = "h-10 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100";
 

@@ -149,6 +149,11 @@ export async function decompressServerFiles(serverId: string, path: string): Pro
   });
 }
 
+/**
+ * Canonical pull — POST /servers/:id/files/pull (spec contract).
+ * Backend also accepts POST /servers/:id/files/download as legacy alias
+ * (see `downloadFileToServer` in @/lib/api), both handled by PullRemoteFile.
+ */
 export async function pullServerFile(
   serverId: string,
   url: string,
@@ -159,6 +164,9 @@ export async function pullServerFile(
     { url, path },
   );
 }
+
+// Legacy alias re-export for callers still importing from files module.
+export const downloadFileToServerViaFiles = pullServerFile;
 
 export async function readServerFile(serverId: string, path: string): Promise<string> {
   const response = await fetch(

@@ -24,6 +24,7 @@ export type ProvisionDBContainerRequest = {
   version: string;
   memoryMb?: number;
   cpuShares?: number;
+  serverId?: string;
 };
 
 export type DBContainerCredentials = {
@@ -43,7 +44,9 @@ export function getDBContainer(id: string): Promise<DBContainer> {
 }
 
 export function provisionDBContainer(config: ProvisionDBContainerRequest): Promise<DBContainer> {
-  return postJSON<DBContainer>('/databases/provision', config);
+  const { serverId, ...body } = config as ProvisionDBContainerRequest & { serverId?: string };
+  const query = serverId ? `?serverId=${encodeURIComponent(serverId)}` : '';
+  return postJSON<DBContainer>(`/databases/provision${query}`, body);
 }
 
 export function deprovisionDBContainer(id: string): Promise<{ ok: boolean }> {
@@ -150,8 +153,9 @@ export function updateManagedDatabase(id: string, req: Partial<CreateManagedData
   return patchJSON<ManagedDatabase>(`/managed-databases/${encodeURIComponent(id)}`, req);
 }
 
-export function deleteManagedDatabase(id: string): Promise<{ ok: boolean }> {
-  return deleteJSON<{ ok: boolean }>(`/managed-databases/${encodeURIComponent(id)}`);
+export function deleteManagedDatabase(id: string, force?: boolean): Promise<{ ok: boolean }> {
+  const query = force ? '?force=true' : '';
+  return deleteJSON<{ ok: boolean }>(`/managed-databases/${encodeURIComponent(id)}${query}`);
 }
 
 export function backupManagedDatabase(id: string): Promise<ManagedDatabaseBackup> {

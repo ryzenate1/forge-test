@@ -16,12 +16,13 @@ const engineMeta: Record<DBContainerEngine, { label: string; icon: typeof Databa
   mongodb: { label: "MongoDB", icon: Server, color: "text-emerald-400", ring: "ring-emerald-500/30", desc: "Document-oriented NoSQL" },
 };
 
-export function DBContainerCreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+export function DBContainerCreateModal({ onClose, onCreated, defaultServerId }: { onClose: () => void; onCreated: () => void; defaultServerId?: string }) {
   const { toast } = useToast();
   const [engine, setEngine] = useState<DBContainerEngine>("postgresql");
   const [version, setVersion] = useState("16");
   const [memoryMb, setMemoryMb] = useState("256");
   const [cpuShares, setCpuShares] = useState("0");
+  const [serverId, setServerId] = useState(defaultServerId || "");
 
   const enginesQuery = useQuery({
     queryKey: ["db-engines"],
@@ -38,6 +39,7 @@ export function DBContainerCreateModal({ onClose, onCreated }: { onClose: () => 
       version,
       memoryMb: memoryMb ? parseInt(memoryMb, 10) : 256,
       cpuShares: cpuShares ? parseInt(cpuShares, 10) : 0,
+      serverId: serverId.trim() || undefined,
     }),
     onSuccess: () => {
       onCreated();
@@ -71,7 +73,7 @@ export function DBContainerCreateModal({ onClose, onCreated }: { onClose: () => 
                   }}
                   className={cn(
                     "group relative flex flex-col items-center gap-1.5 rounded-xl border px-3 py-3 text-center transition-all duration-150",
-                    "outline-none focus-visible:ring-2 focus-visible:ring-red-400/60",
+                     "outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60",
                     active
                       ? "border-slate-600 bg-slate-800/60 shadow-sm"
                       : "border-white/[0.06] bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]"
@@ -81,11 +83,26 @@ export function DBContainerCreateModal({ onClose, onCreated }: { onClose: () => 
                   <span className={cn("text-xs font-medium leading-tight", active ? "text-slate-100" : "text-slate-400 group-hover:text-slate-300")}>
                     {meta.label}
                   </span>
-                  {active && <span className="absolute -right-1 -top-1 h-3 w-3 rounded-full bg-red-500 ring-2 ring-[#0d1117]" />}
+                  {active && <span className="absolute -right-1 -top-1 h-3 w-3 rounded-full bg-[var(--brand)] ring-2 ring-[#0d1117]" />}
                 </button>
               );
             })}
           </div>
+        </div>
+
+        <div>
+          <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Server ID <span className="font-normal normal-case text-slate-500">(optional — sent as ?serverId)</span></label>
+          <div className="relative">
+            <Server size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" strokeWidth={1.5} />
+            <input
+              type="text"
+              placeholder="leave blank for standalone"
+              className="h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15"
+              value={serverId}
+              onChange={(e) => setServerId(e.target.value)}
+            />
+          </div>
+          <p className="mt-1 text-[11px] text-slate-500">Wires <code className="font-mono">POST /databases/provision?serverId=</code>. Defaults to standalone on backend if omitted.</p>
         </div>
 
         {/* Version + Resources row */}
@@ -94,7 +111,7 @@ export function DBContainerCreateModal({ onClose, onCreated }: { onClose: () => 
           <div>
             <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Version</label>
             <select
-              className="h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] px-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+              className="h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] px-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15"
               value={version}
               onChange={(e) => setVersion(e.target.value)}
             >
@@ -120,7 +137,7 @@ export function DBContainerCreateModal({ onClose, onCreated }: { onClose: () => 
                 min={64}
                 max={65536}
                 step={64}
-                className="h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15 [&::-webkit-inner-spin-button]:appearance-none"
+                className="h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15 [&::-webkit-inner-spin-button]:appearance-none"
                 value={memoryMb}
                 onChange={(e) => setMemoryMb(e.target.value)}
                 placeholder="256"
@@ -141,7 +158,7 @@ export function DBContainerCreateModal({ onClose, onCreated }: { onClose: () => 
                 min={0}
                 max={1024}
                 step={1}
-                className="h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15 [&::-webkit-inner-spin-button]:appearance-none"
+                className="h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15 [&::-webkit-inner-spin-button]:appearance-none"
                 value={cpuShares}
                 onChange={(e) => setCpuShares(e.target.value)}
                 placeholder="0"

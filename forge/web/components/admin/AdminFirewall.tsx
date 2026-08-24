@@ -21,6 +21,7 @@ import {
   fetchFirewallRules,
   fetchFirewallStatus,
   fetchPortForwards,
+  openFirewallPort,
   updateFirewallRule,
 } from "@/lib/api/firewall";
 import { useToast } from "@/components/ui/toast";
@@ -82,6 +83,7 @@ export function AdminFirewall() {
   const [showAddRule, setShowAddRule] = useState(false);
   const [editingRule, setEditingRule] = useState<FirewallRule | null>(null);
   const [showAddForward, setShowAddForward] = useState(false);
+  const [showQuickOpen, setShowQuickOpen] = useState(false);
 
   const selectedNode = nodes.find((n) => n.id === activeNodeId);
 
@@ -138,9 +140,14 @@ export function AdminFirewall() {
               title="Rules"
               icon={Shield}
               action={
-                <Btn size="sm" tone="primary" onClick={() => setShowAddRule(true)}>
-                  <Plus size={14} /> Add Rule
-                </Btn>
+                <div className="flex gap-2">
+                  <Btn size="sm" tone="ghost" onClick={() => setShowQuickOpen(true)} className="border border-[var(--brand)]/20 hover:bg-[var(--brand)]/10">
+                    <Network size={12} /> Quick Open Port
+                  </Btn>
+                  <Btn size="sm" tone="primary" onClick={() => setShowAddRule(true)} className="bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white">
+                    <Plus size={14} /> Add Rule
+                  </Btn>
+                </div>
               }
             />
             {rulesQuery.isLoading ? (
@@ -249,6 +256,13 @@ export function AdminFirewall() {
         <AddForwardModal
           nodeId={activeNodeId}
           onClose={() => setShowAddForward(false)}
+        />
+      )}
+
+      {showQuickOpen && (
+        <QuickOpenPortModal
+          nodeId={activeNodeId}
+          onClose={() => setShowQuickOpen(false)}
         />
       )}
     </div>
@@ -456,6 +470,50 @@ function AddForwardModal({ nodeId, onClose }: { nodeId: string; onClose: () => v
         {validationError && <p className="text-sm text-amber-300">{validationError}</p>}
         {addMut.error && <p className="text-sm text-red-300">{addMut.error instanceof Error ? addMut.error.message : "Failed to add forward."}</p>}
         <ModalFooter onCancel={onClose} onConfirm={() => { if (!validationError) addMut.mutate(); }} confirmLabel={addMut.isPending ? "Adding…" : "Add Forward"} disabled={Boolean(validationError) || addMut.isPending} />
+      </form>
+    </Modal>
+  );
+}
+
+function QuickOpenPortModal({ nodeId, onClose }: { nodeId: string; onClose: () => void }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [port, setPort] = useState("");
+  const [protocol, setProtocol] = useState("tcp");
+
+  const openMut = useMutation({
+    mutationFn: () => openFirewallPort({ port: Number(port), protocol }, nodeId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["firewall-rules", nodeId] });
+      void qc.invalidateQueries({ queryKey: ["firewall-status", nodeId] });
+      toast({ tone: "success", title: `Port ${port}/${protocol} opened` });
+      onClose();
+    },
+    onError: (error) => toast({ tone: "error", title: "Open failed", message: error instanceof Error ? error.message : "Could not open port" }),
+  });
+
+  const validationError = !port ? "Port is required." : Number(port) < 1 || Number(port) > 65535 ? "Port must be 1-65535." : null;
+
+  return (
+    <Modal title="Quick Open Port — POST /host/firewall/port" onClose={onClose}>
+      <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); if (!validationError) openMut.mutate(); }}>
+        <AdminFormSection title="Open Port">
+          <Input label="Port" value={port} onChange={setPort} type="number" placeholder="e.g. 25565" required />
+          <AdminSelect label="Protocol" value={protocol} onChange={setProtocol} options={[
+            { value: "tcp", label: "TCP" },
+            { value: "udp", label: "UDP" },
+            { value: "both", label: "TCP+UDP" },
+          ]} />
+          <p className="text-xs text-slate-400">Wires <code className="font-mono">openFirewallPort({`{port, protocol}`})</code> → POST /host/firewall/port?nodeId={nodeId || "auto"}. The daemon applies an allow rule directly.</p>
+        </AdminFormSection>
+        {validationError && <p className="text-sm text-amber-300">{validationError}</p>}
+        {openMut.error && <p className="text-sm text-red-300">{openMut.error instanceof Error ? openMut.error.message : "Failed to open port."}</p>}
+        <ModalFooter
+          onCancel={onClose}
+          onConfirm={() => { if (!validationError) openMut.mutate(); }}
+          confirmLabel={openMut.isPending ? "Opening…" : "Open Port"}
+          disabled={Boolean(validationError) || openMut.isPending}
+        />
       </form>
     </Modal>
   );

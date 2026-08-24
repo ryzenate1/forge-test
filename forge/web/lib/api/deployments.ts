@@ -85,8 +85,8 @@ export type RevisionDiff = {
   changes: RevisionChange[];
 };
 
-export async function fetchDeploymentSteps(deploymentId: string): Promise<DeploymentStep[]> {
-  const res = await fetchJSON<{ data: DeploymentStep[] }>(`/admin/deployments/${encodeURIComponent(deploymentId)}/steps`);
+export async function fetchDeploymentSteps(deploymentId: string, opts?: { signal?: AbortSignal }): Promise<DeploymentStep[]> {
+  const res = await fetchJSON<{ data: DeploymentStep[] }>(`/admin/deployments/${encodeURIComponent(deploymentId)}/steps`, { signal: opts?.signal });
   return res.data;
 }
 

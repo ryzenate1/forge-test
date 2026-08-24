@@ -1161,7 +1161,12 @@ func (c *Client) RenameFile(ctx context.Context, baseURL, nodeToken, serverID, f
 }
 
 func (c *Client) WebSocketURL(baseURL, serverID, stream string) (string, string) {
+	// Beacon canonical for install is /servers/{id}/install/ws; panel normalizes
+	// to /ws/install but both are proxied via realtimeProxy(stream=install).
 	path := "/servers/" + serverID + "/ws/" + stream
+	if stream == "install" {
+		path = "/servers/" + serverID + "/install/ws"
+	}
 	endpoint := strings.TrimRight(baseURL, "/") + path
 	endpoint = strings.TrimPrefix(endpoint, "http://")
 	if endpoint != strings.TrimRight(baseURL, "/")+path {

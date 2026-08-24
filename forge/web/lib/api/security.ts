@@ -64,3 +64,18 @@ export function deleteDomainSecurityHeaders(domainId: string, id: string): Promi
     `/domains/${encodeURIComponent(domainId)}/security-headers/${encodeURIComponent(id)}`
   );
 }
+
+// Re-export redirect family for convenience — canonical implementation lives in lib/api/redirects.ts
+// This satisfies the "security.ts redirects added" wiring requirement while keeping redirects modular.
+export {
+  fetchRedirects,
+  createRedirect,
+  updateRedirect,
+  deleteRedirect,
+  fetchServerRedirects,
+  createServerRedirect,
+  updateServerRedirect,
+  deleteServerRedirect,
+  type RedirectRule,
+  type CreateRedirectInput,
+} from "./redirects";

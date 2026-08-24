@@ -66,6 +66,14 @@ func registerTrafficManagerRoutes(protected fiber.Router, cfg Config, svc *traff
 		return c.JSON(fiber.Map{"data": rules})
 	})
 
+	tm.Get("/policies", requireRole("admin"), requireAdminScope("traffic.read"), func(c *fiber.Ctx) error {
+		policies, err := svc.ListTrafficPolicies(c.Context())
+		if err != nil {
+			return respondInternalError(c, err)
+		}
+		return c.JSON(fiber.Map{"data": policies})
+	})
+
 	tm.Post("/policies", mutationLimiter, requireRole("admin"), requireAdminScope("traffic.write"), func(c *fiber.Ctx) error {
 		var policy trafficmanager.TrafficPolicy
 		if err := c.BodyParser(&policy); err != nil {

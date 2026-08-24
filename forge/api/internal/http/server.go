@@ -1604,6 +1604,34 @@ func NewServer(cfg Config) *fiber.App {
 		},
 		Origins: getWebSocketAllowedOrigins(cfg),
 	}))
+	// Install streaming — admin-only WebSocket for Beacon's GET /servers/:id/install/ws
+	// Proxied via both normalized /ws/install and legacy /install/ws aliases. Tickets
+	// are issued via POST /servers/:id/ws/ticket?stream=install (handlers_ws_ticket).
+	// Execution is gated by INSTALLER_WORKFLOW_ENABLED on the workflow service;
+	// when disabled, workflows remain visible (DB→UI) but live streaming defers.
+	// See forge/web/lib/api/install-ws.ts createInstallWSManager for frontend.
+	v1.Get("/servers/:id/ws/install", requireRealtimeServices(cfg), fiberws.New(realtimeProxy(cfg, wsTickets, "install"), fiberws.Config{
+		RecoverHandler: func(conn *fiberws.Conn) {
+			defer func() {
+				if err := recover(); err != nil {
+					_ = conn.WriteJSON(fiber.Map{"error": "internal error"})
+					_ = conn.Close()
+				}
+			}()
+		},
+		Origins: getWebSocketAllowedOrigins(cfg),
+	}))
+	v1.Get("/servers/:id/install/ws", requireRealtimeServices(cfg), fiberws.New(realtimeProxy(cfg, wsTickets, "install"), fiberws.Config{
+		RecoverHandler: func(conn *fiberws.Conn) {
+			defer func() {
+				if err := recover(); err != nil {
+					_ = conn.WriteJSON(fiber.Map{"error": "internal error"})
+					_ = conn.Close()
+				}
+			}()
+		},
+		Origins: getWebSocketAllowedOrigins(cfg),
+	}))
 
 	// POST /api/edge/connect — Beacon edge-agent registration. The beacon
 	// posts here (Bearer node token, no HMAC) when it wants a live edge

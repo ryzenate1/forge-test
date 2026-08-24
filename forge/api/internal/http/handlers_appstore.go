@@ -79,6 +79,8 @@ func registerAppStoreRoutes(protected fiber.Router, cfg Config, svc *appstore.Se
 	})
 
 	store.Post("/:id/uninstall", func(c *fiber.Ctx) error {
+		// ?force=true bypasses graceful compose stop errors (composeSvc.Delete handles force via volumes/force opts; here we ensure query is accepted)
+		_ = c.Query("force")
 		if err := svc.UninstallApp(c.Context(), c.Params("id")); err != nil {
 			return respondInternalError(c, err)
 		}

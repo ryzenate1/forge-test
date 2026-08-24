@@ -6,7 +6,8 @@ import { AlertCircle, CheckCircle2, Database, Plus, RefreshCw, Server, Trash2 } 
 import { type ApiDatabaseHost, type CreateDatabaseHostInput, createDatabaseHost, deleteDatabaseHost, fetchDatabaseHosts, fetchNodes, fetchOrphanRemediations, resolveDatabaseOrphanRemediation, resolveServerOrphanRemediation, testDatabaseHostConnection, updateDatabaseHost } from "@/lib/api";
 import { toast } from "@/components/ui/sonner";
 import { useConfirm } from "@/components/ui/confirm-dialog";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, AdminSelect, AdminFormSection } from "./admin-ui";
+import { Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, AdminSelect, AdminFormSection, AdminLoadingState } from "./admin-ui";
+import { Pagination } from "@/components/ui/primitives";
 
 type FieldErrors = {
   name?: string;
@@ -65,6 +66,8 @@ export function AdminDatabases() {
   const [hTLSCA, setHTLSCA] = useState("");
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [testedConfiguration, setTestedConfiguration] = useState<string | null>(null);
+  const [hostsPage, setHostsPage] = useState(1);
+  const HOSTS_PAGE_SIZE = 10;
 
   const databaseHostInput = {
     name: hName.trim(), host: hHost.trim(), port: Number(hPort),
@@ -164,7 +167,7 @@ export function AdminDatabases() {
       <Card className="overflow-hidden">
         <CardHeader title="Configured hosts" icon={Database} />
         {hostsQuery.isLoading ? (
-          <div className="py-10 text-center text-sm text-slate-500">Loading</div>
+          <AdminLoadingState label="Loading database hosts…" />
         ) : hostsQuery.isError ? (
           <div className="p-5">
             <div className="flex items-start justify-between gap-4 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-200">
@@ -175,46 +178,53 @@ export function AdminDatabases() {
         ) : hosts.length === 0 ? (
           <EmptyState icon={Database} message="No database hosts. Add one so servers can create databases." />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-white/[0.06] text-left text-xs text-slate-500 uppercase tracking-wider">
-                  <th className="px-4 py-3 font-semibold">Name</th>
-                  <th className="px-4 py-3 font-semibold">Host : Port</th>
-                  <th className="px-4 py-3 font-semibold">Engine</th>
-                  <th className="px-4 py-3 font-semibold">User</th>
-                  <th className="px-4 py-3 font-semibold">DBs</th>
-                  <th className="px-4 py-3 font-semibold">Node</th>
-                  <th className="px-4 py-3 font-semibold" />
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/[0.04]">
-                {hosts.map((host) => (
-                  <tr key={host.id} className="transition-colors hover:bg-white/[0.02]">
-                    <td className="px-4 py-3 font-medium text-slate-200">{host.name}</td>
-                    <td className="px-4 py-3 font-mono text-xs text-slate-400">{host.host}:{host.port}</td>
-                    <td className="px-4 py-3"><Pill tone="blue">{host.engine}</Pill></td>
-                    <td className="px-4 py-3 font-mono text-xs text-slate-400">{host.username}</td>
-                    <td className="px-4 py-3"><Pill>{host.databases}</Pill></td>
-                    <td className="px-4 py-3 text-xs text-slate-500">{host.nodeName ?? "-"}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center justify-end gap-1">
-                        <Btn size="sm" tone="ghost" onClick={() => testMut.mutate(host.id)} disabled={testMut.isPending}>{testMut.isPending && testMut.variables === host.id ? "Testing..." : "Test"}</Btn>
-                        <Btn size="sm" tone="ghost" onClick={() => openEdit(host)}>Edit</Btn>
-                        <Btn size="sm" tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Delete database host "${host.name}"?`, description: `Databases provisioned through ${host.host}:${host.port} may be left in place; the panel host entry will be removed. This cannot be undone.`, danger: true, confirmLabel: "Delete" })) deleteMut.mutate(host.id); })(); }} disabled={deleteMut.isPending}><Trash2 size={12} /></Btn>
-                      </div>
-                    </td>
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-[var(--line)] text-left text-xs text-slate-400 uppercase tracking-wider">
+                    <th className="px-4 py-3 font-semibold">Name</th>
+                    <th className="px-4 py-3 font-semibold">Host : Port</th>
+                    <th className="px-4 py-3 font-semibold">Engine</th>
+                    <th className="px-4 py-3 font-semibold">User</th>
+                    <th className="px-4 py-3 font-semibold">DBs</th>
+                    <th className="px-4 py-3 font-semibold">Node</th>
+                    <th className="px-4 py-3 font-semibold" />
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-[var(--line)]">
+                  {hosts.slice((hostsPage - 1) * HOSTS_PAGE_SIZE, hostsPage * HOSTS_PAGE_SIZE).map((host) => (
+                    <tr key={host.id} className="transition-colors hover:bg-[var(--surface)]">
+                      <td className="px-4 py-3 font-medium text-slate-200">{host.name}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-slate-400">{host.host}:{host.port}</td>
+                      <td className="px-4 py-3"><Pill tone="blue">{host.engine}</Pill></td>
+                      <td className="px-4 py-3 font-mono text-xs text-slate-400">{host.username}</td>
+                      <td className="px-4 py-3"><Pill>{host.databases}</Pill></td>
+                      <td className="px-4 py-3 text-xs text-slate-400">{host.nodeName ?? "-"}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-1">
+                          <Btn size="sm" tone="ghost" onClick={() => testMut.mutate(host.id)} disabled={testMut.isPending}>{testMut.isPending && testMut.variables === host.id ? "Testing..." : "Test"}</Btn>
+                          <Btn size="sm" tone="ghost" onClick={() => openEdit(host)}>Edit</Btn>
+                          <Btn size="sm" tone="danger" onClick={() => { void (async () => { if (await confirm({ title: `Delete database host "${host.name}"?`, description: `Databases provisioned through ${host.host}:${host.port} may be left in place; the panel host entry will be removed. This cannot be undone.`, danger: true, confirmLabel: "Delete" })) deleteMut.mutate(host.id); })(); }} disabled={deleteMut.isPending}><Trash2 size={12} /></Btn>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {hosts.length > HOSTS_PAGE_SIZE && (
+              <div className="p-4">
+                <Pagination page={hostsPage} pageCount={Math.ceil(hosts.length / HOSTS_PAGE_SIZE)} onPageChange={setHostsPage} label="Database hosts pagination" />
+              </div>
+            )}
+          </>
         )}
       </Card>
 
       <Card className="overflow-hidden">
         <CardHeader title="Orphan remediation" icon={AlertCircle} />
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] bg-white/[0.02] px-5 py-4 text-sm text-slate-400">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] bg-[var(--surface)] px-5 py-4 text-sm text-slate-300">
           <p>Force-deleted server and database resources that could not be removed remotely are tracked here for administrator follow-up.</p>
           <div className="flex items-center gap-2">
             <AdminSelect label="" value={remediationStatus} onChange={(v) => setRemediationStatus(v as "pending" | "resolved")} options={[{ value: "pending", label: "Pending" }, { value: "resolved", label: "Resolved" }]} />
@@ -225,7 +235,7 @@ export function AdminDatabases() {
         </div>
 
         {remediationsQuery.isLoading ? (
-          <div className="px-5 pb-5 pt-4 text-sm text-slate-500">Loading remediation tasks…</div>
+          <div className="px-5 pb-5 pt-4"><AdminLoadingState label="Loading remediation tasks…" /></div>
         ) : remediationsQuery.isError ? (
           <div className="px-5 pb-5 pt-4">
             <div className="flex items-start justify-between gap-4 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-200">
@@ -235,13 +245,13 @@ export function AdminDatabases() {
           </div>
         ) : (
           <div>
-            <div className="flex items-center gap-2 border-b border-white/[0.06] bg-[#161b28]/50 px-5 py-3 text-xs font-semibold uppercase tracking-widest text-slate-400">
+            <div className="flex items-center gap-2 border-b border-[var(--line)] bg-[var(--surface-raised)]/50 px-5 py-3 text-xs font-semibold uppercase tracking-widest text-slate-400">
               <Server size={14} /> Server resources <Pill>{serverRemediations.length}</Pill>
             </div>
             {serverRemediations.length === 0 ? (
-              <div className="px-5 py-4 text-sm text-slate-500">No {remediationStatus} server orphan remediation tasks.</div>
+              <div className="px-5 py-4 text-sm text-slate-300">No {remediationStatus} server orphan remediation tasks.</div>
             ) : (
-              <div className="divide-y divide-white/[0.06]">
+              <div className="divide-y divide-[var(--line)]">
                 {serverRemediations.map((remediation) => {
                   const isResolving = resolveServerRemediationMut.isPending && resolveServerRemediationMut.variables === remediation.id;
                   return (
@@ -251,26 +261,26 @@ export function AdminDatabases() {
                           <span className="font-mono text-sm text-slate-200">Server {remediation.serverId}</span>
                           <Pill tone={remediation.status === "pending" ? "yellow" : "green"}>{remediation.status}</Pill>
                         </div>
-                        <p className="mt-1 break-all font-mono text-xs text-slate-500">Node: {remediation.nodeUrl}</p>
+                        <p className="mt-1 break-all font-mono text-xs text-slate-400">Node: {remediation.nodeUrl}</p>
                         <p className="mt-2 break-words text-xs text-red-200">{remediation.daemonError}</p>
-                        <p className="mt-2 text-xs text-slate-500">Reported {new Date(remediation.createdAt).toLocaleString()}</p>
+                        <p className="mt-2 text-xs text-slate-400">Reported {new Date(remediation.createdAt).toLocaleString()}</p>
                       </div>
                       {remediation.status === "pending" ? (
                         <Btn size="sm" tone="ghost" disabled={resolveServerRemediationMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: `Mark server ${remediation.serverId} as resolved?`, description: "Only do this after confirming its remote resource has been cleaned up.", confirmLabel: "Mark resolved" })) resolveServerRemediationMut.mutate(remediation.id); })(); }}>{isResolving ? "Resolving..." : "Mark resolved"}</Btn>
-                      ) : <span className="text-xs text-slate-500">Resolved {remediation.resolvedAt ? new Date(remediation.resolvedAt).toLocaleString() : ""}</span>}
+                      ) : <span className="text-xs text-slate-400">Resolved {remediation.resolvedAt ? new Date(remediation.resolvedAt).toLocaleString() : ""}</span>}
                     </div>
                   );
                 })}
               </div>
             )}
 
-            <div className="flex items-center gap-2 border-y border-white/[0.06] bg-[#161b28]/50 px-5 py-3 text-xs font-semibold uppercase tracking-widest text-slate-400">
+            <div className="flex items-center gap-2 border-y border-[var(--line)] bg-[var(--surface-raised)]/50 px-5 py-3 text-xs font-semibold uppercase tracking-widest text-slate-400">
               <Database size={14} /> Database resources <Pill>{databaseRemediations.length}</Pill>
             </div>
             {databaseRemediations.length === 0 ? (
-              <div className="px-5 py-4 text-sm text-slate-500">No {remediationStatus} database orphan remediation tasks.</div>
+              <div className="px-5 py-4 text-sm text-slate-300">No {remediationStatus} database orphan remediation tasks.</div>
             ) : (
-              <div className="divide-y divide-white/[0.06]">
+              <div className="divide-y divide-[var(--line)]">
                 {databaseRemediations.map((remediation) => {
                   const isResolving = resolveDatabaseRemediationMut.isPending && resolveDatabaseRemediationMut.variables === remediation.id;
                   return (
@@ -280,13 +290,13 @@ export function AdminDatabases() {
                           <span className="font-mono text-sm text-slate-200">{remediation.database}</span>
                           <Pill tone={remediation.status === "pending" ? "yellow" : "green"}>{remediation.status}</Pill>
                         </div>
-                        <p className="mt-1 break-all font-mono text-xs text-slate-500">{remediation.engine} · {remediation.host}:{remediation.port} · {remediation.username}@{remediation.remote}</p>
+                        <p className="mt-1 break-all font-mono text-xs text-slate-400">{remediation.engine} · {remediation.host}:{remediation.port} · {remediation.username}@{remediation.remote}</p>
                         <p className="mt-2 break-words text-xs text-red-200">{remediation.reason}</p>
-                        <p className="mt-2 text-xs text-slate-500">Reported {new Date(remediation.createdAt).toLocaleString()}</p>
+                        <p className="mt-2 text-xs text-slate-400">Reported {new Date(remediation.createdAt).toLocaleString()}</p>
                       </div>
                       {remediation.status === "pending" ? (
                         <Btn size="sm" tone="ghost" disabled={resolveDatabaseRemediationMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: `Mark ${remediation.database} as resolved?`, description: "Only do this after confirming its remote resource has been cleaned up.", confirmLabel: "Mark resolved" })) resolveDatabaseRemediationMut.mutate(remediation.id); })(); }}>{isResolving ? "Resolving..." : "Mark resolved"}</Btn>
-                      ) : <span className="text-xs text-slate-500">Resolved {remediation.resolvedAt ? new Date(remediation.resolvedAt).toLocaleString() : ""}</span>}
+                      ) : <span className="text-xs text-slate-400">Resolved {remediation.resolvedAt ? new Date(remediation.resolvedAt).toLocaleString() : ""}</span>}
                     </div>
                   );
                 })}
@@ -307,7 +317,7 @@ export function AdminDatabases() {
               <AdminSelect label="Engine" value={hEngine} onChange={setHEngine} options={[{ value: "postgresql", label: "PostgreSQL" }, { value: "mysql", label: "MySQL" }]} />
               <div>
                 <Input label="Host" value={hHost} onChange={setHHost} placeholder="db.internal.example" mono />
-                {fieldErrors.host ? <p className="mt-1 text-xs text-red-400">{fieldErrors.host}</p> : <p className="mt-1 text-xs text-slate-500">Resolved by the panel API. In a container, 127.0.0.1 is the API container, not automatically the panel database.</p>}
+                {fieldErrors.host ? <p className="mt-1 text-xs text-red-400">{fieldErrors.host}</p> : <p className="mt-1 text-xs text-slate-400">Resolved by the panel API. In a container, 127.0.0.1 is the API container, not automatically the panel database.</p>}
               </div>
               <div>
                 <Input label="Port" value={hPort} onChange={setHPort} type="number" placeholder="5432" />
@@ -327,15 +337,15 @@ export function AdminDatabases() {
                 {fieldErrors.maxDatabases ? <p className="mt-1 text-xs text-red-400">{fieldErrors.maxDatabases}</p> : null}
               </div>
               <AdminSelect label="TLS Mode" value={hTLSMode} onChange={setHTLSMode} options={[{ value: "disable", label: "Disable" }, { value: "required", label: "Require" }, { value: "verify-ca", label: "Verify CA" }, { value: "verify-full", label: "Verify Full" }]} />
-                {fieldErrors.tlsMode ? <p className="mt-1 text-xs text-red-400">{fieldErrors.tlsMode}</p> : <p className="mt-1 text-xs text-slate-500">Verify Full validates the server certificate and name. A custom CA is optional.</p>}
+                {fieldErrors.tlsMode ? <p className="mt-1 text-xs text-red-400">{fieldErrors.tlsMode}</p> : <p className="mt-1 text-xs text-slate-400">Verify Full validates the server certificate and name. A custom CA is optional.</p>}
               <Input label="TLS Server Name (SNI, optional)" value={hTLSServerName} onChange={setHTLSServerName} mono />
             </div>
           </AdminFormSection>
           <AdminFormSection title="TLS">
             <div>
               <label className="mb-1.5 block text-sm font-medium text-slate-300">TLS CA certificate (write-only)</label>
-              <textarea className="h-28 w-full rounded-lg border border-white/10 bg-surface-card-header px-3.5 py-2 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15 font-mono text-xs" value={hTLSCA} onChange={(e) => setHTLSCA(e.target.value)} placeholder={modal === "create" ? "Optional PEM certificate" : "Leave blank to keep current certificate"}/>
-              <p className="mt-1 text-xs text-slate-500">Certificates and passwords are redacted by the API and never displayed after submission.</p>
+              <textarea className="h-28 w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface-input)] px-3.5 py-2 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-400 hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15 font-mono text-xs" value={hTLSCA} onChange={(e) => setHTLSCA(e.target.value)} placeholder={modal === "create" ? "Optional PEM certificate" : "Leave blank to keep current certificate"}/>
+              <p className="mt-1 text-xs text-slate-400">Certificates and passwords are redacted by the API and never displayed after submission.</p>
             </div>
           </AdminFormSection>
           {createMut.isError ? (
@@ -356,8 +366,8 @@ export function AdminDatabases() {
               <span>Database host {modal === "create" ? "created" : "updated"} successfully.</span>
             </div>
           ) : null}
-          <div className="mt-5 flex items-center justify-between gap-3 rounded-lg border border-white/[0.06] bg-white/[0.02] p-4">
-            <p className="text-xs text-slate-500">Test the current settings successfully before saving.</p>
+          <div className="mt-5 flex items-center justify-between gap-3 rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
+            <p className="text-xs text-slate-400">Test the current settings successfully before saving.</p>
             <Btn tone="success" type="button" onClick={handleTest} disabled={testMut.isPending}>
               {testMut.isPending ? "Testing..." : "Test Connection"}
             </Btn>

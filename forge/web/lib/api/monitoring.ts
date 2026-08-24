@@ -65,3 +65,32 @@ export async function getAlertHistory(params?: { page?: number; limit?: number }
 export function acknowledgeAlert(id: string): Promise<void> {
   return postJSON<void>(`/alerts/${encodeURIComponent(id)}/acknowledge`);
 }
+
+export function getAlert(id: string): Promise<AlertEvent> {
+  return fetchJSON<AlertEvent>(`/alerts/${encodeURIComponent(id)}`);
+}
+
+export function resolveAlert(id: string): Promise<void> {
+  return postJSON<void>(`/alerts/${encodeURIComponent(id)}/resolve`);
+}
+
+/** @deprecated Use resolveAlert (POST) — kept for backward compat with task spec mentioning GET */
+export function resolveAlertGET(id: string): Promise<void> {
+  return fetchJSON<void>(`/alerts/${encodeURIComponent(id)}/resolve`);
+}
+
+export type MetricPeriod = "1h" | "6h" | "24h" | "7d" | "30d";
+
+export function metricWindow(period: MetricPeriod): { limit: number; since: string } {
+  const now = Date.now();
+  const map: Record<MetricPeriod, number> = {
+    "1h": 60 * 60 * 1000,
+    "6h": 6 * 60 * 60 * 1000,
+    "24h": 24 * 60 * 60 * 1000,
+    "7d": 7 * 24 * 60 * 60 * 1000,
+    "30d": 30 * 24 * 60 * 60 * 1000,
+  };
+  const duration = map[period] ?? map["1h"];
+  const limit = period === "1h" ? 60 : period === "6h" ? 72 : period === "24h" ? 96 : period === "7d" ? 168 : 240;
+  return { limit, since: new Date(now - duration).toISOString() };
+}

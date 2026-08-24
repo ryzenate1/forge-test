@@ -47,22 +47,68 @@ export interface ProcessEntry {
   state: string;
 }
 
-export function fetchHostInfo(init?: RequestInit): Promise<HostInfo> {
-  return fetchJSON<HostInfo>('/host/info', init);
+function hostQuery(nodeId?: string): string {
+  return nodeId ? `?nodeId=${encodeURIComponent(nodeId)}` : '';
 }
 
-export function fetchHostDisk(init?: RequestInit): Promise<DiskPartition[]> {
-  return fetchJSON<DiskPartition[]>('/host/disk', init);
+// All host endpoints resolve the target Beacon node via optional `nodeId` query
+// param (fallback to first active node on the API side). Threading nodeId
+// ensures multi-node deployments query the intended host rather than always
+// hitting the default. Signature retains init-only backwards compat: if the
+// first arg is a RequestInit object it is treated as init with no nodeId.
+
+export function fetchHostInfo(nodeId?: string | RequestInit, init?: RequestInit): Promise<HostInfo> {
+  // Back-compat: allow fetchHostInfo(init) call where init is passed as first arg
+  let url = '/host/info';
+  let requestInit: RequestInit | undefined = init;
+  if (nodeId != null && typeof nodeId === 'object') {
+    requestInit = nodeId as unknown as RequestInit;
+  } else if (typeof nodeId === 'string' && nodeId) {
+    url += hostQuery(nodeId);
+  }
+  return fetchJSON<HostInfo>(url, requestInit);
 }
 
-export function fetchHostMemory(init?: RequestInit): Promise<MemoryInfo> {
-  return fetchJSON<MemoryInfo>('/host/memory', init);
+export function fetchHostDisk(nodeId?: string | RequestInit, init?: RequestInit): Promise<DiskPartition[]> {
+  let url = '/host/disk';
+  let requestInit: RequestInit | undefined = init;
+  if (nodeId != null && typeof nodeId === 'object') {
+    requestInit = nodeId as unknown as RequestInit;
+  } else if (typeof nodeId === 'string' && nodeId) {
+    url += hostQuery(nodeId);
+  }
+  return fetchJSON<DiskPartition[]>(url, requestInit);
 }
 
-export function fetchHostNetwork(init?: RequestInit): Promise<NetworkInterface[]> {
-  return fetchJSON<NetworkInterface[]>('/host/network', init);
+export function fetchHostMemory(nodeId?: string | RequestInit, init?: RequestInit): Promise<MemoryInfo> {
+  let url = '/host/memory';
+  let requestInit: RequestInit | undefined = init;
+  if (nodeId != null && typeof nodeId === 'object') {
+    requestInit = nodeId as unknown as RequestInit;
+  } else if (typeof nodeId === 'string' && nodeId) {
+    url += hostQuery(nodeId);
+  }
+  return fetchJSON<MemoryInfo>(url, requestInit);
 }
 
-export function fetchHostProcesses(init?: RequestInit): Promise<ProcessEntry[]> {
-  return fetchJSON<ProcessEntry[]>('/host/processes', init);
+export function fetchHostNetwork(nodeId?: string | RequestInit, init?: RequestInit): Promise<NetworkInterface[]> {
+  let url = '/host/network';
+  let requestInit: RequestInit | undefined = init;
+  if (nodeId != null && typeof nodeId === 'object') {
+    requestInit = nodeId as unknown as RequestInit;
+  } else if (typeof nodeId === 'string' && nodeId) {
+    url += hostQuery(nodeId);
+  }
+  return fetchJSON<NetworkInterface[]>(url, requestInit);
+}
+
+export function fetchHostProcesses(nodeId?: string | RequestInit, init?: RequestInit): Promise<ProcessEntry[]> {
+  let url = '/host/processes';
+  let requestInit: RequestInit | undefined = init;
+  if (nodeId != null && typeof nodeId === 'object') {
+    requestInit = nodeId as unknown as RequestInit;
+  } else if (typeof nodeId === 'string' && nodeId) {
+    url += hostQuery(nodeId);
+  }
+  return fetchJSON<ProcessEntry[]>(url, requestInit);
 }

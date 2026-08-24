@@ -8,6 +8,7 @@ import { Btn, Card, CardHeader, EmptyState, SectionHeader, Pill, AdminConfirmDia
 import { useToast } from "@/components/ui/toast";
 import { DBContainerCreateModal } from "./container-create-modal";
 import { DBContainerCredentialsModal } from "./container-credentials-modal";
+import { statusTone } from "@/lib/api/status";
 
 export function DBContainerView() {
   const qc = useQueryClient();
@@ -52,7 +53,7 @@ export function DBContainerView() {
       <Card className="overflow-hidden">
         <CardHeader title="Containers" icon={Database} />
         {containersQuery.isLoading ? (
-          <div className="py-10 text-center text-sm text-slate-500">Loading</div>
+          <div className="py-10 text-center text-sm text-slate-300">Loading</div>
         ) : containersQuery.isError ? (
           <div className="p-5">
             <div className="flex items-start justify-between gap-4 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-200">
@@ -66,7 +67,7 @@ export function DBContainerView() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-white/[0.06] text-left text-xs text-slate-500 uppercase tracking-wider">
+                <tr className="border-b border-white/[0.06] text-left text-xs text-slate-400 uppercase tracking-wider">
                   <th className="px-4 py-3 font-semibold">Name / ID</th>
                   <th className="px-4 py-3 font-semibold">Engine</th>
                   <th className="px-4 py-3 font-semibold">Status</th>
@@ -116,7 +117,7 @@ function DBContainerRow({ db, onRestart, onBackup, onDelete, onShowCreds, isPend
   isPending: boolean;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const statusTone = db.status === "running" ? "green" : db.status === "stopped" ? "red" : "yellow";
+  const tone = statusTone(db.status);
 
   return (
     <>
@@ -128,7 +129,7 @@ function DBContainerRow({ db, onRestart, onBackup, onDelete, onShowCreds, isPend
         <Pill tone="blue">{db.engine} {db.version}</Pill>
       </td>
       <td className="px-4 py-3">
-        <Pill tone={statusTone}>{db.status}</Pill>
+        <Pill tone={tone}>{db.status}</Pill>
       </td>
       <td className="px-4 py-3 font-mono text-xs text-slate-400">
         {db.containerId ? `${db.containerId.slice(0, 12)}:${db.port}` : "-"}
@@ -140,13 +141,13 @@ function DBContainerRow({ db, onRestart, onBackup, onDelete, onShowCreds, isPend
         {db.connectionString ? (
           <Btn size="sm" tone="ghost" onClick={() => onShowCreds(db.id)}>View</Btn>
         ) : (
-          <span className="text-xs text-slate-500">Pending</span>
+          <span className="text-xs text-slate-400">Pending</span>
         )}
       </td>
       <td className="px-4 py-3">
         <div className="flex items-center justify-end gap-1">
           <button
-            className="grid h-8 w-8 place-items-center rounded text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-40"
+            className="grid h-11 w-11 place-items-center rounded text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-40"
             disabled={isPending}
             onClick={() => onRestart(db.id)}
             title="Restart"
@@ -155,7 +156,7 @@ function DBContainerRow({ db, onRestart, onBackup, onDelete, onShowCreds, isPend
             <RotateCcw size={14} />
           </button>
           <button
-            className="grid h-8 w-8 place-items-center rounded text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-amber-200 disabled:opacity-40"
+            className="grid h-11 w-11 place-items-center rounded text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-amber-200 disabled:opacity-40"
             disabled={isPending}
             onClick={() => onBackup(db.id)}
             title="Backup"
@@ -164,7 +165,7 @@ function DBContainerRow({ db, onRestart, onBackup, onDelete, onShowCreds, isPend
             <Archive size={14} />
           </button>
           <button
-            className="grid h-8 w-8 place-items-center rounded text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-red-200 disabled:opacity-40"
+            className="grid h-11 w-11 place-items-center rounded text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-red-200 disabled:opacity-40"
             disabled={isPending || db.status === "provisioning"}
             onClick={() => setConfirmDelete(true)}
             title="Delete"

@@ -108,7 +108,7 @@ function CronForm({ job, onClose }: { job?: CronJob; onClose: () => void }) {
     }
   };
 
-  const inputBase = "h-9 w-full rounded-lg border border-white/10 bg-[#0f141f] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15";
+  const inputBase = "h-9 w-full rounded-lg border border-white/10 bg-[var(--surface)] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15";
   const cronError = errors.schedule;
 
   return (
@@ -146,7 +146,7 @@ function CronForm({ job, onClose }: { job?: CronJob; onClose: () => void }) {
               onClick={() => { setSchedule(preset.value); setErrors((prev) => { const rest = { ...prev }; delete rest.schedule; return rest; }); }}
               className={`rounded-lg border px-2.5 py-1 text-[11px] font-medium transition ${
                 schedule === preset.value
-                  ? "border-red-500/40 bg-red-950/30 text-red-300"
+                  ? "border-[var(--brand)]/40 bg-[var(--brand)]/20 text-[var(--brand)]"
                   : "border-white/10 bg-white/[0.03] text-slate-400 hover:border-white/20 hover:text-slate-200"
               }`}
             >
@@ -160,7 +160,7 @@ function CronForm({ job, onClose }: { job?: CronJob; onClose: () => void }) {
             value={schedule}
             onChange={(e) => { setSchedule(e.target.value); if (e.target.value) setErrors((prev) => { const rest = { ...prev }; delete rest.schedule; return rest; }); }}
             placeholder="*/5 * * * *"
-            className={`font-mono text-xs ${inputBase} ${cronError ? "border-red-500/50" : ""}`}
+            className={`font-mono text-xs ${inputBase} ${cronError ? "border-[var(--brand)]/50" : ""}`}
           />
         </AdminFormField>
         {schedule && !cronError && (

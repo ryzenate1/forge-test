@@ -1,12 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/components/ui/toast";
 import { useRouter } from "next/navigation";
-import { Upload, CheckCircle, XCircle, AlertTriangle } from "lucide-react";
+import { Upload, CheckCircle, XCircle, AlertTriangle, Server } from "lucide-react";
 import { AdminFormSection, AdminPageHeader, AdminPageLayout, Btn, Card, CardHeader } from "@/components/admin/admin-ui";
+import { OfflineBanner } from "@/components/shared/states-offline";
 import { validateCompose, createComposeStack, type ComposeValidateResult } from "@/lib/api/compose";
+import { fetchNodes } from "@/lib/api";
 
 const TEMPLATES = [
   {
@@ -33,6 +35,8 @@ export default function NewComposeStackPage() {
   const [composeYaml, setComposeYaml] = useState("");
   const [validateResult, setValidateResult] = useState<ComposeValidateResult | null>(null);
   const [composeType, setComposeType] = useState("docker-compose");
+  const [nodeId, setNodeId] = useState("");
+  const { data: nodes = [] } = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
 
   const validateMutation = useMutation({
     mutationFn: (content: string) => validateCompose(content),
@@ -46,10 +50,10 @@ export default function NewComposeStackPage() {
   });
 
   const deployMutation = useMutation({
-    mutationFn: () => createComposeStack({ name, composeYaml, composeType, sourceType: "raw" }),
+    mutationFn: () => createComposeStack({ name, composeYaml, composeType, sourceType: "raw", nodeId: nodeId || undefined }),
     onSuccess: (stack) => {
       toast({ tone: "success", title: "Stack deployed" });
-      router.push(`/admin/compose/${stack.id}`);
+      router.push(`/admin/compose/${(stack as { id: string }).id}`);
     },
     onError: (err: Error) => toast({ tone: "error", title: err.message }),
   });
@@ -83,6 +87,7 @@ export default function NewComposeStackPage() {
         backAction={() => router.push("/admin/compose")}
         backLabel="Compose Stacks"
       />
+      <OfflineBanner onRetry={() => window.location.reload()} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
@@ -90,25 +95,42 @@ export default function NewComposeStackPage() {
           <div className="p-4 space-y-4">
             <AdminFormSection title="Stack">
               <div>
-                <label className="mb-1 block text-sm text-slate-400">Stack Name</label>
+                <label className="mb-1 block text-sm text-slate-300">Stack Name</label>
                 <input
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="my-stack"
-                  className="w-full rounded-lg border border-white/10 bg-[#0d131d] px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500 focus:border-red-400/70 focus:outline-none focus:ring-2 focus:ring-red-500/15"
+                  className="w-full rounded-lg border border-[var(--line)] bg-[var(--surface-input)] px-3 py-2 text-sm text-slate-200 placeholder:text-slate-400 focus:border-[var(--brand)]/70 focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/15"
                 />
               </div>
               <div>
-                <label className="mb-1 block text-sm text-slate-400">Compose Type</label>
+                <label className="mb-1 block text-sm text-slate-300">Target Node</label>
+                <select
+                  value={nodeId}
+                  onChange={(e) => setNodeId(e.target.value)}
+                  className="w-full rounded-lg border border-[var(--line)] bg-[var(--surface-input)] px-3 py-2 text-sm text-slate-200 focus:border-[var(--brand)]/70 focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/15"
+                >
+                  <option value="">Auto-select</option>
+                  {(Array.isArray(nodes) ? nodes : []).map((n: { id: string; name: string }) => (
+                    <option key={n.id} value={n.id}>{n.name} ({n.id.slice(0, 8)})</option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-slate-500">Choose a node for scheduling; leave auto for scheduler.</p>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm text-slate-300">Compose Type</label>
                 <select
                   value={composeType}
                   onChange={(e) => setComposeType(e.target.value)}
-                  className="w-full rounded-lg border border-white/10 bg-[#0d131d] px-3 py-2 text-sm text-slate-200 focus:border-red-400/70 focus:outline-none focus:ring-2 focus:ring-red-500/15"
+                  className="w-full rounded-lg border border-[var(--line)] bg-[var(--surface-input)] px-3 py-2 text-sm text-slate-200 focus:border-[var(--brand)]/70 focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/15"
                 >
                   <option value="docker-compose">Docker Compose</option>
                   <option value="stack">Docker Stack</option>
                 </select>
+              </div>
+              <div className="rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-xs text-sky-200">
+                <Server size={12} className="inline mr-1" /> Health & status use <code className="rounded bg-white/10 px-1 py-0.5 font-mono text-[11px]">composeStatusTone</code> tones (green running, yellow degraded, red failed) — same Pill system as Apps.
               </div>
             </AdminFormSection>
 
@@ -119,7 +141,7 @@ export default function NewComposeStackPage() {
                     {t.label}
                   </Btn>
                 ))}
-                <label className="flex cursor-pointer items-center gap-1 rounded-lg border border-dashed border-white/10 bg-[#0d131d] px-3 py-1.5 text-xs text-slate-400 hover:border-red-400/70 hover:text-red-400 transition-colors">
+                <label className="flex cursor-pointer items-center gap-1 rounded-lg border border-dashed border-[var(--line)] bg-[var(--surface-input)] px-3 py-1.5 text-xs text-slate-400 hover:border-[var(--brand)]/70 hover:text-[var(--brand)] transition-colors">
                   <Upload className="h-3 w-3" /> Upload
                   <input type="file" accept=".yml,.yaml" onChange={handleFileUpload} className="hidden" />
                 </label>
@@ -132,7 +154,7 @@ export default function NewComposeStackPage() {
                 }}
                 placeholder={`services:\n  app:\n    image: nginx:latest\n    ports:\n      - "8080:80"`}
                 rows={18}
-                className="w-full rounded-lg border border-white/10 bg-[#0d131d] px-3 py-2 text-sm font-mono text-slate-200 placeholder:text-slate-500 focus:border-red-400/70 focus:outline-none focus:ring-2 focus:ring-red-500/15 resize-y"
+                className="w-full rounded-lg border border-[var(--line)] bg-[var(--surface-input)] px-3 py-2 text-sm font-mono text-slate-200 placeholder:text-slate-400 focus:border-[var(--brand)]/70 focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/15 resize-y"
               />
             </AdminFormSection>
 
@@ -181,7 +203,7 @@ export default function NewComposeStackPage() {
                     {validateResult.summary.services.length} service(s), {validateResult.summary.networks?.length || 0} network(s), {validateResult.summary.volumes?.length || 0} volume(s)
                     <ul className="mt-1 space-y-0.5">
                       {validateResult.summary.services.map((s) => (
-                        <li key={s.name} className="text-slate-500">
+                        <li key={s.name} className="text-slate-400">
                           {s.name} {s.image ? `(${s.image})` : ""}
                         </li>
                       ))}
@@ -195,7 +217,7 @@ export default function NewComposeStackPage() {
 
         <Card>
           <CardHeader title="Preview" />
-          <pre className="rounded-lg bg-[#0d131d] p-4 text-xs font-mono text-slate-300 overflow-auto max-h-[500px]">
+          <pre className="rounded-lg bg-[var(--surface-input)] p-4 text-xs font-mono text-slate-300 overflow-auto max-h-[500px]">
             {composeYaml || "Paste or select a template to preview..."}
           </pre>
         </Card>

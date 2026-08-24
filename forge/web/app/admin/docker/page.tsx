@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Container, Image, Network, HardDrive } from "lucide-react";
 import { SectionHeader, cn } from "@/components/admin/admin-ui";
+import { OfflineBanner } from "@/components/shared/states-offline";
 import { ContainersView } from "@/components/docker/containers-view";
 import { ImagesView } from "@/components/docker/images-view";
 import { NetworksView } from "@/components/docker/networks-view";
@@ -23,7 +24,8 @@ export default function DockerPage() {
   return (
     <div className="space-y-6">
       <SectionHeader title="Docker" sub="Manage containers, images, networks, and volumes across all nodes." />
-      <div className="flex gap-1 border-b border-white/[0.06]">
+      <OfflineBanner onRetry={() => window.location.reload()} />
+      <div className="flex gap-1 border-b border-[var(--line)]">
         {TABS.map((t) => {
           const Icon = t.icon;
           const active = tab === t.id;
@@ -34,7 +36,7 @@ export default function DockerPage() {
               className={cn(
                 "flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition border-b-2 -mb-px",
                 active
-                  ? "border-[#dc2626] text-[#dc2626]"
+                  ? "border-[var(--brand)] text-[var(--brand)]"
                   : "border-transparent text-slate-400 hover:text-slate-200",
               )}
               onClick={() => setTab(t.id)}

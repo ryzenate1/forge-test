@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Activity, AlertCircle, ChevronRight, Cpu, Database, Eye, EyeOff, Globe, KeyRound, Lock, Mail,
-  Network, Plus, Search, Settings as SettingsIcon, Shield, Trash2, Unlock, Wrench,
+  Activity, AlertCircle, AlertTriangle, ChevronRight, Cpu, Database, Eye, EyeOff, Globe, History, Layers, GitCompare, KeyRound, Lock, Mail,
+  Network, Plus, Search, Settings as SettingsIcon, Shield, Trash2, Unlock, Wrench, Zap,
 } from "lucide-react";
 import {
   fetchNodes, createNode, deleteNode, fetchServers, fetchLocations, fetchRegions, fetchNode, updateNode, rotateNodeToken,
@@ -13,12 +13,13 @@ import {
   type ApiNode, type ApiAllocation, type ApiLocation, type ApiRegion, type ApiServer,
   type CreateNodeInput, type UpdateNodeInput,
 } from "@/lib/api";
+import { fetchCapability, fetchCapabilityDelta, fetchCapabilityHistory, probeCapabilities } from "@/lib/api/capabilities";
 import { useToast } from "@/components/ui/toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { copySecret } from "@/lib/clipboard";
-import { AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, SectionHeader, Textarea, cn } from "./admin-ui";
+import { AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, SectionHeader, Textarea, cn, Pill, AdminLoadingState, AdminErrorState } from "./admin-ui";
 
-type Tab = "about" | "settings" | "configuration" | "allocation" | "servers";
+type Tab = "about" | "settings" | "configuration" | "allocation" | "servers" | "capabilities";
 
 const ADMIN_TABS: Array<{ id: Tab; label: string }> = [
   { id: "about", label: "About" },
@@ -26,6 +27,7 @@ const ADMIN_TABS: Array<{ id: Tab; label: string }> = [
   { id: "configuration", label: "Configuration" },
   { id: "allocation", label: "Allocation" },
   { id: "servers", label: "Servers" },
+  { id: "capabilities", label: "Capabilities" },
 ];
 
 function validateNodeForm(name: string, locationId: string, fqdn: string, scheme: string, memoryMb: string, diskMb: string, daemonListen: string, daemonSftp: string): string | null {
@@ -256,6 +258,7 @@ function NodeDetailView({ nodeId, onClose }: { nodeId: string; onClose: () => vo
         {tab === "configuration" && <NodeConfigurationTab node={node} />}
         {tab === "allocation" && <NodeAllocationTab node={node} allocations={allocations} />}
         {tab === "servers" && <NodeServersTab nodeId={nodeId} />}
+        {tab === "capabilities" && <NodeCapabilitiesTab nodeId={nodeId} />}
       </div>
       {renderConfirm()}
     </Modal>
@@ -770,6 +773,169 @@ function NodeServersTab({ nodeId }: { nodeId: string }) {
         </table>
       )}
     </Card>
+  );
+}
+
+function NodeCapabilitiesTab({ nodeId }: { nodeId: string }) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const capQ = useQuery({
+    queryKey: ["node-capability", nodeId],
+    queryFn: () => fetchCapability(nodeId),
+    retry: false,
+  });
+  const histQ = useQuery({
+    queryKey: ["node-capability-history", nodeId],
+    queryFn: () => fetchCapabilityHistory(nodeId, 10),
+    retry: false,
+  });
+  const deltaQ = useQuery({
+    queryKey: ["node-capability-delta", nodeId],
+    queryFn: () => fetchCapabilityDelta(nodeId),
+    retry: false,
+  });
+  const probeMut = useMutation({
+    mutationFn: () => probeCapabilities(nodeId),
+    onSuccess: (data) => {
+      if (!data.online) toast({ tone: "error", title: "Node offline", message: (data as { error?: string }).error ?? "beacon unreachable" });
+      else toast({ tone: "success", title: "Probe succeeded", message: `Capabilities refreshed @ ${new Date().toLocaleTimeString()}` });
+      void qc.invalidateQueries({ queryKey: ["node-capability"] });
+      void qc.invalidateQueries({ queryKey: ["node-capability-history"] });
+      void qc.invalidateQueries({ queryKey: ["node-capability-delta"] });
+      void qc.invalidateQueries({ queryKey: ["admin-capabilities-global"] });
+      void deltaQ.refetch();
+      void histQ.refetch();
+      void capQ.refetch();
+    },
+    onError: (e: Error) => toast({ tone: "error", title: "Probe failed", message: e.message }),
+  });
+  const d = deltaQ.data;
+  const hasDrift = d ? d.added.length > 0 || d.removed.length > 0 || d.changed.length > 0 : false;
+
+  return (
+    <div className="space-y-4">
+      {/* Amber drift banner — visible when delta shows drift */}
+      {hasDrift ? (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200" role="alert">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-400" />
+          <span>Capability drift detected — {d!.added.length} added · {d!.removed.length} removed · {d!.changed.length} changed since last snapshot. Use Probe to refresh or compare the two newest history rows.</span>
+        </div>
+      ) : null}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-[var(--text-subtle)]">GET /capabilities/:nodeId · history · delta · probe — per-node view of the global capabilities inventory.</p>
+        <Btn size="sm" tone="primary" loading={probeMut.isPending} onClick={() => probeMut.mutate()}>
+          <Zap size={12} /> Probe live
+        </Btn>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card className="border border-[var(--line)] bg-[var(--surface)]">
+          <CardHeader title="Current snapshot — GET /capabilities/:nodeId" icon={Layers} action={<Btn size="sm" tone="ghost" onClick={() => void capQ.refetch()}>Reload</Btn>} />
+          {capQ.isLoading ? (
+            <div className="p-4"><AdminLoadingState label="Loading capability…" /></div>
+          ) : capQ.isError ? (
+            <div className="p-4"><AdminErrorState message={(capQ.error as Error).message} retry={() => void capQ.refetch()} /></div>
+          ) : capQ.data ? (
+            <div className="space-y-3 p-4">
+              <div className="grid gap-2 text-xs">
+                <div className="flex justify-between"><span className="text-[var(--text-subtle)]">Beacon</span><span className="font-mono text-[var(--text)]">{capQ.data.beaconVersion || "—"}</span></div>
+                <div className="flex justify-between"><span className="text-[var(--text-subtle)]">OS / Arch</span><span className="font-mono text-[var(--text)]">{capQ.data.os} / {capQ.data.architecture}</span></div>
+                <div className="flex justify-between"><span className="text-[var(--text-subtle)]">CPU / Memory</span><span className="font-mono text-[var(--text)]">{capQ.data.cpuThreads} threads · {capQ.data.memoryMb} MiB</span></div>
+                <div className="flex justify-between"><span className="text-[var(--text-subtle)]">Runtime</span><span className={capQ.data.runtimeAvailable ? "font-mono text-emerald-300" : "font-mono text-red-300"}>{capQ.data.runtimeAvailable ? capQ.data.runtimeStatus || "available" : "unavailable"}</span></div>
+                <div className="flex justify-between"><span className="text-[var(--text-subtle)]">Fetched</span><span className="font-mono text-[var(--text)]">{capQ.data.fetchedAt ? new Date(capQ.data.fetchedAt).toLocaleString() : "—"}</span></div>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                <Pill tone={capQ.data.dockerBuildEnabled ? "green" : "neutral"}>dockerBuild</Pill>
+                <Pill tone={capQ.data.nixpacksEnabled ? "green" : "neutral"}>nixpacks</Pill>
+                <Pill tone={capQ.data.composeEnabled ? "blue" : "neutral"}>compose</Pill>
+                <Pill tone={capQ.data.localBackups ? "green" : "neutral"}>localBackups</Pill>
+                <Pill tone={capQ.data.s3Backups ? "blue" : "neutral"}>s3Backups</Pill>
+                <Pill tone={capQ.data.transferEnabled ? "green" : "neutral"}>transfer</Pill>
+                <Pill tone={capQ.data.sftpEnabled ? "blue" : "neutral"}>sftp</Pill>
+                <Pill tone={capQ.data.webSocketEnabled ? "blue" : "neutral"}>websocket</Pill>
+                <Pill tone={capQ.data.consoleEnabled ? "blue" : "neutral"}>console</Pill>
+                <Pill tone={capQ.data.databaseProvisioningEnabled ? "green" : "neutral"}>dbProvisioning</Pill>
+              </div>
+              <pre className="max-h-40 overflow-auto rounded bg-black/20 p-2 font-mono text-[11px] leading-5 text-[var(--text-subtle)]">{JSON.stringify(capQ.data.rawReport ?? capQ.data, null, 2)}</pre>
+            </div>
+          ) : (
+            <div className="p-4 text-sm text-[var(--text-subtle)]">No capability snapshot yet — probe the node or wait for heartbeat.</div>
+          )}
+        </Card>
+
+        <Card className="border border-[var(--line)] bg-[var(--surface)]">
+          <CardHeader title="Delta — GET /capabilities/:nodeId/delta" icon={GitCompare} action={<Btn size="sm" tone="ghost" onClick={() => void deltaQ.refetch()}>Recompute</Btn>} />
+          {deltaQ.isLoading ? (
+            <div className="p-4"><AdminLoadingState label="Computing delta…" /></div>
+          ) : deltaQ.isError ? (
+            <div className="p-4"><AdminErrorState message={(deltaQ.error as Error).message} retry={() => void deltaQ.refetch()} /></div>
+          ) : d ? (
+            <div className="space-y-3 p-4">
+              <div className="flex flex-wrap gap-2 text-xs">
+                <Pill tone="green">+ {d.added.length} added</Pill>
+                <Pill tone="red">− {d.removed.length} removed</Pill>
+                <Pill tone="yellow">~ {d.changed.length} changed</Pill>
+                <Pill tone="neutral">= {d.unchanged.length} unchanged</Pill>
+                <span className="ml-auto font-mono text-[11px] text-[var(--text-subtle)]">fetchedAt {d.fetchedAt ? new Date(d.fetchedAt).toLocaleString() : "—"}</span>
+              </div>
+              {!hasDrift ? <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-200">No drift — capability snapshot is stable.</div> : null}
+              <div className="grid gap-2">
+                <DeltaSection title="Added" items={d.added} tone="green" />
+                <DeltaSection title="Removed" items={d.removed} tone="red" />
+                <DeltaSection title="Changed" items={d.changed} tone="yellow" />
+                <DeltaSection title="Unchanged" items={d.unchanged} tone="neutral" />
+              </div>
+              <p className="text-xs leading-5 text-[var(--text-subtle)]">
+                Drift is derived from <code className="font-mono text-[11px]">node_capability_history</code> (newest 2 rows). When only one snapshot exists the delta reports everything as <code className="font-mono">added</code> — the honest “no baseline” signal.
+              </p>
+            </div>
+          ) : (
+            <div className="p-4 text-sm text-[var(--text-subtle)]">No delta yet — probe or wait for a second snapshot.</div>
+          )}
+        </Card>
+      </div>
+
+      <Card className="border border-[var(--line)] bg-[var(--surface)]">
+        <CardHeader title="History — GET /capabilities/:nodeId/history" icon={History} action={<Btn size="sm" tone="ghost" onClick={() => void histQ.refetch()}>Reload</Btn>} />
+        {histQ.isLoading ? (
+          <div className="p-4 text-xs text-[var(--text-subtle)]">Loading history…</div>
+        ) : histQ.isError ? (
+          <div className="p-4"><AdminErrorState message={(histQ.error as Error).message} retry={() => void histQ.refetch()} /></div>
+        ) : (histQ.data?.length ?? 0) === 0 ? (
+          <div className="p-4 text-sm text-[var(--text-subtle)]">No history — probe or wait for heartbeat to generate snapshots.</div>
+        ) : (
+          <ol className="space-y-2 p-4">
+            {(histQ.data ?? []).map((h) => (
+              <li key={h.id} className="rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] px-3 py-2">
+                <div className="flex items-center gap-2 font-mono text-xs">
+                  <span className="font-medium text-[var(--text)]">{new Date(h.observedAt).toLocaleString()}</span>
+                  <span className="text-[var(--text-subtle)]">· {h.beaconVersion}</span>
+                </div>
+                <pre className="mt-1 overflow-auto text-[11px] leading-5 text-[var(--text-subtle)]">{JSON.stringify(h.capabilities, null, 2)?.slice(0, 600)}</pre>
+              </li>
+            ))}
+          </ol>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function DeltaSection({ title, items, tone }: { title: string; items: unknown[]; tone: "green" | "red" | "yellow" | "neutral" }) {
+  const map: Record<string, string> = { green: "border-emerald-500/20 bg-emerald-500/10", red: "border-red-500/20 bg-red-500/10", yellow: "border-amber-500/20 bg-amber-500/10", neutral: "border-[var(--line)] bg-[var(--surface-raised)]" };
+  return (
+    <div className={`rounded-xl border p-3 ${map[tone]}`}>
+      <div className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-subtle)]">{title} · {items.length}</div>
+      {items.length === 0 ? <div className="mt-2 text-xs text-[var(--text-subtle)]">—</div> : (
+        <ul className="mt-2 space-y-1">
+          {items.map((it, i) => (
+            <li key={i} className="rounded border border-white/[0.06] bg-black/20 px-2 py-1 font-mono text-[11px] leading-5 text-[var(--text-subtle)]">
+              {JSON.stringify(it, null, 2).slice(0, 400)}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

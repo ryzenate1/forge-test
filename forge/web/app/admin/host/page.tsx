@@ -70,7 +70,7 @@ function formatError(error: unknown): string {
 function InfoTab({ nodeId }: { nodeId: string }) {
   const { data, isLoading, error, refetch, dataUpdatedAt } = useHostQuery(
     ["host-info", nodeId],
-    fetchHostInfo,
+    (init) => fetchHostInfo(nodeId, init),
     30_000,
   );
   const lastUpdated = dataUpdatedAt ? new Date(dataUpdatedAt) : null;
@@ -107,7 +107,7 @@ function InfoTab({ nodeId }: { nodeId: string }) {
 function DiskTab({ nodeId }: { nodeId: string }) {
   const { data, isLoading, error, refetch, dataUpdatedAt } = useHostQuery(
     ["host-disk", nodeId],
-    fetchHostDisk,
+    (init) => fetchHostDisk(nodeId, init),
     30_000,
   );
   const lastUpdated = dataUpdatedAt ? new Date(dataUpdatedAt) : null;
@@ -143,7 +143,7 @@ function DiskTab({ nodeId }: { nodeId: string }) {
 function MemoryTab({ nodeId }: { nodeId: string }) {
   const { data, isLoading, error, refetch, dataUpdatedAt } = useHostQuery(
     ["host-memory", nodeId],
-    fetchHostMemory,
+    (init) => fetchHostMemory(nodeId, init),
     30_000,
   );
   const lastUpdated = dataUpdatedAt ? new Date(dataUpdatedAt) : null;
@@ -180,7 +180,7 @@ function MemoryTab({ nodeId }: { nodeId: string }) {
 function NetworkTab({ nodeId }: { nodeId: string }) {
   const { data, isLoading, error, refetch, dataUpdatedAt } = useHostQuery(
     ["host-network", nodeId],
-    fetchHostNetwork,
+    (init) => fetchHostNetwork(nodeId, init),
     30_000,
   );
   const lastUpdated = dataUpdatedAt ? new Date(dataUpdatedAt) : null;
@@ -219,7 +219,7 @@ function ProcessesTab({ nodeId }: { nodeId: string }) {
   const [sortBy, setSortBy] = useState<"cpu" | "mem">("cpu");
   const { data, isLoading, error, refetch, dataUpdatedAt } = useHostQuery(
     ["host-processes", nodeId],
-    fetchHostProcesses,
+    (init) => fetchHostProcesses(nodeId, init),
     10_000,
   );
   const lastUpdated = dataUpdatedAt ? new Date(dataUpdatedAt) : null;

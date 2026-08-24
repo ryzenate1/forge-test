@@ -499,7 +499,7 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 		return c.JSON(invites)
 	})
 
-	protected.Post("/invitations/accept", func(c *fiber.Ctx) error {
+	acceptTenancyInvitation := func(c *fiber.Ctx) error {
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -516,7 +516,9 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
 		return c.JSON(fiber.Map{"ok": true})
-	})
+	}
+	protected.Post("/invitations/accept", acceptTenancyInvitation)
+	protected.Post("/tenancy/invitations/accept", acceptTenancyInvitation)
 
 	protected.Delete("/organizations/:id/invitations/:invId", tenancyOrgAccess(tenancySvc), func(c *fiber.Ctx) error {
 		claims, ok := c.Locals("user").(tokenClaims)

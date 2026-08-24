@@ -76,6 +76,108 @@ func registerCapabilityRoutes(protected fiber.Router, cfg Config, nodeProbe *nod
 		return c.JSON(fiber.Map{"data": entries})
 	})
 
+	// GET /capabilities/:nodeId/delta — drift between last two snapshots (amber-banner source)
+	protected.Get("/capabilities/:nodeId/delta", requireAdminScope("nodes.read"), func(c *fiber.Ctx) error {
+		if cfg.Store == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+		}
+		nodeID := c.Params("nodeId")
+		ctx, cancel := requestContext()
+		defer cancel()
+		entries, err := cfg.Store.GetCapabilityHistory(ctx, nodeID, 2)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		if len(entries) == 0 {
+			return fiber.NewError(fiber.StatusNotFound, "capability not found")
+		}
+		// Single snapshot → everything is "added" (no baseline) — honest signal
+		if len(entries) == 1 {
+			var cur []map[string]any
+			_ = json.Unmarshal(entries[0].Capabilities, &cur)
+			if cur == nil {
+				cur = []map[string]any{}
+			}
+			return c.JSON(fiber.Map{
+				"nodeId":    nodeID,
+				"fetchedAt": entries[0].ObservedAt.Format(time.RFC3339),
+				"added":     cur,
+				"removed":   []any{},
+				"changed":   []any{},
+				"unchanged": []any{},
+			})
+		}
+		newest := entries[0]
+		previous := entries[1]
+		var curCaps []map[string]any
+		var prevCaps []map[string]any
+		_ = json.Unmarshal(newest.Capabilities, &curCaps)
+		_ = json.Unmarshal(previous.Capabilities, &prevCaps)
+		// Normalize nil to empty
+		if curCaps == nil {
+			curCaps = []map[string]any{}
+		}
+		if prevCaps == nil {
+			prevCaps = []map[string]any{}
+		}
+		typeKey := func(m map[string]any) string {
+			if t, ok := m["type"].(string); ok && t != "" {
+				return t
+			}
+			b, _ := json.Marshal(m)
+			return string(b)
+		}
+		prevMap := make(map[string]map[string]any, len(prevCaps))
+		for _, m := range prevCaps {
+			prevMap[typeKey(m)] = m
+		}
+		curMap := make(map[string]map[string]any, len(curCaps))
+		for _, m := range curCaps {
+			curMap[typeKey(m)] = m
+		}
+		var added, removed, changed, unchanged []any
+		for _, m := range curCaps {
+			k := typeKey(m)
+			if old, ok := prevMap[k]; !ok {
+				added = append(added, m)
+			} else {
+				a, _ := json.Marshal(old)
+				b, _ := json.Marshal(m)
+				if string(a) != string(b) {
+					changed = append(changed, m)
+				} else {
+					unchanged = append(unchanged, m)
+				}
+			}
+		}
+		for _, m := range prevCaps {
+			k := typeKey(m)
+			if _, ok := curMap[k]; !ok {
+				removed = append(removed, m)
+			}
+		}
+		if added == nil {
+			added = []any{}
+		}
+		if removed == nil {
+			removed = []any{}
+		}
+		if changed == nil {
+			changed = []any{}
+		}
+		if unchanged == nil {
+			unchanged = []any{}
+		}
+		return c.JSON(fiber.Map{
+			"nodeId":    nodeID,
+			"fetchedAt": newest.ObservedAt.Format(time.RFC3339),
+			"added":     added,
+			"removed":   removed,
+			"changed":   changed,
+			"unchanged": unchanged,
+		})
+	})
+
 	// POST /capabilities/:nodeId/probe — live-probe a node's beacon for capabilities
 	protected.Post("/capabilities/:nodeId/probe", requireRole("admin"), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {

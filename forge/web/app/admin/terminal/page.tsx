@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Terminal as XTerm } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import { Terminal as TerminalIcon, RefreshCw, Wifi, WifiOff } from "lucide-react";
@@ -34,16 +34,28 @@ const TERMINAL_THEME = {
 
 const TERMINAL_MAX_RETRIES = 15;
 
-function useFit(terminal: XTerm | null, fitAddon: FitAddon | null) {
+function useFit(terminal: XTerm | null, fitAddon: FitAddon | null, wrapper: HTMLDivElement | null) {
   useEffect(() => {
-    if (!terminal || !fitAddon) return;
-    const observer = new ResizeObserver(() => {
-      try { fitAddon.fit(); } catch { /* layout not ready */ }
-    });
-    const el = terminal.element;
-    if (el) observer.observe(el);
-    return () => observer.disconnect();
-  }, [terminal, fitAddon]);
+    if (!terminal || !fitAddon || !wrapper) return;
+    const fit = () => {
+      try {
+        fitAddon.fit();
+      } catch {
+        /* layout not ready */
+      }
+    };
+    // Initial fit after paint
+    const raf = requestAnimationFrame(fit);
+    const observer = new ResizeObserver(fit);
+    observer.observe(wrapper);
+    // Also refit on window resize (container queries)
+    window.addEventListener("resize", fit);
+    return () => {
+      cancelAnimationFrame(raf);
+      observer.disconnect();
+      window.removeEventListener("resize", fit);
+    };
+  }, [terminal, fitAddon, wrapper]);
 }
 
 export default function AdminTerminalPage() {
@@ -58,6 +70,18 @@ export default function AdminTerminalPage() {
   const [nonce, setNonce] = useState(0);
   const [error, setError] = useState("");
   const [nodeId, setNodeId] = useState("");
+  const [wrapperEl, setWrapperEl] = useState<HTMLDivElement | null>(null);
+
+  // Hydrate initial nodeId from ?nodeId= query (e.g. host-files-view Terminal button)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const q = new URLSearchParams(window.location.search).get("nodeId");
+    if (q) setNodeId(q);
+  }, []);
+
+  useEffect(() => {
+    setWrapperEl(terminalRef.current);
+  }, [terminalReady]);
 
   useEffect(() => {
     if (!terminalRef.current || xtermRef.current) return;
@@ -89,6 +113,12 @@ export default function AdminTerminalPage() {
       xtermRef.current = terminal;
       fitAddonRef.current = fitAddon;
       setTerminalReady(true);
+      // Fit after open
+      try {
+        fitAddon.fit();
+      } catch {
+        /* layout not ready */
+      }
 
       terminal.attachCustomKeyEventHandler((e: KeyboardEvent) => {
         if ((e.ctrlKey || e.metaKey) && e.key === "c") {
@@ -119,7 +149,7 @@ export default function AdminTerminalPage() {
     };
   }, []);
 
-  useFit(xtermRef.current, fitAddonRef.current);
+  useFit(xtermRef.current, fitAddonRef.current, wrapperEl);
 
   useEffect(() => {
     if (!xtermRef.current) return;
@@ -161,6 +191,30 @@ export default function AdminTerminalPage() {
 
     ws.onmessage = (event) => {
       if (aborted) return;
+      // Status JSON: ignore structured ping, handle blob/text
+      if (typeof event.data === "string") {
+        // Try parse status JSON — e.g. {"status":"connected"} — don't render as terminal noise
+        try {
+          const parsed = JSON.parse(event.data);
+          if (parsed && typeof parsed === "object" && "status" in parsed) {
+            const s = (parsed as { status?: string }).status;
+            if (s === "connected") {
+              // already handled via onopen, no need to write
+              return;
+            }
+            if (s === "error" || s === "offline") {
+              const msg = (parsed as { error?: string; message?: string }).error ?? (parsed as { message?: string }).message ?? "host error";
+              terminal.writeln(`\x1b[1;31m${msg}\x1b[0m`);
+              setError(String(msg));
+              return;
+            }
+          }
+        } catch {
+          // not JSON, treat as terminal stream
+        }
+        terminal.write(event.data);
+        return;
+      }
       if (event.data instanceof Blob) {
         event.data.arrayBuffer().then((buf) => {
           if (aborted) return;
@@ -202,6 +256,8 @@ export default function AdminTerminalPage() {
   }, [nonce, nodeId, terminalReady]);
 
   const handleRetry = useCallback(() => {
+    reconnectAttempt.current = 0;
+    setError("");
     setNonce((v) => v + 1);
   }, []);
 
@@ -210,6 +266,21 @@ export default function AdminTerminalPage() {
     reconnectAttempt.current = 0;
     setNodeId(next);
   }, []);
+
+  const statusJson = useMemo(() => {
+    return JSON.stringify(
+      {
+        connected,
+        nodeId: nodeId || null,
+        apiBase: API_BASE_URL,
+        retries: reconnectAttempt.current,
+        maxRetries: TERMINAL_MAX_RETRIES,
+        ready: terminalReady,
+      },
+      null,
+      2,
+    );
+  }, [connected, nodeId, terminalReady]);
 
   return (
     <AdminPageLayout>
@@ -241,9 +312,15 @@ export default function AdminTerminalPage() {
         />
         <div className="p-0">
           {error ? (
-            <div className="mx-4 mt-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200" role="alert">
-              {error}
-              <button className="ml-3 underline font-semibold" onClick={handleRetry} type="button">Retry</button>
+            <div className="mx-4 mt-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200" role="alert">
+              <span className="flex-1">{error}</span>
+              <button
+                className="inline-flex h-8 items-center justify-center rounded-lg bg-[var(--brand)] px-3 text-xs font-bold text-white hover:bg-[var(--brand-hover)] disabled:opacity-40 transition-colors"
+                onClick={handleRetry}
+                type="button"
+              >
+                Retry
+              </button>
             </div>
           ) : null}
           {!terminalReady && !error ? (
@@ -253,8 +330,19 @@ export default function AdminTerminalPage() {
           ) : null}
           <div
             ref={terminalRef}
-            className={cn("h-[calc(100vh-20rem)] min-h-[300px] w-full bg-[#020617]", !terminalReady && "hidden")}
+            className={cn("h-[calc(100vh-20rem)] min-h-[300px] w-full bg-[#020617] /* intentional terminal chrome, not surface */", !terminalReady && "hidden")}
           />
+          {/* Status JSON — tokenized */}
+          <div className="mx-4 mb-4 mt-3 rounded-lg border border-[var(--line)] bg-[var(--surface-input)] p-3">
+            <div className="mb-1 flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-subtle)]">Terminal status</span>
+              <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider border", connected ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" : "border-amber-500/30 bg-amber-500/10 text-amber-300")}>
+                {connected ? "live" : "idle"} · {reconnectAttempt.current}/{TERMINAL_MAX_RETRIES}
+              </span>
+            </div>
+            <pre className="overflow-auto rounded bg-black/20 p-2 font-mono text-[11px] leading-5 text-[var(--text-subtle)]">{statusJson}</pre>
+            <p className="mt-1.5 text-xs text-[var(--text-subtle)]">FitAddon auto-fits on resize · {connected ? "WebSocket live" : "disconnected"} · use Retry to reset backoff.</p>
+          </div>
         </div>
       </Card>
     </AdminPageLayout>

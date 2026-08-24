@@ -3,14 +3,15 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  Play, Square, RotateCcw, Pause, Trash2, RefreshCw, Plus, Terminal, Download,
+  Play, Square, RotateCcw, Pause, Trash2, RefreshCw, Plus, Terminal, Download, Folder, FileText, ChevronLeft,
 } from "lucide-react";
 import {
   listContainers, operateContainer, deleteContainer, getContainerLogs, getContainerStats,
+  listContainerFiles, readContainerFile,
   type DockerContainerInfo,
 } from "@/lib/api/docker";
-import { Btn, Card, EmptyState, Input, cn } from "@/components/admin/admin-ui";
-import { ConfirmDialog } from "@/components/ui/primitives";
+import { Btn, Card, EmptyState, Input, cn, AdminLoadingState } from "@/components/admin/admin-ui";
+import { ConfirmDialog, Pagination } from "@/components/ui/primitives";
 import { ContainerCreateModal } from "@/components/docker/container-create-modal";
 
 function formatDate(ts: string): string {
@@ -28,7 +29,7 @@ function stateTone(state: string): string {
     case "exited":
     case "stopped": return "text-red-400 bg-red-900/30 border-red-500/30";
     case "paused": return "text-amber-400 bg-amber-900/30 border-amber-500/30";
-    default: return "text-slate-400 bg-white/[0.03] border-white/10";
+    default: return "text-slate-400 bg-[var(--surface-raised)] border-[var(--line-strong)]";
   }
 }
 
@@ -37,8 +38,10 @@ export function ContainersView() {
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [logContainer, setLogContainer] = useState<DockerContainerInfo | null>(null);
+  const [filesContainer, setFilesContainer] = useState<DockerContainerInfo | null>(null);
   const [statsMap, setStatsMap] = useState<Record<string, { cpu: string; mem: string }>>({});
   const [deleteTarget, setDeleteTarget] = useState<DockerContainerInfo | null>(null);
+  const [page, setPage] = useState(1);
 
   const containersQuery = useQuery({
     queryKey: ["docker", "containers"],
@@ -86,6 +89,14 @@ export function ContainersView() {
     [containers, search],
   );
 
+  const PAGE_SIZE = 10;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const paginated = useMemo(() => {
+    const start = (safePage - 1) * PAGE_SIZE;
+    return filtered.slice(start, start + PAGE_SIZE);
+  }, [filtered, safePage]);
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
@@ -102,7 +113,7 @@ export function ContainersView() {
 
       <Card>
         {containersQuery.isLoading ? (
-          <div className="p-8 text-center text-sm text-slate-500">Loading containers...</div>
+          <div className="p-4"><AdminLoadingState label="Loading containers…" /></div>
         ) : containersQuery.isError ? (
           <div className="p-4 text-sm text-red-400">Failed to load containers. Verify the node connection and try again.</div>
         ) : filtered.length === 0 ? (
@@ -111,7 +122,7 @@ export function ContainersView() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500">
+                <tr className="border-b border-[var(--line)] bg-[var(--surface-raised)] text-left text-[10px] uppercase tracking-widest text-slate-400">
                   <th className="px-4 py-3">Name</th>
                   <th className="px-4 py-3">Image</th>
                   <th className="px-4 py-3">Status</th>
@@ -124,8 +135,8 @@ export function ContainersView() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((c) => (
-                  <tr key={c.id} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
+                {paginated.map((c) => (
+                  <tr key={c.id} className="border-b border-white/[0.03] hover:bg-[var(--surface)]">
                     <td className="max-w-[180px] truncate px-4 py-3 font-medium text-slate-200" title={c.name}>{c.name || c.id.slice(0, 12)}</td>
                     <td className="max-w-[200px] truncate px-4 py-3 text-slate-400" title={c.image}>{c.image}</td>
                     <td className="px-4 py-3">
@@ -140,23 +151,29 @@ export function ContainersView() {
                       <div className="flex items-center gap-1">
                         {c.state === "running" ? (
                           <>
-                            <button className="rounded p-1 text-slate-500 hover:bg-white/[0.06] hover:text-amber-400" disabled={operateMut.isPending} onClick={() => operateMut.mutate({ id: c.id, action: "pause", nodeId: c.nodeId })} title="Pause" type="button"><Pause size={13} /></button>
-                            <button className="rounded p-1 text-slate-500 hover:bg-white/[0.06] hover:text-red-400" disabled={operateMut.isPending} onClick={() => operateMut.mutate({ id: c.id, action: "stop", nodeId: c.nodeId })} title="Stop" type="button"><Square size={13} /></button>
-                            <button className="rounded p-1 text-slate-500 hover:bg-white/[0.06] hover:text-blue-400" disabled={operateMut.isPending} onClick={() => operateMut.mutate({ id: c.id, action: "restart", nodeId: c.nodeId })} title="Restart" type="button"><RotateCcw size={13} /></button>
+                            <button className="rounded min-h-11 min-w-11 inline-grid place-items-center p-2 text-slate-400 hover:bg-white/[0.06] hover:text-amber-400" disabled={operateMut.isPending} onClick={() => operateMut.mutate({ id: c.id, action: "pause", nodeId: c.nodeId })} title="Pause" type="button"><Pause size={13} /></button>
+                            <button className="rounded min-h-11 min-w-11 inline-grid place-items-center p-2 text-slate-400 hover:bg-white/[0.06] hover:text-red-400" disabled={operateMut.isPending} onClick={() => operateMut.mutate({ id: c.id, action: "stop", nodeId: c.nodeId })} title="Stop" type="button"><Square size={13} /></button>
+                            <button className="rounded min-h-11 min-w-11 inline-grid place-items-center p-2 text-slate-400 hover:bg-white/[0.06] hover:text-blue-400" disabled={operateMut.isPending} onClick={() => operateMut.mutate({ id: c.id, action: "restart", nodeId: c.nodeId })} title="Restart" type="button"><RotateCcw size={13} /></button>
                           </>
                         ) : c.state === "paused" ? (
-                          <button className="rounded p-1 text-slate-500 hover:bg-white/[0.06] hover:text-emerald-400" disabled={operateMut.isPending} onClick={() => operateMut.mutate({ id: c.id, action: "unpause", nodeId: c.nodeId })} title="Unpause" type="button"><Play size={13} /></button>
+                          <button className="rounded min-h-11 min-w-11 inline-grid place-items-center p-2 text-slate-400 hover:bg-white/[0.06] hover:text-emerald-400" disabled={operateMut.isPending} onClick={() => operateMut.mutate({ id: c.id, action: "unpause", nodeId: c.nodeId })} title="Unpause" type="button"><Play size={13} /></button>
                         ) : (
-                          <button className="rounded p-1 text-slate-500 hover:bg-white/[0.06] hover:text-emerald-400" disabled={operateMut.isPending} onClick={() => operateMut.mutate({ id: c.id, action: "start", nodeId: c.nodeId })} title="Start" type="button"><Play size={13} /></button>
+                          <button className="rounded min-h-11 min-w-11 inline-grid place-items-center p-2 text-slate-400 hover:bg-white/[0.06] hover:text-emerald-400" disabled={operateMut.isPending} onClick={() => operateMut.mutate({ id: c.id, action: "start", nodeId: c.nodeId })} title="Start" type="button"><Play size={13} /></button>
                         )}
-                        <button className="rounded p-1 text-slate-500 hover:bg-white/[0.06] hover:text-slate-200" onClick={() => { setLogContainer(c); void fetchStats(c.id, c.nodeId); }} title="Logs / Stats" type="button"><Terminal size={13} /></button>
-                        <button className="rounded p-1 text-slate-500 hover:bg-white/[0.06] hover:text-red-400" onClick={() => setDeleteTarget(c)} title="Delete" type="button"><Trash2 size={13} /></button>
+                        <button className="rounded min-h-11 min-w-11 inline-grid place-items-center p-2 text-slate-400 hover:bg-white/[0.06] hover:text-slate-200" onClick={() => { setLogContainer(c); void fetchStats(c.id, c.nodeId); }} title="Logs / Stats" type="button"><Terminal size={13} /></button>
+                        <button className="rounded min-h-11 min-w-11 inline-grid place-items-center p-2 text-slate-400 hover:bg-white/[0.06] hover:text-sky-300" onClick={() => setFilesContainer(c)} title="Browse files" type="button"><Folder size={13} /></button>
+                        <button className="rounded min-h-11 min-w-11 inline-grid place-items-center p-2 text-slate-400 hover:bg-white/[0.06] hover:text-red-400" onClick={() => setDeleteTarget(c)} title="Delete" type="button"><Trash2 size={13} /></button>
                       </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {filtered.length > PAGE_SIZE && (
+          <div className="mt-4">
+            <Pagination page={safePage} pageCount={totalPages} onPageChange={setPage} label="Containers pagination" />
           </div>
         )}
       </Card>
@@ -167,6 +184,10 @@ export function ContainersView() {
 
       {logContainer && (
         <ContainerLogsModal container={logContainer} onClose={() => setLogContainer(null)} stats={statsMap[logContainer.id]} />
+      )}
+
+      {filesContainer && (
+        <ContainerFilesModal container={filesContainer} onClose={() => setFilesContainer(null)} />
       )}
 
       <ConfirmDialog
@@ -214,8 +235,8 @@ function ContainerLogsModal({ container, onClose, stats }: { container: DockerCo
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-xl border border-white/[0.06] bg-[#1a1f2e] shadow-2xl">
-        <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-3">
+      <div className="max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface-raised)] shadow-2xl">
+        <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-3">
           <div>
             <h3 className="font-semibold text-slate-100">{container.name || container.id.slice(0, 12)}</h3>
             <p className="text-xs text-slate-400">{container.image} &middot; {container.state}</p>
@@ -226,19 +247,143 @@ function ContainerLogsModal({ container, onClose, stats }: { container: DockerCo
                 CPU: {stats.cpu} &middot; Mem: {stats.mem}
               </span>
             )}
-            <button className="rounded p-1 text-slate-400 hover:bg-white/[0.06] hover:text-slate-200" onClick={handleDownload} title="Download logs" type="button"><Download size={14} /></button>
-            <button className="rounded p-1 text-slate-400 hover:bg-white/[0.06]" onClick={() => setAutoScroll(!autoScroll)} title="Toggle auto-scroll" type="button"><span className={cn("text-xs", autoScroll ? "text-emerald-400" : "text-slate-500")}>Auto</span></button>
-            <button className="rounded p-1 text-slate-400 hover:bg-white/[0.06] hover:text-white" onClick={onClose} type="button">&times;</button>
+            <button className="rounded min-h-11 min-w-11 inline-grid place-items-center p-2 text-slate-400 hover:bg-white/[0.06] hover:text-slate-200" onClick={handleDownload} title="Download logs" type="button"><Download size={14} /></button>
+            <button className="rounded min-h-11 min-w-11 inline-grid place-items-center p-2 text-slate-400 hover:bg-white/[0.06]" onClick={() => setAutoScroll(!autoScroll)} title="Toggle auto-scroll" type="button"><span className={cn("text-xs", autoScroll ? "text-emerald-400" : "text-slate-400")}>Auto</span></button>
+            <button className="rounded min-h-11 min-w-11 inline-grid place-items-center p-2 text-slate-400 hover:bg-white/[0.06] hover:text-white" onClick={onClose} type="button">&times;</button>
           </div>
         </div>
         <div ref={logRef} className="h-96 overflow-y-auto p-4 font-mono text-xs leading-relaxed text-slate-300">
           {logsQuery.isLoading ? (
-            <p className="text-slate-500">Loading logs...</p>
+            <p className="text-slate-400">Loading logs...</p>
           ) : logs ? (
             logs.split("\n").map((line, i) => <div key={i} className="whitespace-pre-wrap break-all">{line || "\u00A0"}</div>)
           ) : (
-            <p className="text-slate-500">No logs available.</p>
+            <p className="text-slate-400">No logs available.</p>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ContainerFilesModal({ container, onClose }: { container: DockerContainerInfo; onClose: () => void }) {
+  const [path, setPath] = useState("/");
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const filesQuery = useQuery({
+    queryKey: ["docker", "files", container.id, path],
+    queryFn: () => listContainerFiles(container.id, path, container.nodeId),
+  });
+  const fileContentQuery = useQuery({
+    queryKey: ["docker", "file-content", container.id, selectedFile],
+    queryFn: () => selectedFile ? readContainerFile(container.id, selectedFile, container.nodeId) : Promise.resolve(null),
+    enabled: !!selectedFile,
+  });
+
+  const raw = filesQuery.data as unknown;
+  const entries: Array<{ name: string; isDir?: boolean; dir?: boolean; type?: string; size?: number }> = useMemo(() => {
+    if (Array.isArray(raw)) return raw as Array<{ name: string }>;
+    if (raw && typeof raw === "object") {
+      const obj = raw as Record<string, unknown>;
+      if (Array.isArray(obj.files)) return obj.files as Array<{ name: string }>;
+      if (Array.isArray(obj.entries)) return obj.entries as Array<{ name: string }>;
+      if (Array.isArray(obj.data)) return obj.data as Array<{ name: string }>;
+    }
+    return [];
+  }, [raw]);
+
+  const contentText = useMemo(() => {
+    const data = fileContentQuery.data as unknown;
+    if (!data) return "";
+    if (typeof data === "string") return data;
+    if (typeof data === "object" && data !== null) {
+      const obj = data as Record<string, unknown>;
+      if (typeof obj.content === "string") return obj.content as string;
+      if (typeof obj.data === "string") return obj.data as string;
+      return JSON.stringify(data, null, 2);
+    }
+    return String(data);
+  }, [fileContentQuery.data]);
+
+  const navigateUp = () => {
+    if (path === "/" || path === "") { setPath("/"); return; }
+    const trimmed = path.endsWith("/") && path !== "/" ? path.slice(0, -1) : path;
+    const idx = trimmed.lastIndexOf("/");
+    setPath(idx <= 0 ? "/" : trimmed.slice(0, idx) || "/");
+    setSelectedFile(null);
+  };
+
+  const openEntry = (name: string, isDir?: boolean) => {
+    const entryIsDir = isDir ?? name.endsWith("/");
+    const cleanName = name.replace(/\/$/, "");
+    const nextPath = path === "/" ? `/${cleanName}` : `${path.replace(/\/$/, "")}/${cleanName}`;
+    if (entryIsDir) {
+      setPath(nextPath);
+      setSelectedFile(null);
+    } else {
+      setSelectedFile(nextPath);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface-raised)] shadow-2xl">
+        <div className="flex items-center justify-between border-b border-[var(--line)] bg-[var(--surface)] px-5 py-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <Folder size={16} className="text-[var(--brand)] shrink-0" />
+            <h3 className="font-semibold text-slate-100 truncate">{container.name || container.id.slice(0, 12)} — Files</h3>
+            <span className="hidden sm:inline text-xs text-slate-500">{container.nodeName || container.nodeId?.slice(0, 8)}</span>
+          </div>
+          <button className="rounded min-h-11 min-w-11 inline-grid place-items-center p-2 text-slate-400 hover:bg-white/[0.06] hover:text-white" onClick={onClose} type="button" aria-label="Close">&times;</button>
+        </div>
+        <div className="flex items-center gap-2 border-b border-[var(--line)] bg-[var(--surface)] px-5 py-2 text-xs">
+          <button onClick={navigateUp} disabled={path === "/"} className="inline-flex items-center gap-1 rounded px-2 py-1 text-slate-300 hover:bg-white/[0.06] disabled:opacity-40" type="button"><ChevronLeft size={12} /> Up</button>
+          <span className="font-mono text-slate-300 truncate">{path}</span>
+          <span className="ml-auto text-slate-500">{entries.length} entries</span>
+        </div>
+        <div className="grid flex-1 min-h-0 grid-cols-1 lg:grid-cols-2">
+          <div className="overflow-auto border-r border-[var(--line)]">
+            {filesQuery.isLoading ? (
+              <div className="p-4"><AdminLoadingState label="Loading files…" /></div>
+            ) : filesQuery.isError ? (
+              <div className="p-4 text-xs text-amber-300">Cannot list files for this container — ensure the daemon file browser is enabled. {(filesQuery.error as Error)?.message}</div>
+            ) : entries.length === 0 ? (
+              <div className="p-8 text-center text-sm text-slate-400">No entries in this directory. {path !== "/" ? "The path may be empty or not a directory." : ""}</div>
+            ) : (
+              <ul className="divide-y divide-white/[0.04]">
+                {entries.map((entry, idx) => {
+                  const name = entry.name ?? String(entry);
+                  const isDir = (entry.isDir ?? entry.dir ?? (entry.type === "dir")) || name.endsWith("/");
+                  return (
+                    <li key={`${name}-${idx}`} className="flex items-center gap-2 px-4 py-2 hover:bg-[var(--surface-hover)]">
+                      <span className="shrink-0 text-slate-500">{isDir ? <Folder size={14} className="text-sky-400" /> : <FileText size={14} />}</span>
+                      <button onClick={() => openEntry(name, isDir)} className="truncate text-left text-sm font-mono text-slate-200 hover:text-[var(--brand)]" title={name} type="button">{name}</button>
+                      {entry.size != null && !isDir && <span className="ml-auto text-xs text-slate-500">{entry.size} B</span>}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {selectedFile && (
+              <div className="border-t border-[var(--line)] p-3">
+                <p className="text-xs text-slate-400">Selected: <span className="font-mono text-slate-200">{selectedFile}</span></p>
+                <button onClick={() => setSelectedFile(null)} className="mt-2 rounded bg-white/[0.06] px-2.5 py-1 text-xs text-slate-300 hover:bg-white/[0.10]" type="button">Clear selection</button>
+              </div>
+            )}
+          </div>
+          <div className="flex flex-col min-h-0">
+            <div className="border-b border-[var(--line)] bg-[var(--surface)] px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Preview — {selectedFile ? selectedFile : "no file selected"}</div>
+            <div className="flex-1 overflow-auto p-4">
+              {!selectedFile ? (
+                <p className="text-xs text-slate-500">Select a file on the left to preview. Directories open on click. Uses <code className="rounded bg-white/10 px-1 py-0.5 font-mono text-[11px]">GET /docker/containers/:id/files?path=</code> + <code className="rounded bg-white/10 px-1 py-0.5 font-mono text-[11px]">POST /files/read</code>.</p>
+              ) : fileContentQuery.isLoading ? (
+                <AdminLoadingState label="Reading file…" />
+              ) : fileContentQuery.isError ? (
+                <p className="text-xs text-red-300">Could not read file: {(fileContentQuery.error as Error).message}</p>
+              ) : (
+                <pre className="max-h-[50vh] overflow-auto rounded-lg border border-[var(--line)] bg-[var(--surface-input)] p-3 text-xs font-mono text-slate-300 whitespace-pre-wrap break-all">{contentText || "(empty file)"}</pre>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>

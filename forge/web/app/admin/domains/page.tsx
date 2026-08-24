@@ -7,6 +7,7 @@ import { fetchJSON, postJSON, deleteJSON } from "@/lib/api";
 import { checkDNS as checkDNSApi } from "@/lib/api/domains";
 import { AdminPageLayout, AdminSelect, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import Link from "next/link";
 
 type DomainRecord = {
   id: string;
@@ -118,13 +119,15 @@ export default function AdminDomainsPage() {
     <AdminPageLayout>
       <SectionHeader
         title="Domain Management"
-        sub="Manage custom domains for game servers. Verify ownership via HTTP challenge."
+        sub="Manage custom domains for game servers. Verify ownership via HTTP challenge. DNS providers wired via lib/api/dns.ts (createProvider, verifyProvider, setDefault, deleteProvider) — see ACME & Proxy Domains."
         action={
           <div className="flex gap-2">
+            <Link href="/admin/dns"><Btn tone="ghost" className="border border-[var(--brand)]/20 hover:bg-[var(--brand)]/10"><ShieldCheck size={12} /> DNS Providers</Btn></Link>
+            <Link href="/admin/security"><Btn tone="ghost" className="border border-[var(--brand)]/20 hover:bg-[var(--brand)]/10">Security Headers</Btn></Link>
             <Btn tone="ghost" onClick={() => setShowDNSModal(true)}>
               <Network size={14} /> Check DNS
             </Btn>
-            <Btn size="sm" tone="primary" onClick={() => setShowAddModal(true)}>
+            <Btn size="sm" tone="primary" onClick={() => setShowAddModal(true)} className="bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white">
               <Plus size={12} /> Add Domain
             </Btn>
           </div>

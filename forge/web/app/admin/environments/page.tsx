@@ -2,9 +2,10 @@
 
 import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Globe, Plus, Eye, EyeOff } from "lucide-react";
+import { Globe, Plus, Eye, EyeOff, History } from "lucide-react";
 import { AdminPageHeader, AdminPageLayout, Btn, Card, CardHeader, EmptyState, Pill } from "@/components/admin/admin-ui";
-import { fetchOrganizations, fetchProjects, fetchEnvironments, createEnvironment, deleteEnvVar } from "@/lib/api/tenancy";
+import { Dialog } from "@/components/ui/primitives";
+import { fetchOrganizations, fetchProjects, fetchEnvironments, createEnvironment, deleteEnvVar, fetchEnvVarRevisions, type EnvVarRevision } from "@/lib/api/tenancy";
 import { fetchEnvVars, createEnvVar, type EnvVarResponse } from "@/lib/api/env-vars";
 
 export default function AdminEnvironmentsPage() {
@@ -19,6 +20,9 @@ export default function AdminEnvironmentsPage() {
   const [varKey, setVarKey] = useState("");
   const [varValue, setVarValue] = useState("");
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
+  const [historyVar, setHistoryVar] = useState<EnvVarResponse | null>(null);
+  const [revisions, setRevisions] = useState<EnvVarRevision[]>([]);
+  const [revisionsLoading, setRevisionsLoading] = useState(false);
 
   const colors = ["#6366f1", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#ec4899", "#64748b"];
 
@@ -83,6 +87,19 @@ export default function AdminEnvironmentsPage() {
 
   const handleDeleteVar = (varId: string) => {
     deleteVarMutation.mutate(varId);
+  };
+
+  const openRevisions = async (v: EnvVarResponse) => {
+    setHistoryVar(v);
+    setRevisionsLoading(true);
+    try {
+      const data = await fetchEnvVarRevisions(v.id);
+      setRevisions(data ?? []);
+    } catch {
+      setRevisions([]);
+    } finally {
+      setRevisionsLoading(false);
+    }
   };
 
   const orgs = useMemo(() => orgsQuery.data ?? [], [orgsQuery.data]);
@@ -156,8 +173,8 @@ export default function AdminEnvironmentsPage() {
               <span className="text-xs text-slate-500">{(Array.isArray(envVars) ? envVars : []).length} variables</span>
             } />
             <form onSubmit={handleAddVar} className="flex gap-2 p-3 border-b border-white/[0.06]">
-              <input value={varKey} onChange={(e) => setVarKey(e.target.value)} placeholder="KEY" className="flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm font-mono text-white placeholder:text-gray-500 focus:border-red-400/70 focus:outline-none" required />
-              <input value={varValue} onChange={(e) => setVarValue(e.target.value)} placeholder="value" className="flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-white placeholder:text-gray-500 focus:border-red-400/70 focus:outline-none" />
+              <input value={varKey} onChange={(e) => setVarKey(e.target.value)} placeholder="KEY" className="flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm font-mono text-white placeholder:text-gray-500 focus:border-[var(--brand)]/70 focus:outline-none" required />
+              <input value={varValue} onChange={(e) => setVarValue(e.target.value)} placeholder="value" className="flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-white placeholder:text-gray-500 focus:border-[var(--brand)]/70 focus:outline-none" />
               <Btn type="submit" loading={addVarMutation.isPending}><Plus size={14} /></Btn>
             </form>
             {envVarsQuery.isLoading ? <div className="p-6 text-sm text-slate-400">Loading...</div> :
@@ -171,14 +188,38 @@ export default function AdminEnvironmentsPage() {
                     {v.isSensitive && <Pill tone="yellow">Sensitive</Pill>}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button onClick={() => setRevealed({ ...revealed, [v.id]: !revealed[v.id] })} className="text-slate-500 hover:text-slate-300">
+                    <button onClick={() => setRevealed({ ...revealed, [v.id]: !revealed[v.id] })} className="text-slate-500 hover:text-slate-300" title={revealed[v.id] ? "Hide" : "Show"} type="button">
                       {revealed[v.id] ? <EyeOff size={14} /> : <Eye size={14} />}
                     </button>
-                    <button onClick={() => handleDeleteVar(v.id)} className="text-red-500 hover:text-red-400 text-xs">Delete</button>
+                    <button onClick={() => openRevisions(v)} className="text-slate-500 hover:text-[var(--brand)]" title="Revision history" type="button">
+                      <History size={14} />
+                    </button>
+                    <button onClick={() => handleDeleteVar(v.id)} className="text-red-500 hover:text-red-400 text-xs" type="button">Delete</button>
                   </div>
                 </div>
               ))}
             </div>}
+            {historyVar && (
+              <Dialog open={Boolean(historyVar)} title={`Revision History — ${historyVar.key}`} description={`Version history for ${historyVar.key} (current v${historyVar.version})`} closeAction={() => { setHistoryVar(null); setRevisions([]); }} className="max-w-lg">
+                {revisionsLoading ? (
+                  <div className="p-6 text-sm text-slate-400">Loading revisions...</div>
+                ) : revisions.length === 0 ? (
+                  <p className="p-4 text-sm text-slate-500">No revision history available.</p>
+                ) : (
+                  <div className="divide-y divide-white/[0.06] rounded-lg border border-white/10">
+                    {revisions.map((r) => (
+                      <div key={r.id} className="flex items-center justify-between px-4 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <span className="rounded bg-[var(--brand)]/20 px-2 py-0.5 text-xs font-semibold text-[var(--brand)]">v{r.version}</span>
+                          {r.createdBy && <span className="text-xs text-slate-400">by {r.createdBy}</span>}
+                        </div>
+                        <span className="text-xs text-slate-500">{new Date(r.createdAt).toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Dialog>
+            )}
           </Card>
         )}
       </div>

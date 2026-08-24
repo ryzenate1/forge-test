@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowRightLeft, Eye, Loader2, RotateCcw, Workflow, Ban, CheckCircle2, Play } from "lucide-react";
 import {
@@ -30,6 +30,8 @@ import {
 import { useToast } from "@/components/ui/toast";
 import { AdminConfirmDialog, AdminPageHeader, Btn, Card, CardHeader, EmptyState, Input, Pill } from "./admin-ui";
 import { TableSkeleton } from "@/components/ui/loading-skeleton";
+import { listRecentInstallWorkflows, executeInstallWorkflow } from "@/lib/api/installer";
+import { createInstallWSManager } from "@/lib/api/install-ws";
 
 const operationQueryKeys = [["migrations"], ["recovery"], ["nodes"], ["servers"]] as const;
 const terminalStatuses = ["completed", "restored", "cancelled", "failed"];
@@ -92,6 +94,7 @@ export function AdminOperations() {
   const servers = useQuery({ queryKey: ["servers"], queryFn: fetchServers });
   const executorStatus = useQuery({ queryKey: ["migrations-executor"], queryFn: fetchMigrationExecutorStatus, staleTime: 30_000 });
   const executorAvailable = executorStatus.data?.available === true;
+  const installerQ = useQuery({ queryKey: ["installer-workflows"], queryFn: () => listRecentInstallWorkflows(20), refetchInterval: 10_000 });
 
   const [serverId, setServerId] = useState("");
   const [targetNodeId, setTargetNodeId] = useState("");
@@ -229,6 +232,8 @@ export function AdminOperations() {
       </div></Card>
     </div>
 
+    <InstallerStreamingManager executionEnabled={Boolean(installerQ.data?.executionEnabled)} />
+
     {displayedEvacuation && <div className="mt-5"><Card><CardHeader title={displayedEvacuation.preview ? "Evacuation preview" : "Evacuation plan"} icon={Workflow} /><div className="p-4 text-sm">
       <div className="mb-3 flex flex-wrap items-center gap-2 text-slate-400">
         <span>{displayedEvacuation.items.length} affected workload(s)</span>
@@ -289,6 +294,55 @@ export function AdminOperations() {
         </div>
       </Card>
     </div>
+
+    <section className="mt-8">
+      <div className="flex items-center gap-3">
+        <h3 className="text-sm font-semibold">Install workflows</h3>
+        <span className="rounded-full border border-[var(--line)] bg-white/[0.03] px-2 py-0.5 text-[11px] font-medium text-[var(--text-subtle)]">
+          {installerQ.data?.executionEnabled ? "execution on (INSTALLER_WORKFLOW_ENABLED=1)" : "visibility only — execution deferred"}
+        </span>
+      </div>
+      <p className="mt-1 text-xs text-[var(--text-subtle)]">
+        6-step installer history persisted at <code className="rounded bg-white/10 px-1 py-0.5 font-mono text-[11px]">install_workflows</code> (create·setup·download·script·config·start). Now surfaced even when execution is manual.
+      </p>
+      {!installerQ.data?.executionEnabled ? (
+        <div className="mt-3 flex gap-2 rounded-lg border border-amber-500/25 bg-amber-500/[0.08] px-3 py-2.5 text-xs leading-5 text-amber-200">
+          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+          <span>Execution is <b>intentionally deferred</b> (INSTALLER_WORKFLOW_ENABLED=0). Workflows are visible for audit/history; actual installs still run via the canonical Beacon path. When enabled, install streaming uses <code className="font-mono">GET /servers/:id/install/ws</code> (Beacon, admin-scoped) proxied via Forge <code className="font-mono">GET /servers/:id/ws/install</code> + ticket — see <code className="font-mono">install-ws.ts</code>.</span>
+        </div>
+      ) : null}
+      <div className="mt-3 overflow-hidden rounded-xl border border-[var(--line)]">
+        <table className="w-full text-sm">
+          <thead className="bg-white/[0.02] text-left text-xs uppercase tracking-wider text-[var(--text-subtle)]"><tr className="border-b border-[var(--line)]"><th className="px-4 py-2.5 font-medium">Workflow</th><th className="px-4 py-2.5">Server</th><th className="px-4 py-2.5">Type</th><th className="px-4 py-2.5">Status</th><th className="px-4 py-2.5">Steps</th><th className="px-4 py-2.5">Created</th><th className="px-4 py-2.5">Action</th></tr></thead>
+          <tbody className="divide-y divide-[var(--line)]">
+            {(installerQ.data?.data ?? []).slice(0, 10).map((wf) => (
+              <tr key={wf.id} className="hover:bg-white/[0.02]">
+                <td className="px-4 py-3 font-mono text-xs">{wf.id.slice(0, 8)}</td>
+                <td className="px-4 py-3 font-mono text-xs">{wf.serverId.slice(0, 8)}</td>
+                <td className="px-4 py-3 text-xs">{wf.type}</td>
+                <td className="px-4 py-3"><span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${wf.status === "completed" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" : wf.status === "failed" ? "border-red-500/30 bg-red-500/10 text-red-300" : wf.status === "running" ? "border-blue-500/30 bg-blue-500/10 text-blue-300" : "border-amber-500/30 bg-amber-500/10 text-amber-300"}`}>{wf.status}</span></td>
+                <td className="px-4 py-3">
+                  <div className="flex gap-1">
+                    {wf.steps?.map((s) => (
+                      <span key={s.id} title={`${s.name}: ${s.status}`} className={`h-2 w-2 rounded-full ${s.status === "completed" ? "bg-emerald-500" : s.status === "running" ? "bg-blue-500 animate-pulse" : s.status === "failed" ? "bg-red-500" : "bg-slate-600"}`}/>
+                    ))}
+                  </div>
+                </td>
+                <td className="px-4 py-3 text-xs text-[var(--text-subtle)]">{new Date(wf.createdAt).toLocaleString()}</td>
+                <td className="px-4 py-3">
+                  {installerQ.data?.executionEnabled ? (
+                    <button onClick={() => executeInstallWorkflow(wf.id).then(() => qc.invalidateQueries({ queryKey: ["installer-workflows"] }))} className="text-xs underline">Execute</button>
+                  ) : (
+                    <span className="text-xs text-[var(--text-subtle)]">manual</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {(installerQ.data?.data?.length ?? 0) === 0 ? <tr><td colSpan={7} className="py-8 text-center text-sm text-[var(--text-subtle)]">No workflows yet — create one from a server&apos;s install action.</td></tr> : null}
+          </tbody>
+        </table>
+      </div>
+    </section>
 
     <AdminConfirmDialog
       open={evacuationPlanConfirmOpen}
@@ -362,4 +416,64 @@ export function AdminOperations() {
       loading={executeRecoveryMut.isPending}
     />
   </div>;
+}
+
+function InstallerStreamingManager({ executionEnabled }: { executionEnabled: boolean }) {
+  const [serverId, setServerId] = useState("");
+  const [status, setStatus] = useState("");
+  const [logs, setLogs] = useState<string[]>([]);
+  const [connected, setConnected] = useState(false);
+  const mgrRef = useRef<ReturnType<typeof createInstallWSManager> | null>(null);
+  const serversQ = useQuery({ queryKey: ["servers", "install-ws"], queryFn: fetchServers, enabled: executionEnabled });
+  const start = () => {
+    if (!serverId) return;
+    setLogs([]);
+    setStatus("Connecting to install stream…");
+    const mgr = createInstallWSManager(serverId, {
+      onLog: (line) => setLogs((p) => [...p.slice(-200), line]),
+      onStatus: setStatus,
+      onComplete: (success, code) => { setStatus(success ? `Complete (exit ${code ?? 0})` : `Failed (exit ${code ?? 1})`); setConnected(false); },
+      onError: (e) => setStatus(`Error: ${e}`),
+    });
+    const origOnStatus = (mgr as unknown as { config: { onStatusChange?: (s: string) => void } }).config.onStatusChange;
+    (mgr as unknown as { config: Record<string, unknown> }).config = {
+      ...((mgr as unknown as { config: Record<string, unknown> }).config),
+      onStatusChange: (s: string) => { setConnected(s === "connected"); origOnStatus?.(s as never); },
+    };
+    mgrRef.current?.disconnect();
+    mgrRef.current = mgr;
+    void mgr.connect();
+    setConnected(true);
+  };
+  const stop = () => {
+    mgrRef.current?.disconnect();
+    mgrRef.current = null;
+    setConnected(false);
+    setStatus("Disconnected");
+  };
+  if (!executionEnabled) {
+    return (
+      <section className="mt-6 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4">
+        <h3 className="text-sm font-semibold">Install streaming — ticket + WS manager</h3>
+        <p className="mt-1 text-xs leading-5 text-[var(--text-subtle)]">
+          Beacon exposes <code className="font-mono">GET /servers/:id/install/ws</code> (server.go:1600, admin-scoped token). Forge proxies via <code className="font-mono">GET /servers/:id/ws/install</code> + <code className="font-mono">GET /servers/:id/install/ws</code> alias (server.go realtimeProxy, daemon MintAdminToken). Frontend manager: <code className="font-mono">forge/web/lib/api/install-ws.ts</code> — <code className="font-mono">connectInstallWebSocket</code>/<code className="font-mono">createInstallWSManager</code> (log/status/complete frames). Visible even when <code className="font-mono">INSTALLER_WORKFLOW_ENABLED=0</code> (docs-only), live once enabled.
+        </p>
+      </section>
+    );
+  }
+  return (
+    <section className="mt-6 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4">
+      <h3 className="text-sm font-semibold">Install streaming — live</h3>
+      <p className="mt-1 text-xs text-[var(--text-subtle)]">Admin-only: streams installer logs via <code className="font-mono">GET /servers/:id/install/ws</code> ticket + <code className="font-mono">createInstallWSManager</code>. Requires <code className="font-mono">INSTALLER_WORKFLOW_ENABLED=1</code> and admin role (beacon ScopeAdmin).</p>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <select value={serverId} onChange={(e) => setServerId(e.target.value)} className="h-9 min-w-[200px] rounded-lg border border-[var(--line)] bg-[var(--surface-input)] px-3 text-sm">
+          <option value="">Select server…</option>
+          {(serversQ.data ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        {!connected ? <button onClick={start} disabled={!serverId} className="rounded-lg bg-[var(--brand)] px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40">Stream install</button> : <button onClick={stop} className="rounded-lg border border-[var(--line)] px-3 py-1.5 text-xs">Disconnect</button>}
+        <span className="text-xs text-[var(--text-subtle)]">{status || (connected ? "Connected" : "Idle")}</span>
+      </div>
+      {logs.length ? <pre className="mt-3 max-h-40 overflow-auto rounded-lg bg-[var(--surface-input)] p-3 font-mono text-xs leading-5 text-[var(--text-subtle)]">{logs.slice(-30).join("\n")}</pre> : null}
+    </section>
+  );
 }

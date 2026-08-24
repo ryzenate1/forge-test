@@ -6,7 +6,7 @@ import {
   GanttChart, Globe, Plus, RefreshCw, Shield, ShieldCheck,
   ShieldOff, SlidersHorizontal, Trash2, Zap,
 } from "lucide-react";
-import { fetchJSON, postJSON, patchJSON, deleteJSON } from "@/lib/api";
+import { fetchJSON, postJSON, putJSON, deleteJSON } from "@/lib/api";
 import { AdminPageLayout, AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 
@@ -55,6 +55,7 @@ export default function AdminTrafficPage() {
   const [editingRoute, setEditingRoute] = useState<RouteRule | null>(null);
   const [routeForm, setRouteForm] = useState(defaultRouteForm);
   const [showCreatePolicy, setShowCreatePolicy] = useState(false);
+  const [editingPolicy, setEditingPolicy] = useState<TrafficPolicy | null>(null);
   const [policyForm, setPolicyForm] = useState(defaultPolicyForm);
   const [policySearch, setPolicySearch] = useState("");
 
@@ -90,7 +91,7 @@ export default function AdminTrafficPage() {
 
   const updateRouteMutation = useMutation({
     mutationFn: () =>
-      patchJSON(`/admin/traffic/rules/${encodeURIComponent(editingRoute!.id)}`, { ...routeForm, methods: routeForm.methods.split(",").map((m) => m.trim()) }),
+      putJSON(`/admin/traffic/rules/${encodeURIComponent(editingRoute!.id)}`, { ...routeForm, methods: routeForm.methods.split(",").map((m) => m.trim()) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin", "traffic", "rules"] });
       setEditingRoute(null);
@@ -122,6 +123,21 @@ export default function AdminTrafficPage() {
   const deletePolicyMutation = useMutation({
     mutationFn: (id: string) => deleteJSON(`/admin/traffic/policies/${encodeURIComponent(id)}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin", "traffic", "policies"] }),
+  });
+
+  const updatePolicyMutation = useMutation({
+    mutationFn: () => {
+      let parsedConfig: Record<string, unknown>;
+      try { parsedConfig = JSON.parse(policyForm.config) as Record<string, unknown>; }
+      catch { setPolicyConfigError("Config must be valid JSON."); throw new Error("Invalid JSON config"); }
+      return putJSON(`/admin/traffic/policies/${encodeURIComponent(editingPolicy!.id)}`, { ...policyForm, config: parsedConfig });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "traffic", "policies"] });
+      setEditingPolicy(null);
+      setPolicyForm(defaultPolicyForm);
+      setPolicyConfigError(null);
+    },
   });
 
   const syncRoutesMutation = useMutation({
@@ -247,6 +263,7 @@ export default function AdminTrafficPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     <Pill tone={p.enabled ? "green" : "neutral"}>{p.enabled ? "Enabled" : "Disabled"}</Pill>
+                    <Btn size="sm" tone="ghost" onClick={() => { setEditingPolicy(p); setPolicyForm({ type: p.type, name: p.name, config: JSON.stringify(p.config ?? {}, null, 2), enabled: p.enabled ?? true }); }}>Edit</Btn>
                     <Btn size="sm" tone="danger" onClick={() => { void (async () => { if (await confirm({ title: "Delete this traffic policy?", description: "The policy will be removed. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deletePolicyMutation.mutate(p.id); })(); }}>
                       <Trash2 size={12} />
                     </Btn>
@@ -287,7 +304,7 @@ export default function AdminTrafficPage() {
             <div>
               <label className="block text-sm font-medium text-slate-300 mb-1.5">Type</label>
               <select
-                className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100 outline-none focus:border-[#dc2626]/60 focus:ring-1 focus:ring-[#dc2626]/30"
+                className="h-9 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100 outline-none focus:border-[var(--brand)]/60 focus:ring-1 focus:ring-[var(--brand)]/30"
                 value={policyForm.type}
                 onChange={(e) => setPolicyForm({ ...policyForm, type: e.target.value as TrafficPolicy["type"] })}
               >
@@ -300,15 +317,49 @@ export default function AdminTrafficPage() {
             <Input label="Config (JSON)" value={policyForm.config} onChange={(v) => setPolicyForm({ ...policyForm, config: v })} placeholder='{"requests_per_second": 100}' />
             {policyConfigError ? <p className="text-xs text-red-400">{policyConfigError}</p> : null}
             <label className="flex items-center gap-2 text-sm font-medium text-slate-300">
-              <input type="checkbox" checked={policyForm.enabled} onChange={(e) => setPolicyForm({ ...policyForm, enabled: e.target.checked })} className="rounded border-white/10 bg-[#161b28]" />
+              <input type="checkbox" checked={policyForm.enabled} onChange={(e) => setPolicyForm({ ...policyForm, enabled: e.target.checked })} className="rounded border-white/10 bg-[var(--surface-input)]" />
               Enabled
             </label>
           </div>
+          <p className="mt-2 text-xs text-slate-500">POST /admin/traffic/policies — backend persists via trafficmanager.Service</p>
           <ModalFooter
             onCancel={() => { setShowCreatePolicy(false); setPolicyConfigError(null); }}
             onConfirm={() => { setPolicyConfigError(null); createPolicyMutation.mutate(); }}
             confirmLabel={createPolicyMutation.isPending ? "Creating..." : "Create"}
             disabled={createPolicyMutation.isPending || !policyForm.name}
+          />
+        </Modal>
+      )}
+      {editingPolicy && (
+        <Modal title="Edit Traffic Policy" onClose={() => { setEditingPolicy(null); setPolicyForm(defaultPolicyForm); setPolicyConfigError(null); }}>
+          <div className="grid gap-4">
+            <p className="text-xs text-slate-400">PUT /admin/traffic/policies/:id — wired to backend UpdateTrafficPolicy</p>
+            <Input label="Name" value={policyForm.name} onChange={(v) => setPolicyForm({ ...policyForm, name: v })} placeholder="Rate limit API" />
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Type</label>
+              <select
+                className="h-9 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100 outline-none focus:border-[var(--brand)]/60 focus:ring-1 focus:ring-[var(--brand)]/30"
+                value={policyForm.type}
+                onChange={(e) => setPolicyForm({ ...policyForm, type: e.target.value as TrafficPolicy["type"] })}
+              >
+                <option value="rate_limit">Rate Limit</option>
+                <option value="ip_whitelist">IP Whitelist</option>
+                <option value="ip_blacklist">IP Blacklist</option>
+                <option value="circuit_breaker">Circuit Breaker</option>
+              </select>
+            </div>
+            <Input label="Config (JSON)" value={policyForm.config} onChange={(v) => setPolicyForm({ ...policyForm, config: v })} placeholder='{"requests_per_second": 100}' />
+            {policyConfigError ? <p className="text-xs text-red-400">{policyConfigError}</p> : null}
+            <label className="flex items-center gap-2 text-sm font-medium text-slate-300">
+              <input type="checkbox" checked={policyForm.enabled} onChange={(e) => setPolicyForm({ ...policyForm, enabled: e.target.checked })} className="rounded border-white/10 bg-[var(--surface-input)]" />
+              Enabled
+            </label>
+          </div>
+          <ModalFooter
+            onCancel={() => { setEditingPolicy(null); setPolicyForm(defaultPolicyForm); setPolicyConfigError(null); }}
+            onConfirm={() => { setPolicyConfigError(null); updatePolicyMutation.mutate(); }}
+            confirmLabel={updatePolicyMutation.isPending ? "Saving..." : "Save"}
+            disabled={updatePolicyMutation.isPending || !policyForm.name}
           />
         </Modal>
       )}
@@ -331,12 +382,13 @@ function RouteFormModal({
   return (
     <Modal title={title} onClose={onClose}>
       <div className="grid gap-4">
+        <p className="text-xs text-slate-500">{title.includes("Edit") ? "PUT /admin/traffic/rules/:id" : "POST /admin/traffic/rules"} — backend now correctly uses PUT for updates</p>
         <Input label="Path" value={form.path} onChange={(v) => onChange({ ...form, path: v })} placeholder="/api/v1/servers" />
         <Input label="Target Group" value={form.targetGroup} onChange={(v) => onChange({ ...form, targetGroup: v })} placeholder="prod-servers" />
         <Input label="Priority" type="number" value={String(form.priority)} onChange={(v) => onChange({ ...form, priority: Number(v) })} />
         <Input label="HTTP Methods (comma separated)" value={form.methods} onChange={(v) => onChange({ ...form, methods: v })} placeholder="GET,POST,PUT,DELETE" />
         <label className="flex items-center gap-2 text-sm font-medium text-slate-300">
-          <input type="checkbox" checked={form.enabled} onChange={(e) => onChange({ ...form, enabled: e.target.checked })} className="rounded border-white/10 bg-[#161b28]" />
+          <input type="checkbox" checked={form.enabled} onChange={(e) => onChange({ ...form, enabled: e.target.checked })} className="rounded border-white/10 bg-[var(--surface-input)]" />
           Enabled
         </label>
       </div>

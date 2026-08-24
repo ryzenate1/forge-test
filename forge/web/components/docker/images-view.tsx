@@ -4,8 +4,8 @@ import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Trash2, RefreshCw, Download } from "lucide-react";
 import { listImages, pullImage, deleteImage, type DockerImage } from "@/lib/api/docker";
-import { Btn, Card, EmptyState, Input, Modal, ModalFooter } from "@/components/admin/admin-ui";
-import { ConfirmDialog, Alert } from "@/components/ui/primitives";
+import { Btn, Card, EmptyState, Input, Modal, ModalFooter, AdminLoadingState } from "@/components/admin/admin-ui";
+import { ConfirmDialog, Alert, Pagination } from "@/components/ui/primitives";
 
 function formatSize(bytes: number): string {
   if (!bytes) return "0B";
@@ -55,6 +55,15 @@ export function ImagesView() {
     [images, search],
   );
 
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 10;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const paginated = useMemo(() => {
+    const start = (safePage - 1) * PAGE_SIZE;
+    return filtered.slice(start, start + PAGE_SIZE);
+  }, [filtered, safePage]);
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
@@ -71,7 +80,7 @@ export function ImagesView() {
 
       <Card>
         {imagesQuery.isLoading ? (
-          <div className="p-8 text-center text-sm text-slate-500">Loading images...</div>
+          <div className="p-4"><AdminLoadingState label="Loading images…" /></div>
         ) : imagesQuery.isError ? (
           <div className="p-4 text-sm text-red-400">Failed to load images.</div>
         ) : filtered.length === 0 ? (
@@ -80,7 +89,7 @@ export function ImagesView() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500">
+                <tr className="border-b border-[var(--line)] bg-[var(--surface-raised)] text-left text-[10px] uppercase tracking-widest text-slate-500">
                   <th className="px-4 py-3">Repository</th>
                   <th className="px-4 py-3">Tag</th>
                   <th className="px-4 py-3">Image ID</th>
@@ -91,26 +100,31 @@ export function ImagesView() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((img, idx) => {
+                {paginated.map((img, idx) => {
                   const parts = img.tags.split(",");
                   const firstTag = parts[0] || "<none>:<none>";
                   const [repo, tag] = firstTag.includes(":") ? firstTag.split(":") : [firstTag, ""];
                   return (
-                    <tr key={`${img.id}-${img.nodeId}-${idx}`} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
+                    <tr key={`${img.id}-${img.nodeId}-${idx}`} className="border-b border-white/[0.03] hover:bg-[var(--surface)]">
                       <td className="px-4 py-3 font-medium text-slate-200">{repo}</td>
                       <td className="px-4 py-3 text-slate-400">{tag || "latest"}</td>
-                      <td className="px-4 py-3 font-mono text-[11px] text-slate-500">{img.id?.replace("sha256:", "").slice(0, 12) || "-"}</td>
+                      <td className="px-4 py-3 font-mono text-[11px] text-slate-400">{img.id?.replace("sha256:", "").slice(0, 12) || "-"}</td>
                       <td className="px-4 py-3 text-slate-400">{formatSize(img.size)}</td>
                       <td className="px-4 py-3 text-slate-400">{img.nodeName || img.nodeId?.slice(0, 8)}</td>
                       <td className="px-4 py-3 text-slate-400">{formatCreated(img.created)}</td>
                       <td className="px-4 py-3">
-                        <button className="rounded p-1 text-slate-500 hover:bg-white/[0.06] hover:text-red-400" onClick={() => setDeleteTarget(img)} title="Delete" type="button"><Trash2 size={13} /></button>
+                        <button className="rounded min-h-11 min-w-11 inline-grid place-items-center p-2 text-slate-400 hover:bg-white/[0.06] hover:text-red-400" onClick={() => setDeleteTarget(img)} title="Delete" type="button"><Trash2 size={13} /></button>
                       </td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+        {filtered.length > PAGE_SIZE && (
+          <div className="mt-4">
+            <Pagination page={safePage} pageCount={totalPages} onPageChange={setPage} label="Images pagination" />
           </div>
         )}
       </Card>

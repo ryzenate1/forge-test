@@ -85,6 +85,7 @@ export interface EnvVarRevision {
 }
 
 import { fetchJSON, postJSON, putJSON, patchJSON, deleteJSON } from "./http";
+import type { ApiServer, PaginatedResponse } from "./types";
 
 // ---- Organizations ----
 
@@ -173,6 +174,11 @@ export function createInvitation(orgId: string, email: string, role: string): Pr
 }
 
 export function acceptInvitation(token: string): Promise<void> {
+  return postJSON<void>("/tenancy/invitations/accept", { token });
+}
+
+/** @deprecated Use acceptInvitation which now targets /tenancy/invitations/accept */
+export function acceptInvitationLegacy(token: string): Promise<void> {
   return postJSON<void>("/invitations/accept", { token });
 }
 
@@ -189,6 +195,25 @@ export function fetchMemberPermissions(orgId: string, userId: string): Promise<G
 export function updateMemberPermissions(orgId: string, userId: string, permissions: GranularPermissions): Promise<void> {
   return putJSON<void>(`/organizations/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}/permissions`, permissions);
 }
+
+// ---- Org Servers ----
+
+export function fetchOrgServers(
+  orgId: string,
+  params?: { page?: number; per_page?: number; search?: string },
+): Promise<PaginatedResponse<ApiServer>> {
+  const q = new URLSearchParams();
+  if (params?.page) q.set("page", String(params.page));
+  if (params?.per_page) q.set("per_page", String(params.per_page));
+  if (params?.search) q.set("search", params.search);
+  const qs = q.toString();
+  return fetchJSON<PaginatedResponse<ApiServer>>(
+    `/organizations/${encodeURIComponent(orgId)}/servers${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** Alias for fetchOrgServers for backward compat */
+export const fetchOrganizationServers = fetchOrgServers;
 
 // ---- Environment Variables ----
 
