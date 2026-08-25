@@ -260,8 +260,8 @@ export default function AdminMigrations() {
   return (
     <AdminPageLayout>
       <SectionHeader
-        title="Migrations & Recovery"
-        sub="View, create, and manage migration jobs and recovery plans."
+        title="Operations — Migrations & Recovery"
+        sub="OPERATIONS · Data mobility and resilience: live migration jobs (server movement between beacons with planning + execution) and recovery plans for failed beacons. Distinct from Deploy (releases) and Storage (backups)."
         action={
           <div className="flex flex-wrap gap-2">
             <Btn onClick={() => setShowCreateMigration(true)}><Plus size={14} /> New Migration</Btn>
@@ -269,6 +269,9 @@ export default function AdminMigrations() {
           </div>
         }
       />
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-2 text-xs leading-5 text-slate-400">
+        <span className="font-semibold text-slate-300">OPERATIONS</span> · <span className="font-semibold text-slate-200">Data & Recovery</span> — <code className="font-mono text-[11px]">Migrations</code> (this page) · <code className="font-mono">Reconciliation</code> · <code className="font-mono">Operations</code> · plus <code className="font-mono">Backups</code> and automation under <code className="font-mono">Automation</code>. Migration: <code className="font-mono">sourceNode → targetNode</code> via <code className="font-mono">migration/service.go</code> with executor <code className="font-mono">/migrations/executor</code>; Recovery restores workloads from a failed beacon. See <code className="font-mono">/admin/reconciliation</code> for drift.
+      </div>
 
       {!executorAvailable && executorStatus.isSuccess && (
         <div className="rounded-lg border border-amber-700/30 bg-amber-900/10 p-3 text-sm text-amber-200">
