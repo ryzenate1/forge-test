@@ -188,7 +188,10 @@ export function AdminOperations() {
   const startEvacuationDisabled = !executorAvailable || executeEvacuationMut.isPending;
 
   return <div>
-    <AdminPageHeader title="Migrations & Recovery" description="Preview evacuation capacity, save an explicit plan, then start or recover workloads safely." />
+    <AdminPageHeader title="Operations — Evacuation & Migration Ops" description="OPERATIONS · Control-plane operations: preview evacuation capacity, save explicit plans, then start or recover workloads safely. Distinct from Migrations & Recovery (tenant data movement) under Data & Recovery." />
+    <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-2 text-xs leading-5 text-slate-400">
+      <span className="font-semibold text-slate-300">OPERATIONS</span> · <span className="font-semibold text-slate-200">Operations</span> — evacuation & migration execution with capacity preview vs <code className="font-mono text-[11px]">Migrations & Recovery</code> at <code className="font-mono">/admin/migrations</code> and <code className="font-mono">Reconciliation</code> at <code className="font-mono">/admin/reconciliation</code>. Uses <code className="font-mono">POST /evacuations</code> + executor planning; planning-only when runtime unavailable.
+    </div>
     {feedback && <div className={`mb-4 rounded-lg border p-3 text-sm ${feedback.tone === "error" ? "border-red-700/30 bg-red-900/10 text-red-300" : "border-emerald-700/30 bg-emerald-900/10 text-emerald-300"}`} role={feedback.tone === "error" ? "alert" : "status"}>{feedback.message}</div>}
 
     {!executorAvailable && executorStatus.isSuccess && (

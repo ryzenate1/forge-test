@@ -236,8 +236,8 @@ export function AdminReconciliation() {
   return (
     <div>
       <AdminPageHeader
-        title="Reconciliation"
-        description="Detect drift between desired and observed resource state, review diffs, and apply corrections."
+        title="Operations — Reconciliation"
+        description="OPERATIONS · Data integrity: detect drift between desired and observed state, review diffs, and reconcile. Part of Data & Recovery alongside Migrations and Backups."
         action={
           <div className="flex flex-wrap items-center gap-2">
             <select
@@ -264,7 +264,9 @@ export function AdminReconciliation() {
           </div>
         }
       />
-
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-2 text-xs leading-5 text-slate-400">
+        <span className="font-semibold text-slate-300">OPERATIONS</span> · <span className="font-semibold text-slate-200">Data & Recovery</span> — <code className="font-mono text-[11px]">Reconciliation</code> (this page) · <code className="font-mono">Migrations</code> · <code className="font-mono">Backups</code> · plus <code className="font-mono">Operations</code> log. Drift: <code className="font-mono">Desired vs Observed vs Diff vs Plan vs Result</code> via <code className="font-mono">store_reconcile.go:13</code>. See also <code className="font-mono">/admin/migrations</code>.
+      </div>
       {summary.isLoading ? (
         <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-5">
           {Array.from({ length: 5 }, (_, i) => (
