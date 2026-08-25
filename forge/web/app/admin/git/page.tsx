@@ -279,7 +279,10 @@ export default function GitPage() {
 
   return (
     <AdminPageLayout>
-      <AdminPageHeader title="Git Integration" description="Manage Git credentials, providers, and repository sources." />
+      <AdminPageHeader title="Git Integration" description="Deploy — Git is the source surface. Credentials (SSH/HTTPS), provider tokens (GitHub/GitLab/Bitbucket/Gitea) and repository sources drive auto-deploy webhooks and pipeline triggers." />
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-2 text-xs leading-5 text-slate-400">
+        <span className="font-semibold text-slate-300">DEPLOY</span> · Git provides <span className="font-semibold text-slate-200">source linking</span> for Deployments/Pipelines/Compose — <code className="font-mono text-[11px]">Credentials</code> (deploy keys) · <code className="font-mono">Providers</code> (PATs + inline test <code className="font-mono">POST /git/providers/test</code>) · <code className="font-mono">Sources</code> (repo URL/branch/auto-deploy). Auto-deploy installs webhooks when linked via Provider; credential-linked sources cannot install webhooks (amber warning).
+      </div>
       <AdminTabs tabs={[
         { id: "credentials", label: "Credentials", icon: Key },
         { id: "providers", label: "Providers", icon: Globe },

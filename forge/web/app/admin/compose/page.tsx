@@ -185,7 +185,10 @@ export default function ComposeStacksPage() {
 
   return (
     <div className="space-y-6">
-      <AdminPageHeader title="Compose Stacks" description="Deploy and operate multi-service Compose workloads — stacks + GitOps + projects." action={<div className="flex items-center gap-2"><Btn tone="ghost" onClick={() => setShowImport(true)}>Import</Btn><Btn onClick={() => router.push("/admin/compose/new")}><Plus className="h-4 w-4" /> New stack</Btn></div>} />
+      <AdminPageHeader title="Compose Stacks" description="Deploy — multi-service Compose workloads as first-class deployments. Stacks define services, env, resources and GitOps; each stack is a deployable unit with lifecycle, logs and rollback." action={<div className="flex items-center gap-2"><Btn tone="ghost" onClick={() => setShowImport(true)}>Import</Btn><Btn onClick={() => router.push("/admin/compose/new")}><Plus className="h-4 w-4" /> New stack</Btn></div>} />
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-2 text-xs leading-5 text-slate-400">
+        <span className="font-semibold text-slate-300">DEPLOY</span> · Compose is one of four deploy surfaces (Deployments · Pipelines · <span className="font-semibold text-slate-200">Compose</span> · Git). Compose stacks use <code className="font-mono text-[11px]">GET /compose</code> · <code className="font-mono">POST /compose/import</code> · <code className="font-mono">/compose/:id</code> lifecycle (<code className="font-mono">running/deploying/awaiting_health/stopped/degraded</code>). For single-service apps see <button type="button" onClick={() => router.push("/admin/apps")} className="underline hover:text-slate-200">Apps</button>.
+      </div>
       <OfflineBanner onRetry={() => void refetch()} />
       <AdminToolbar>
         <div className="flex-1 min-w-[180px]">

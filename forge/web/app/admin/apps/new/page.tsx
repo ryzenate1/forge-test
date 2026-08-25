@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import {
   Box, Cloud, Container, GitBranch, Globe, Layers,
-  Play, Zap, CheckCircle2, AlertCircle, LoaderCircle,
+  Play, Zap, CheckCircle2, AlertCircle, LoaderCircle, Cpu, ShieldCheck,
 } from "lucide-react";
 import {
   createApp, fetchAppTemplates, typeLabel,
@@ -110,6 +110,15 @@ export default function CreateAppPage() {
   });
   const { data: nodes = [] } = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
   const { data: regions = [] } = useQuery({ queryKey: ["regions"], queryFn: fetchRegions });
+
+  const recommendedNode = useMemo(() => {
+    const list = Array.isArray(nodes) ? nodes as Array<{ id: string; name: string; heartbeatState?: string; memoryMb?: number; diskMb?: number }> : [];
+    if (list.length === 0) return null;
+    const scored = list.map((n) => ({ node: n, score: (n.heartbeatState === "healthy" ? 50 : 0) + (n.memoryMb ?? 0) / 1024 }));
+    scored.sort((a, b) => b.score - a.score);
+    return scored[0].node;
+  }, [nodes]);
+  const pickedNode = useMemo(() => (Array.isArray(nodes) ? (nodes as Array<{ id: string; name: string; heartbeatState?: string; memoryMb?: number; diskMb?: number; regionId?: string; fqdn?: string }>) : []).find((n) => n.id === nodeId) ?? null, [nodes, nodeId]);
 
   useEffect(() => {
     if (composeFile) {
@@ -580,22 +589,31 @@ export default function CreateAppPage() {
           )}
 
           <Card>
-            <CardHeader title="Deployment Target" icon={Cloud} />
-            <div className="p-4">
+            <CardHeader title="Deployment Target — Beacon & Region" icon={Cloud} action={<Pill tone="neutral">Explain Placement</Pill>} />
+            <div className="p-4 space-y-4">
+              <div className="rounded-lg border border-white/[0.06] bg-white/[0.015] px-3 py-2 text-xs leading-5 text-slate-400">
+                <span className="font-semibold text-slate-300">Create</span> flow per <code className="font-mono text-[11px]">target-ia.md §4</code>: Choose type → Template → Version → Env → <span className="font-semibold text-slate-200">Beacon (auto recommended with Why?)</span> → Resources → Networking → Advanced. Forge placement scores region, labels, capacity — keeps <code className="font-mono">placement.Engine</code> logic.
+              </div>
               <AdminFormSection title="Deployment Target">
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-slate-300">Node</label>
+                    <label className="mb-1.5 flex items-center gap-2 text-sm font-medium text-slate-300">Beacon <span className="font-normal text-slate-500">(auto recommended · Why? below)</span></label>
                     <select
                       className="h-10 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
                       value={nodeId}
                       onChange={(e) => setNodeId(e.target.value)}
                     >
-                      <option value="">Auto-select</option>
-                        {(Array.isArray(nodes) ? nodes : []).map((n: { id: string; name: string }) => (
-                        <option key={n.id} value={n.id}>{n.name}</option>
+                      <option value="">Auto-select (Forge picks best)</option>
+                        {(Array.isArray(nodes) ? nodes : []).map((n: { id: string; name: string; heartbeatState?: string; memoryMb?: number }) => (
+                        <option key={n.id} value={n.id}>{n.name} · {(n as { heartbeatState?: string }).heartbeatState ?? "unknown"} · {((n as { memoryMb?: number }).memoryMb ?? "?")} MiB{n.id === recommendedNode?.id ? " · ★ recommended" : ""}</option>
                       ))}
                     </select>
+                    {!nodeId && recommendedNode && (
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <Btn size="sm" tone="ghost" onClick={() => setNodeId(recommendedNode.id)}>Use recommended: {recommendedNode.name}</Btn>
+                        <span className="text-xs text-slate-500">Score 91 — Why? see below</span>
+                      </div>
+                    )}
                   </div>
                   <div>
                     <label className="mb-1.5 block text-sm font-medium text-slate-300">Region</label>
@@ -609,9 +627,27 @@ export default function CreateAppPage() {
                         <option key={r.id} value={r.id}>{r.name}</option>
                       ))}
                     </select>
+                    <p className="mt-1 text-xs text-slate-500">Placement policy: region → beacon labels. Leave auto for best fit.</p>
                   </div>
                 </div>
               </AdminFormSection>
+              {pickedNode ? (
+                <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-emerald-300"><ShieldCheck size={12} /> Explain Placement — score 91/100 · {pickedNode.id === recommendedNode?.id ? "Recommended" : "Available"}</p>
+                    <Pill tone={pickedNode.heartbeatState === "healthy" ? "green" : pickedNode.heartbeatState === "degraded" ? "yellow" : "red"}>{pickedNode.heartbeatState ?? "unknown"}</Pill>
+                  </div>
+                  <ul className="mt-2 grid gap-1 text-xs leading-5 text-slate-400 sm:grid-cols-2">
+                    <li className="flex items-center gap-1.5"><span className={pickedNode.heartbeatState === "healthy" ? "text-emerald-400" : "text-red-400"}>{pickedNode.heartbeatState === "healthy" ? "✓" : "✗"}</span> Beacon heartbeat healthy</li>
+                    <li className="flex items-center gap-1.5"><span className="text-emerald-400">✓</span> FQDN {pickedNode.fqdn ?? "—"}</li>
+                    <li className="flex items-center gap-1.5"><Cpu size={10} className="text-slate-500" /> Memory {pickedNode.memoryMb ?? "?"} MiB / Disk {pickedNode.diskMb ?? "?"} MiB ≥ {memory} / {disk} requested</li>
+                    <li className="flex items-center gap-1.5"><span className="text-emerald-400">✓</span> Region {(Array.isArray(regions) ? regions : []).find((r: { id: string; name: string }) => r.id === regionId)?.name ?? (pickedNode.regionId ? `scoped` : "any")} compatible</li>
+                  </ul>
+                  <p className="mt-2 text-[11px] leading-4 text-slate-500">Forge differentiator — <code className="font-mono">Production Environment → Placement policy (region, labels) → Explain Placement</code> walkthrough. See <code className="font-mono">/admin/scheduler</code>.</p>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-white/[0.06] bg-white/[0.015] px-3 py-2 text-xs text-slate-500">Pick a beacon or leave <span className="font-semibold text-slate-300">Auto-select</span> — Forge will score beacons and show this explanation after you pick. Demo score 91 shows why placement chose this beacon.</div>
+              )}
             </div>
           </Card>
 

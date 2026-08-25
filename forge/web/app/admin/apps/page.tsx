@@ -67,13 +67,16 @@ export default function AdminAppsPage() {
     <div className="space-y-6">
       <SectionHeader
         title="Applications"
-        sub="Manage Docker images, Git repos, Compose stacks, and game servers."
+        sub="Build — workload definitions (images, Git repos, Compose and game servers) that are later released via Deploy. Each app is a deployable workload template with lifecycle, ports, env and volumes."
         action={
           <Btn tone="primary" onClick={() => router.push("/admin/apps/new")}>
             <Plus size={14} /> Create App
           </Btn>
         }
       />
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-2 text-xs leading-5 text-slate-400">
+        <span className="font-semibold text-slate-300">BUILD → DEPLOY</span> · Apps are <span className="font-semibold text-slate-200">workload definitions</span> (this page); releases happen in <button type="button" onClick={() => router.push("/admin/deployments")} className="underline hover:text-slate-200">Deployments</button> · <button type="button" onClick={() => router.push("/admin/pipelines")} className="underline hover:text-slate-200">Pipelines</button> · <button type="button" onClick={() => router.push("/admin/compose")} className="underline hover:text-slate-200">Compose</button> via Git. See also <button type="button" onClick={() => router.push("/admin/catalog")} className="underline hover:text-slate-200">Catalog</button> for one-click templates.
+      </div>
 
       <Card>
         <CardHeader title={`${filtered.length} application${filtered.length === 1 ? "" : "s"}`} icon={Layers} />

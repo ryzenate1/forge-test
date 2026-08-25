@@ -86,8 +86,11 @@ export default function AdminPipelinesPage() {
       <OfflineBanner onRetry={() => window.location.reload()} />
       <AdminPageHeader
         title="Pipelines"
-        description="CI/CD pipelines — definitions, queue, schedule, and run history. Scheduler evaluates cron triggers every minute (pipeline/service.go:181 scheduleLoop); queue worker claims via SKIP LOCKED (store.go:314 ClaimQueuedRuns)."
+        description="Deploy — CI/CD pipelines that build and release workloads. Definitions → triggered runs (manual/schedule/webhook) → stages with logs, approvals and retries. Distinct from one-off Deployments and Compose stacks."
       />
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-2 text-xs leading-5 text-slate-400">
+        <span className="font-semibold text-slate-300">DEPLOY</span> · Pipelines is the delivery workflow surface (Deployments · <span className="font-semibold text-slate-200">Pipelines</span> · Compose · Git). Service <code className="font-mono text-[11px]">pipeline/service.go:181 scheduleLoop</code> evaluates cron every minute; queue worker claims via <code className="font-mono">SKIP LOCKED</code> <code className="font-mono">store.go:314</code>. Webhook: <code className="font-mono">POST /pipelines/webhook/:id</code> (<code className="font-mono">PIPELINE_WEBHOOK_SECRET</code>). See also Deployments for release history.
+      </div>
 
       <Card>
         <CardHeader title="Definitions" icon={Layers} />

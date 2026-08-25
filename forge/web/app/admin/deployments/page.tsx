@@ -98,18 +98,21 @@ export default function AdminDeploymentsPage() {
     <div className="space-y-6">
       <SectionHeader
         title="Deployments"
-        sub="Server and application deployment history across the cluster."
+        sub="Deploy — workload releases to beacons. Blue-green, rolling and recreate strategies with health gates, revision history and rollback. (Build creates via Catalog/Apps; Deploy releases via Pipelines/Compose/Git.)"
         action={
           <div className="flex items-center gap-2">
             <Btn tone="ghost" onClick={() => router.push("/admin/deployments/history")}>
               <History size={14} /> History
             </Btn>
             <Btn tone="primary" onClick={() => router.push("/admin/deployments/new")}>
-              <Plus size={14} /> New Blue-Green Deployment
+              <Plus size={14} /> New Deployment
             </Btn>
           </div>
         }
       />
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-2 text-xs leading-5 text-slate-400">
+        <span className="font-semibold text-slate-300">DEPLOY</span> group per <code className="font-mono text-[11px]">target-ia.md §3</code>: Deployments · Pipelines · Compose · Git — releases (this page) vs Builds (Catalog/Apps) vs Operate (Ops). Server deployments use <code className="font-mono">blue_green / rolling / recreate</code> with target groups & health checks; App deployments track <code className="font-mono">revision</code> · <code className="font-mono">commit</code> · <code className="font-mono">trigger</code>. See also <button type="button" onClick={() => router.push("/admin/pipelines")} className="underline hover:text-slate-200">Pipelines</button> · <button type="button" onClick={() => router.push("/admin/compose")} className="underline hover:text-slate-200">Compose</button> · <button type="button" onClick={() => router.push("/admin/git")} className="underline hover:text-slate-200">Git</button>.
+      </div>
 
       <div className="flex gap-1 border-b border-white/[0.06]">
         {([
@@ -167,10 +170,20 @@ export default function AdminDeploymentsPage() {
           )}
         </div>
 
+        {(tab === "servers" ? serverDeployments : appDeployments).length > 0 && (
+          <div className="flex flex-wrap gap-1.5 border-y border-white/[0.04] bg-white/[0.015] px-4 py-2">
+            {currentStatuses.map((s) => {
+              const count = (tab === "servers" ? serverDeployments : appDeployments).filter((d) => (d as { status: string }).status === s).length;
+              if (count === 0) return null;
+              return <Pill key={s} tone={s === "completed" ? "green" : s === "failed" ? "red" : s === "in_progress" || s === "running" ? "blue" : "neutral"}>{s.replace(/_/g, " ")}: {count}</Pill>;
+            })}
+            <span className="ml-auto text-xs text-slate-600">Filter above to narrow · Strategy {tab === "servers" ? "blue-green tracks target groups" : "commit-triggered"}</span>
+          </div>
+        )}
         {isLoading ? (
-          <div className="p-8 text-center text-sm text-slate-500">Loading deployments...</div>
+          <div className="p-8 text-center text-sm text-slate-500">Loading deployments…</div>
         ) : currentData.length === 0 ? (
-          <EmptyState icon={History} message="No deployments found." />
+          <EmptyState icon={History} title={search || statusFilter || strategyFilter ? "No matches" : tab === "servers" ? "No server deployments yet" : "No app deployments yet"} message={search || statusFilter || strategyFilter ? "No deployments match your filters — clear search/status above." : tab === "servers" ? "Create a blue-green/rolling deployment for a workload. See Apps → Deploy or use New Deployment." : "Trigger a pipeline or push to a Git-linked app to generate a deployment. See Pipelines or Git."} />
         ) : tab === "servers" ? (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
