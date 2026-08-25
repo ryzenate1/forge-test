@@ -78,14 +78,17 @@ export function AdminDiscovery() {
   return (
     <div className="space-y-6">
       <SectionHeader
-        title="Service Discovery"
-        sub="Service endpoints, network visibility, beacon liveness and private-network policy. Endpoints are self-registered by beacons via heartbeats (touch) and reaped after 3m TTL."
+        title="Networking — Service Discovery"
+        sub="INFRA · Networking advanced: service endpoints, network visibility, beacon liveness and private-network policy. Endpoints self-register via heartbeats and are reaped after 3m TTL."
         action={
           <Btn size="sm" tone="ghost" onClick={() => { qc.invalidateQueries({ queryKey: ["discovery-endpoints"] }); qc.invalidateQueries({ queryKey: ["discovery-visibility"] }); qc.invalidateQueries({ queryKey: ["discovery-reaper"] }); }}>
             <RefreshCw size={14} /> Refresh
           </Btn>
         }
       />
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-2 text-xs leading-5 text-slate-400">
+        <span className="font-semibold text-slate-300">INFRA</span> · <span className="font-semibold text-slate-200">Networking Advanced</span> — Discovery is the dynamic resolver behind Endpoints/Domains. For primary networking see <code className="font-mono text-[11px]">/admin/endpoints</code> · <code className="font-mono">/admin/domains</code> · <code className="font-mono">/admin/traffic /load-balancer</code>; advanced also includes <code className="font-mono">Gateways/Cross-Node/DNS/ACME/Certs/Firewall/mTLS</code>.
+      </div>
 
       <div className="rounded-lg border border-amber-500/20 bg-amber-950/10 p-3 text-xs text-amber-200">
         <span className="font-semibold">Beacon liveness:</span> each beacon registers a <code className="rounded bg-white/10 px-1">beacon</code> endpoint on first heartbeat and touches <code>LastHeartbeat</code> every 30s. The stale reaper marks endpoints <span className="font-mono">unhealthy</span> after <code className="rounded bg-white/10 px-1">3m</code> without a touch (draining endpoints skipped). Ensure beacons send <code className="rounded bg-white/10 px-1">endpoints[]</code> liveness in <code className="rounded bg-white/10 px-1">POST /nodes/:id/heartbeat</code>.
