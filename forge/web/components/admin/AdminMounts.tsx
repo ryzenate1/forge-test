@@ -528,10 +528,13 @@ export function AdminMounts() {
   return (
     <div>
       <SectionHeader
-        title="Mounts"
-        sub="Configure and manage additional mount points for servers."
+        title="Storage — Mounts"
+        sub="INFRA · Storage: shared host volumes mounted into workloads. Mounts attach to beacons and templates (eggs) with eligibility — eligible servers inherit the mount automatically."
         action={<Btn onClick={() => { setShowCreate(true); setCNodeIds([]); setCTemplateIds([]); setCErrors({}); }}><Plus size={14} /> New Mount</Btn>}
       />
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-2 text-xs leading-5 text-slate-400">
+        <span className="font-semibold text-slate-300">INFRA</span> · <span className="font-semibold text-slate-200">Storage</span> — <code className="font-mono text-[11px]">Mounts</code> (this page) · <code className="font-mono">Volumes</code> · <code className="font-mono">Database Hosts</code> · <code className="font-mono">Backups</code> + providers. Mounts are <code className="font-mono">source → target</code> host paths with <code className="font-mono">nodeIds/templateIds</code> eligibility. See <code className="font-mono">/admin/databases</code> for DB hosts and <code className="font-mono">/admin/backups</code> for retention.
+      </div>
 
       <Card>
         <CardHeader title="Mount List" icon={HardDrive} />

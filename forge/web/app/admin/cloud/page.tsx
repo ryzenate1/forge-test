@@ -106,10 +106,13 @@ export default function AdminCloudPage() {
   return (
     <div className="space-y-6">
       <SectionHeader
-        title="Cloud Providers"
-        sub="Provision provider instances and bootstrap linked Beacon nodes automatically."
+        title="Infra — Cloud"
+        sub="INFRA · Cloud: provision provider instances and bootstrap them as beacons automatically. Links cloud compute to Forge placement — provisioned instances appear as linked panel nodes."
         action={<Btn tone="primary" onClick={() => setShowProvision(true)}><Plus size={14} /> Provision Instance</Btn>}
       />
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-2 text-xs leading-5 text-slate-400">
+        <span className="font-semibold text-slate-300">INFRA</span> · <span className="font-semibold text-slate-200">Cloud</span> is one of four INFRA surfaces — <code className="font-mono text-[11px]">Beacons</code> · <code className="font-mono">Networking</code> · <code className="font-mono">Storage</code> · <code className="font-mono">Cloud</code>. Provision via <code className="font-mono">POST /admin/cloud/provision</code> with <code className="font-mono">AWS_REGION</code> configured; bootstrap installs Docker + Beacon via cloud-init. See <code className="font-mono">/admin/nodes</code> for resulting beacons and <code className="font-mono">/admin/regions</code> for placement zones.
+      </div>
 
       {providersQuery.isError ? <ApiError message={`Could not load providers: ${providersQuery.error.message}`} /> : null}
       <Card>
