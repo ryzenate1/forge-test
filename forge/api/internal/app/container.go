@@ -34,7 +34,9 @@ import (
 	"time"
 
 	forgecfg "gamepanel/forge/config"
+	"gamepanel/forge/internal/events"
 	"gamepanel/forge/internal/eventstore"
+	"gamepanel/forge/internal/placement"
 	"gamepanel/forge/internal/secrets"
 	"gamepanel/forge/internal/services/logger"
 	"gamepanel/forge/internal/store"
@@ -57,10 +59,8 @@ type Container struct {
 	RedisEnabled   bool
 
 	// Stage 2 — stores & placement (populated by InitStores)
-	// Keep as any-typed handles until fully typed in next stage to avoid
-	// a 600-line import churn in this additive step.
-	PlaceEngine any
-	EventRegistry any
+	EventRegistry *events.Registry
+	PlaceEngine   *placement.Engine
 
 	// Stage 3 — services bundle (60-var graph from main.go:250)
 	// Added incrementally; see InitServices.
@@ -193,13 +193,15 @@ func (c *Container) InitDB(ctx context.Context, production bool, appEnv string) 
 }
 
 // InitStores builds placement, event registry and scheduler prerequisites
-// from the DB handle. No-op when DB is nil (dev mode).
+// from the DB handle. No-op when DB is nil (dev mode). Mirrors main.go:346-365
+// placement engine wiring so BuildHTTP can later depend on it.
 func (c *Container) InitStores(_ context.Context) error {
 	if c.DB == nil {
 		return nil
 	}
-	// Stage 2 will wire: eventRegistry = events.NewRegistry, placeEngine = placement.NewEngine, predictiveScorer, constraintSched, etc.
-	// Kept as stub to preserve compile while main.go still owns the graph.
+	c.EventRegistry = events.NewRegistry("forge-api")
+	// StrategyLeastLoaded + ConstraintChecker mirrors main.go:353
+	c.PlaceEngine = placement.NewEngine(placement.NewScorer(placement.StrategyLeastLoaded), placement.NewConstraintChecker())
 	return nil
 }
 
