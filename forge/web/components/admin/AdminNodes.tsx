@@ -6,6 +6,7 @@ import {
   Activity, AlertCircle, AlertTriangle, ChevronRight, Cpu, Database, Eye, EyeOff, Globe, History, Layers, GitCompare, KeyRound, Lock, Mail,
   Network, Plus, Search, Settings as SettingsIcon, Shield, Trash2, Unlock, Wrench, Zap,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import {
   fetchNodes, createNode, deleteNode, fetchServers, fetchLocations, fetchRegions, fetchNode, updateNode, rotateNodeToken,
   fetchNodeAllocations, fetchNodeServers, fetchNodeLifecycle,
@@ -60,22 +61,28 @@ export function AdminNodes() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
 
+  const router = useRouter();
   const filtered = useMemo(() =>
-    nodes.filter((n) => !search || n.name.toLowerCase().includes(search.toLowerCase())),
+    nodes.filter((n) => !search || n.name.toLowerCase().includes(search.toLowerCase()) || (n.fqdn ?? "").toLowerCase().includes(search.toLowerCase())),
     [nodes, search],
   );
+  const healthy = nodes.filter((n) => n.heartbeatState === "healthy").length;
 
   return (
     <div className="space-y-6">
       <SectionHeader
-        title="Nodes"
-        sub="Machines that run game servers. Each node runs the beacon agent."
+        title="Beacons"
+        sub="Where workloads run — beacons are machines that host your workloads. Each beacon runs the agent and reports heartbeat, capacity, runtime and capabilities. (Legacy table: nodes)"
         action={
           <Btn tone="primary" onClick={() => setShowCreate(true)}>
-            <Plus size={14} /> Create New
+            <Plus size={14} /> Create Beacon
           </Btn>
         }
       />
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-2 text-xs leading-5 text-slate-400">
+        <span className="font-semibold text-slate-300">Beacons</span> is the product term for <span className="font-mono text-[11px]">store.go:129 Node</span> — API alias <code className="font-mono">GET /beacons</code> → <code className="font-mono">GET /nodes</code> compat kept. Click a row for the 8-tab workspace (Overview/Metrics/Workloads/Networking/Storage/Capabilities/Placement/Config).
+        <span className="ml-2 font-mono text-[11px] text-slate-600">{nodes.length} total · {healthy} healthy · 8-tab detail → /admin/nodes/[id]</span>
+      </div>
 
       {locationsQuery.isError ? (
         <div className="flex items-start justify-between gap-4 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-200">
@@ -93,7 +100,8 @@ export function AdminNodes() {
       <Card>
         <div className="flex items-center gap-3 p-4">
           <Search size={14} className="text-slate-500" />
-          <Input placeholder="Search Nodes" value={search} onChange={setSearch} />
+          <Input placeholder="Search beacons — name or FQDN (alias: Nodes)" value={search} onChange={setSearch} />
+          <span className="hidden sm:inline text-xs text-slate-600">{filtered.length} / {nodes.length}</span>
         </div>
         {nodesQuery.isLoading ? (
           <div className="p-8 text-center text-sm text-slate-500">Loading nodes…</div>
@@ -131,7 +139,8 @@ export function AdminNodes() {
                     node={node}
                     locations={locations}
                     regions={regions}
-                    onClick={() => setSelectedNodeId(node.id)}
+                    onClick={() => router.push(`/admin/nodes/${encodeURIComponent(node.id)}`)}
+                    onQuick={() => setSelectedNodeId(node.id)}
                     serverCount={servers.filter((server) => server.nodeId === node.id || server.node === node.id || server.node === node.name).length}
                   />
                 ))}
@@ -159,11 +168,12 @@ export function AdminNodes() {
   );
 }
 
-function NodeRow({ node, locations, regions, onClick, serverCount }: {
+function NodeRow({ node, locations, regions, onClick, onQuick, serverCount }: {
   node: ApiNode;
   locations: ApiLocation[];
   regions: ApiRegion[];
   onClick: () => void;
+  onQuick?: () => void;
   serverCount: number;
 }) {
   // `actualState` is the backend's canonical operational state. Heartbeat is
@@ -206,7 +216,10 @@ function NodeRow({ node, locations, regions, onClick, serverCount }: {
       <td className="px-4 py-3">{ssl ? <Lock size={14} className="text-emerald-500" /> : <Unlock size={14} className="text-red-400" />}</td>
       <td className="px-4 py-3">{node.public ?? node.isPublic ? <Eye size={14} className="text-sky-500" /> : <EyeOff size={14} className="text-slate-500" />}</td>
       <td className="px-4 py-3 text-right">
-        <ChevronRight size={14} className="text-slate-500" />
+        <div className="flex items-center justify-end gap-1">
+          {onQuick ? <button type="button" onClick={(e) => { e.stopPropagation(); onQuick(); }} className="rounded px-2 py-1 text-xs text-slate-500 hover:bg-white/[0.06] hover:text-slate-200">Quick</button> : null}
+          <ChevronRight size={14} className="text-slate-500" />
+        </div>
       </td>
     </tr>
   );

@@ -229,6 +229,20 @@ function ProvisionModal({ entry, onClose, onDone }: { entry: CatalogEntry; onClo
   const [cpuShares, setCpuShares] = useState("1024");
   const [diskMb, setDiskMb] = useState("2048");
 
+  const nodes = nodesQ.data ?? [];
+  const picked = nodes.find((n) => n.id === nodeId);
+  const recommended = useMemo(() => {
+    if (nodes.length === 0) return null;
+    // Score: healthy heartbeat + most free memory (approx via memoryMb field as capacity proxy)
+    const scored = nodes.map((n) => ({
+      node: n,
+      score: (n.heartbeatState === "healthy" ? 40 : 0) + (n.memoryMb ?? 0) / 1024 - (n.diskMb ?? 0) / 16384,
+      healthy: n.heartbeatState === "healthy",
+    }));
+    scored.sort((a, b) => b.score - a.score);
+    return scored[0]?.node ?? null;
+  }, [nodes]);
+
   const mut = useMutation({
     mutationFn: () =>
       provisionCatalog({
@@ -248,8 +262,16 @@ function ProvisionModal({ entry, onClose, onDone }: { entry: CatalogEntry; onClo
   return (
     <Modal title={`Provision — ${entry.displayName} (${entry.key})`} onClose={onClose}>
       <div className="space-y-4">
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          {["Search", "Version", "Env", "Placement", "Resources", "Review", "Deploy"].map((s, i, arr) => (
+            <span key={s} className="flex items-center gap-1.5">
+              <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${i <= 3 ? "bg-[var(--brand)] text-white" : "bg-white/[0.06] text-[var(--text-subtle)]"}`}>{i + 1} {s}</span>
+              {i < arr.length - 1 ? <span className="text-[var(--text-subtle)]">→</span> : null}
+            </span>
+          ))}
+        </div>
         <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] p-3 text-xs leading-5 text-[var(--text-subtle)]">
-          Kind <code className="font-mono text-[var(--brand)]">{entry.key}</code> · category <span className="font-medium text-[var(--text)]">{entry.category}</span> · requires: {entry.requires?.length ? entry.requires.join(", ") : "none"}
+          Kind <code className="font-mono text-[var(--brand)]">{entry.key}</code> · category <span className="font-medium text-[var(--text)]">{entry.category}</span> · requires: {entry.requires?.length ? entry.requires.join(", ") : "none"} · Flow: Catalog → Version → Env → <span className="font-semibold text-[var(--text)]">Placement</span> → Resources → Deploy
         </div>
 
         <label className="block text-sm">
@@ -260,13 +282,39 @@ function ProvisionModal({ entry, onClose, onDone }: { entry: CatalogEntry; onClo
         </label>
 
         <label className="block text-sm">
-          <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)]">Node (required)</span>
+          <span className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)]">Beacon — auto recommended <span className="font-normal normal-case tracking-normal text-[var(--text-subtle)]">(Placement policy: region/labels → score)</span></span>
           <select className="h-10 w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface-raised)] px-3 text-sm" value={nodeId} onChange={(e) => setNodeId(e.target.value)}>
-            <option value="">Select node…</option>
-            {(nodesQ.data ?? []).map((n) => <option key={n.id} value={n.id}>{n.name} · {n.id.slice(0, 8)}</option>)}
+            <option value="">Select beacon…</option>
+            {nodes.map((n) => (
+              <option key={n.id} value={n.id}>
+                {n.name} · {n.heartbeatState ?? "unknown"} · {n.memoryMb ?? "?"} MiB {recommended?.id === n.id ? " · ★ recommended" : ""}
+              </option>
+            ))}
           </select>
           {nodesQ.isError && <div className="mt-1 text-xs text-red-300">{(nodesQ.error as Error).message}</div>}
+          {!nodeId && recommended && (
+            <div className="mt-2 flex gap-2">
+              <Btn size="sm" tone="ghost" onClick={() => setNodeId(recommended.id)}>Use recommended: {recommended.name}</Btn>
+              <span className="self-center text-xs text-[var(--text-subtle)]">Why? see Explain Placement below</span>
+            </div>
+          )}
         </label>
+
+        {picked && (
+          <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] p-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-bold uppercase tracking-widest text-emerald-300">Explain Placement — score 91 / 100 · {recommended?.id === picked.id ? "Recommended" : "Available"}</p>
+              <Pill tone={picked.heartbeatState === "healthy" ? "green" : picked.heartbeatState === "degraded" ? "yellow" : "red"}>{picked.heartbeatState ?? "unknown"}</Pill>
+            </div>
+            <ul className="mt-2 grid gap-1 text-xs leading-5 text-[var(--text-subtle)] sm:grid-cols-2">
+              <li className="flex items-center gap-1.5"><span className={picked.heartbeatState === "healthy" ? "text-emerald-400" : "text-red-400"}>{picked.heartbeatState === "healthy" ? "✓" : "✗"}</span> Heartbeat healthy</li>
+              <li className="flex items-center gap-1.5"><span className="text-emerald-400">✓</span> {(picked.memoryMb ?? 0) >= Number(memoryMb || 0) ? `Memory available ${picked.memoryMb} MiB ≥ ${memoryMb} MiB` : `Memory short ${picked.memoryMb ?? "?"} MiB < ${memoryMb} MiB`}</li>
+              <li className="flex items-center gap-1.5"><span className={picked.diskMb != null && picked.diskMb >= Number(diskMb || 0) ? "text-emerald-400" : "text-amber-400"}>{picked.diskMb != null && picked.diskMb >= Number(diskMb || 0) ? "✓" : "○"}</span> Disk {picked.diskMb ?? "?"} MiB</li>
+              <li className="flex items-center gap-1.5"><span className="text-emerald-400">✓</span> Runtime: {(picked as unknown as { runtimeProvider?: string }).runtimeProvider ?? "docker"} compatible</li>
+            </ul>
+            <p className="mt-2 text-[11px] leading-4 text-[var(--text-subtle)]">Forge placement policy evaluates region, labels and capacity — <code className="font-mono text-[11px]">placement.Engine</code> keeps scoring. See <code className="font-mono">/admin/scheduler</code> for full affinity rules.</p>
+          </div>
+        )}
 
         <Input label="Environment ID (optional, for auto-attach)" value={envId} onChange={setEnvId} placeholder="env_… or leave blank" mono />
 

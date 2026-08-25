@@ -3,13 +3,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { HardDrive } from "lucide-react";
-import { getNodeMetrics, type NodeMetrics } from "@/lib/api/monitoring";
+import { getNodeMetrics, type MetricPeriod, type NodeMetrics } from "@/lib/api/monitoring";
 import { Card, CardHeader } from "@/components/admin/admin-ui";
 import { SpinnerPage } from "@/components/shared";
 
 interface ServerDiskChartProps {
   nodeId?: string;
   height?: number;
+  period?: MetricPeriod;
 }
 
 function formatMb(mb: number) {
@@ -37,10 +38,10 @@ function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: 
   );
 }
 
-export function ServerDiskChart({ nodeId, height = 300 }: ServerDiskChartProps) {
+export function ServerDiskChart({ nodeId, height = 300, period = "1h" }: ServerDiskChartProps) {
   const { data, isLoading, isError } = useQuery({
-    queryKey: ["disk-chart", nodeId],
-    queryFn: () => getNodeMetrics({ nodeId, period: "1h" }),
+    queryKey: ["disk-chart", nodeId, period],
+    queryFn: () => getNodeMetrics({ nodeId, period }),
     refetchInterval: 30_000,
   });
 

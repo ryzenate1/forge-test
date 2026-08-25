@@ -283,8 +283,8 @@ export function AdminHealth({ initialSection = "infrastructure", overview = fals
   return (
     <div className="space-y-6">
       <SectionHeader
-        title="Monitoring Center"
-        sub="Live platform monitoring for infrastructure, runtime, workloads, and orchestration."
+        title="Health"
+        sub="What's wrong — failures, degraded and remediation steps. For what happens over time see Monitoring; for what to know now see Overview."
         action={
           <div className="flex items-center gap-3">
             {lastRefreshed && (
