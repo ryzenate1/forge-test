@@ -175,8 +175,8 @@ export function AdminPlugins() {
 
   return <div className="space-y-6">
     <SectionHeader
-      title="Plugins"
-      sub="Plugin manifest registry with install, update, enable, disable, marketplace, discover and hooks."
+      title="Platform — Plugins"
+      sub="PLATFORM · Integrations: plugin manifest registry with install/update/enable/disable, marketplace, discover and hooks. Distinct from Deploy (Compose) and Infrastructure."
       action={
         <div className="flex gap-2">
           <Btn tone="ghost" onClick={() => setShowFile(true)} className="border border-[var(--brand)]/30 hover:bg-[var(--brand)]/10"><Upload size={14}/> Import File</Btn>
@@ -184,6 +184,9 @@ export function AdminPlugins() {
         </div>
       }
     />
+    <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-2 text-xs leading-5 text-slate-400">
+      <span className="font-semibold text-slate-300">PLATFORM</span> · <span className="font-semibold text-slate-200">Integrations</span> — <code className="font-mono text-[11px]">Plugins</code> (this page) · <code className="font-mono">Webhooks</code> · <code className="font-mono">API Keys</code> + <code className="font-mono">Settings</code> for panel. Plugin hooks fire on workload lifecycle — see <code className="font-mono">GET /admin/plugins/:id/hooks</code>.
+    </div>
     <div className="rounded-lg border border-[var(--brand)]/30 bg-[var(--brand)]/10 p-3 text-sm text-slate-200">
       <div className="flex items-start gap-2">
         <Zap className="h-4 w-4 mt-0.5 flex-shrink-0 text-[var(--brand)]" />

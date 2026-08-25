@@ -94,7 +94,10 @@ export function AdminSettings() {
   const [tab, setTab] = useState<Tab>("general");
   return (
     <div className="space-y-6">
-      <SectionHeader title="Settings Center" sub="Global controls for branding, security, monitoring, orchestration, and platform behavior." />
+      <SectionHeader title="Platform — Settings" sub="PLATFORM · Settings is the panel control surface: branding, security, monitoring, orchestration, mail, backups and advanced runtime. Distinct from Infra/Networking/Storage and from Security headers under Networking." />
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-2 text-xs leading-5 text-slate-400">
+        <span className="font-semibold text-slate-300">PLATFORM</span> · <span className="font-semibold text-slate-200">Settings</span> — global panel configuration. For per-domain networking security see <code className="font-mono text-[11px]">/admin/security</code> (headers) and <code className="font-mono">/admin/certificates /mtls</code> (TLS); for identity see <code className="font-mono">/admin/users /roles</code>. Writes via <code className="font-mono">PUT /admin/settings</code> + <code className="font-mono">PATCH /admin/settings/mail</code> + <code className="font-mono">/advanced</code>.
+      </div>
       <AdminTabs tabs={TABS.map((t) => ({ id: t.id, label: t.label, icon: t.icon }))} active={tab} onChange={(id) => setTab(id as Tab)} />
       {tab === "general" && <PanelSettingsTab mode="general" />}
       {tab === "security" && <PanelSettingsTab mode="security" />}

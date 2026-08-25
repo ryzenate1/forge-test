@@ -42,9 +42,12 @@ export function AdminSecurity() {
   return (
     <div className="space-y-6">
       <AdminPageHeader
-        title="Security"
-        description="Global security headers applied by the middleware layer and per-domain overrides."
+        title="Platform — Security Headers"
+        description="PLATFORM · Security — global middleware headers and per-domain overrides. Part of PLATFORM Security alongside certs/mTLS; distinct from INFRA Networking firewall and panel Settings security tab."
       />
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-2 text-xs leading-5 text-slate-400">
+        <span className="font-semibold text-slate-300">PLATFORM</span> · <span className="font-semibold text-slate-200">Security</span> — headers are the third leg: <code className="font-mono text-[11px]">Global</code> (middleware <code className="font-mono">middleware_security.go</code>) · <code className="font-mono">Per-domain</code> (<code className="font-mono">security_headers</code> table) · <code className="font-mono">Transport</code> (<code className="font-mono">/admin/certificates /mtls</code>). For panel-wide controls see <code className="font-mono">/admin/settings</code> → Security tab.
+      </div>
 
       <Card>
         <CardHeader title="Global Middleware Headers" icon={Shield} />
