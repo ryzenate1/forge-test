@@ -1,4 +1,0 @@
-ALTER TABLE nodes ADD COLUMN daemon_sftp_alias VARCHAR(255);
-ALTER TABLE nodes ADD COLUMN daemon_connect INT DEFAULT 8080;
-ALTER TABLE nodes ADD COLUMN cpu_overallocate INT DEFAULT 0;
-ALTER TABLE nodes ADD COLUMN tags JSONB DEFAULT '[]';
