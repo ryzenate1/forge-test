@@ -107,6 +107,12 @@ appendonlydir/
 dump.rdb
 
 # =============================================================================
+# Read-only study checkouts of third-party projects. Never built, imported or
+# shipped with Forge; see AGENTS.md.
+# =============================================================================
+.reference-repos/
+
+# =============================================================================
 # Sensitive / Leaked Files — MUST NOT BE COMMITTED (see Forge review CRITICAL 1)
 # =============================================================================
 .metrics-token
