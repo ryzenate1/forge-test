@@ -370,17 +370,61 @@ func (p *TraefikReverseProxy) UpdateDomainRoutes(ctx context.Context, domainRout
 	return p.reloadTraefik(ctx)
 }
 
+// certFilePaths returns the on-disk certificate and key paths for a domain.
+// The domain appears in the filename because RemoveCertificate identifies
+// entries to drop by matching the domain against these paths.
+func (p *TraefikReverseProxy) certFilePaths(domain string) (certPath, keyPath string) {
+	base := filepath.Join(p.configDir, "certs", certFileStem(domain))
+	return base + ".crt", base + ".key"
+}
+
+// certFileStem makes a domain safe to use as a filename while keeping it
+// recognisable, so "*.example.com" becomes "wildcard_.example.com".
+func certFileStem(domain string) string {
+	stem := strings.ReplaceAll(domain, "*", "wildcard_")
+	stem = strings.ReplaceAll(stem, string(os.PathSeparator), "_")
+	return strings.ReplaceAll(stem, "..", "_")
+}
+
+// SetCertificate writes the PEM material to disk and points Traefik at the
+// resulting files.
+//
+// The certificate and key bodies were previously assigned straight into the
+// certFile and keyFile fields, which Traefik reads as filesystem paths. It
+// would try to open a file named "-----BEGIN CERTIFICATE-----...", fail, and
+// keep serving the old certificate while the control plane recorded the new
+// one as installed. The loop also ran once per domain while writing identical
+// entries, so every call appended duplicates that never got cleaned up.
 func (p *TraefikReverseProxy) SetCertificate(ctx context.Context, cert CertConfig) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if cert.Certificate == "" || cert.PrivateKey == "" {
+		return fmt.Errorf("certificate and private key are both required")
+	}
+	if len(cert.Domains) == 0 {
+		return fmt.Errorf("at least one domain is required")
+	}
+
+	certDir := filepath.Join(p.configDir, "certs")
+	if err := os.MkdirAll(certDir, 0o700); err != nil {
+		return fmt.Errorf("create certificate directory: %w", err)
+	}
+
 	tlsPath := filepath.Join(p.configDir, "tls.yml")
 	tlsCfg := p.loadTLSConfig(tlsPath)
 
-	for range cert.Domains {
-		tlsCfg.TLS = append(tlsCfg.TLS, TraefikTLSCertificate{
-			CertFile: cert.Certificate,
-			KeyFile:  cert.PrivateKey,
+	for _, domain := range cert.Domains {
+		certPath, keyPath := p.certFilePaths(domain)
+		if err := os.WriteFile(certPath, []byte(cert.Certificate), 0o600); err != nil {
+			return fmt.Errorf("write certificate for %s: %w", domain, err)
+		}
+		if err := os.WriteFile(keyPath, []byte(cert.PrivateKey), 0o600); err != nil {
+			return fmt.Errorf("write private key for %s: %w", domain, err)
+		}
+		tlsCfg.TLS = upsertTLSCertificate(tlsCfg.TLS, TraefikTLSCertificate{
+			CertFile: certPath,
+			KeyFile:  keyPath,
 		})
 	}
 
@@ -396,29 +440,43 @@ func (p *TraefikReverseProxy) SetCertificate(ctx context.Context, cert CertConfi
 	return p.reloadTraefik(ctx)
 }
 
+// upsertTLSCertificate replaces the entry for the same certFile rather than
+// appending, so renewing a certificate does not grow the list without bound.
+func upsertTLSCertificate(existing []TraefikTLSCertificate, entry TraefikTLSCertificate) []TraefikTLSCertificate {
+	for i, c := range existing {
+		if c.CertFile == entry.CertFile {
+			existing[i] = entry
+			return existing
+		}
+	}
+	return append(existing, entry)
+}
+
 func (p *TraefikReverseProxy) RemoveCertificate(ctx context.Context, domains []string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	tlsPath := filepath.Join(p.configDir, "tls.yml")
-	domainSet := make(map[string]bool, len(domains))
+
+	// Match on the exact paths SetCertificate would have produced. Substring
+	// matching on the domain used to be the test here, which both missed
+	// wildcard entries, whose filenames cannot contain "*", and could drop an
+	// unrelated certificate whose path happened to contain the domain.
+	removing := make(map[string]struct{}, len(domains))
 	for _, d := range domains {
-		domainSet[d] = true
+		certPath, keyPath := p.certFilePaths(d)
+		removing[certPath] = struct{}{}
+		_ = os.Remove(certPath)
+		_ = os.Remove(keyPath)
 	}
 
 	tlsCfg := p.loadTLSConfig(tlsPath)
 	var filtered []TraefikTLSCertificate
 	for _, c := range tlsCfg.TLS {
-		keep := true
-		for _, d := range domains {
-			if strings.Contains(c.CertFile, d) || strings.Contains(c.KeyFile, d) {
-				keep = false
-				break
-			}
+		if _, drop := removing[c.CertFile]; drop {
+			continue
 		}
-		if keep {
-			filtered = append(filtered, c)
-		}
+		filtered = append(filtered, c)
 	}
 	tlsCfg.TLS = filtered
 
@@ -1063,6 +1121,14 @@ func (p *TraefikReverseProxy) writeConfig(cfg *TraefikFileConfig) error {
 }
 
 func (p *TraefikReverseProxy) reloadTraefik(ctx context.Context) error {
+	// Traefik's file provider watches the dynamic configuration directory, so
+	// writing the file is what actually applies a change; this request is only
+	// a nudge. With no HTTP client configured there is nothing to nudge, which
+	// is a valid file-provider-only deployment rather than a failure. Calling
+	// through a nil client here used to panic.
+	if p.client == nil {
+		return nil
+	}
 	resp, err := p.client.Post(
 		fmt.Sprintf("http://%s/api/refresh", p.adminAddr),
 		"application/json",
