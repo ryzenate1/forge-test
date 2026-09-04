@@ -742,6 +742,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		NetworkIP       string                `json:"networkIp"`
 		RegistryAuth    *runtime.RegistryAuth `json:"registryAuth"`
 		DiskMB          int64                 `json:"diskMb"`
+		Provider        string                `json:"provider"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid request", http.StatusBadRequest)
@@ -753,6 +754,15 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := serverid.Validate(body.ServerID); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// The control plane sends the provider it placed the workload on. This
+	// field was not read at all, so a request for lxc or kvm produced a Docker
+	// container and reported success. Serving a different runtime than the one
+	// asked for is a failure, not a fallback.
+	provider := s.runtimeProvider()
+	if requested := strings.ToLower(strings.TrimSpace(body.Provider)); requested != "" && requested != provider {
+		http.Error(w, fmt.Sprintf("runtime provider %q is not available on this node, which runs %q", requested, provider), http.StatusBadRequest)
 		return
 	}
 
@@ -811,7 +821,21 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.manager.MarkCreated(body.ServerID, rootDir, body.DiskMB)
-	writeJSON(w, http.StatusAccepted, map[string]any{"serverId": body.ServerID, "accepted": true, "mode": "docker"})
+	writeJSON(w, http.StatusAccepted, map[string]any{"serverId": body.ServerID, "accepted": true, "mode": provider})
+}
+
+// runtimeProvider reports the runtime this beacon is actually configured with,
+// so responses name what ran instead of assuming Docker.
+func (s *Server) runtimeProvider() string {
+	if s == nil || s.runtime == nil {
+		return "unknown"
+	}
+	if p, ok := s.runtime.(interface{ Provider() string }); ok {
+		if name := strings.ToLower(strings.TrimSpace(p.Provider())); name != "" {
+			return name
+		}
+	}
+	return "unknown"
 }
 
 func (s *Server) syncConfiguration(w http.ResponseWriter, r *http.Request) {

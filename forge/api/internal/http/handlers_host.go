@@ -5,12 +5,19 @@ import (
 	"errors"
 	"net/url"
 
+	gpruntime "gamepanel/forge/internal/runtime"
+
 	"github.com/gofiber/fiber/v2"
 )
 
 func mapDaemonError(err error) error {
 	if err == nil {
 		return nil
+	}
+	// Asking for a runtime Forge cannot run is a bad request, not a node
+	// failure, and must not be reported as one.
+	if errors.Is(err, gpruntime.ErrUnsupportedProvider) {
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return fiber.NewError(fiber.StatusGatewayTimeout, "Node unreachable — request timed out")
