@@ -51,6 +51,7 @@ import (
 	"gamepanel/forge/internal/services/gitprovider"
 	"gamepanel/forge/internal/services/health"
 	"gamepanel/forge/internal/services/heartbeatmonitor"
+	installersvc "gamepanel/forge/internal/services/installer"
 	"gamepanel/forge/internal/services/i18n"
 	"gamepanel/forge/internal/services/loadbalancer"
 	mailservice "gamepanel/forge/internal/services/mail"
@@ -163,6 +164,7 @@ type Config struct {
 	ComposeService             *composesvc.Service
 	BuildService               *build.Service
 	BuildpackService           *buildpacksvc.Service
+	InstallerService           *installersvc.Service
 
 	TenancyService  *tenancy.Service
 	EnvVarService   *envvarsvc.Service

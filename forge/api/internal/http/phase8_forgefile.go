@@ -24,7 +24,7 @@ func extractManifestBody(c *fiber.Ctx) ([]byte, error) {
 		var wrapper struct {
 			Content string `json:"content"`
 		}
-		body = []byte(strings.TrimSpace(body))
+		body = []byte(strings.TrimSpace(string(body)))
 		if len(body) == 0 {
 			return nil, fiber.NewError(fiber.StatusBadRequest, "forge.yaml content is required")
 		}

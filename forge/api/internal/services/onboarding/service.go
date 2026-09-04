@@ -123,7 +123,7 @@ func NewService(st *store.Store, gitSvc *gitsvc.Service, appSvc *apphosting.Serv
 	}
 }
 
-func (s *Service) demoURLBase() string {
+func (s *Service) resolvedDemoURLBase() string {
 	if s.demoURLBase == "" {
 		return "http://localhost:3000/deploy"
 	}
@@ -315,7 +315,7 @@ func (s *Service) Deploy(ctx context.Context, userID, role string, req DeployReq
 		Status:       "queued",
 		AppID:        app.ID,
 		AppName:      app.Name,
-		URL:          s.demoURLBase() + "/" + deploymentID,
+		URL:          s.resolvedDemoURLBase() + "/" + deploymentID,
 		InternalURL:  "http://localhost:3000/deploy/" + deploymentID,
 		Builder:      builder,
 	}, nil

@@ -6,6 +6,7 @@ import (
 	"gamepanel/beacon/internal/health"
 	"gamepanel/beacon/internal/logging"
 	"gamepanel/beacon/internal/metrics"
+	"gamepanel/beacon/internal/tokens"
 	"log"
 	"net/http"
 	"time"
@@ -43,6 +44,7 @@ func NewServer(
 	metricsCollector metrics.MetricsCollector,
 	serverHandler *ServerHandler,
 	logger logging.Logger,
+	tokenGenerator *tokens.Generator,
 ) *http.Server {
 	r := mux.NewRouter()
 
@@ -74,7 +76,7 @@ func NewServer(
 		LoggingMiddleware(logger),
 		CORSMiddleware,
 		CSRFMiddleware,
-		auth.AuthMiddleware,
+		auth.NewAuthMiddleware(tokenGenerator),
 		RateLimitMiddleware,
 		ErrorHandler,
 		ValidateRequest,

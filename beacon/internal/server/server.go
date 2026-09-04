@@ -65,6 +65,8 @@ type Server struct {
 	dataDir           string
 	allowedMounts     []string
 	allowedMountsMu   sync.RWMutex
+	hostFileRoots     []string
+	hostFileRootsMu   sync.RWMutex
 	token             string
 	metricsToken      string
 	version           string

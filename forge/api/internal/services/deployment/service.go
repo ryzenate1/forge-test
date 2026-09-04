@@ -110,9 +110,15 @@ type HealthCheckResult struct {
 	Error  string `json:"error,omitempty"`
 }
 
+type RuntimeExecutor interface {
+	ApplyDeployment(ctx context.Context, serverID, image string) error
+	VerifyRunning(ctx context.Context, serverID string) (bool, error)
+}
+
 type Service struct {
 	store                *store.Store
 	publisher            events.Publisher
+	runtimeExecutor      RuntimeExecutor
 	resumeMu             sync.Mutex
 	executingDeployments sync.Map
 	wg                   sync.WaitGroup
@@ -131,6 +137,13 @@ func New(store *store.Store, publishers ...events.Publisher) *Service {
 		store:     store,
 		publisher: publisher,
 	}
+}
+
+func (s *Service) SetRuntimeExecutor(exec RuntimeExecutor) {
+	if s == nil {
+		return
+	}
+	s.runtimeExecutor = exec
 }
 
 var (

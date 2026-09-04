@@ -445,11 +445,14 @@ func (s *Service) execScript(ctx context.Context, run *Run, st *StageRun, logf f
 	if nodeID == "" || containerID == "" || command == "" {
 		return errors.New("script action requires nodeId, containerId and command")
 	}
-	node, err := s.store.GetNode(ctx, nodeID)
+	if s.sharedStore == nil {
+		return errors.New("script action requires the panel store; it is not configured")
+	}
+	node, err := s.sharedStore.GetNode(ctx, nodeID)
 	if err != nil {
 		return fmt.Errorf("script node lookup: %w", err)
 	}
-	token, err := s.store.GetNodeDaemonCredential(ctx, nodeID)
+	token, err := s.sharedStore.GetNodeDaemonCredential(ctx, nodeID)
 	if err != nil {
 		return fmt.Errorf("script node credential: %w", err)
 	}

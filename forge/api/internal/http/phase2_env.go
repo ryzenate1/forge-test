@@ -226,12 +226,25 @@ func registerPhase2EnvironmentEngine(v1 fiber.Router, protected fiber.Router, cf
 			}
 		}
 
+		streamCtx, stopStream := context.WithCancel(context.Background())
+		defer stopStream()
+		// The websocket read loop is the only reliable disconnect signal, so a
+		// failed read cancels the log tail.
+		go func() {
+			defer stopStream()
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}()
+
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 		last := since
 		for {
 			select {
-			case <-conn.Context().Done():
+			case <-streamCtx.Done():
 				return
 			case <-ticker.C:
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

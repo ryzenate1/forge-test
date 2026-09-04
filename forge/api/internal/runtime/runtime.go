@@ -11,6 +11,8 @@ const (
 	PodmanProvider      = "podman"
 	FirecrackerProvider = "firecracker"
 	KubernetesProvider  = "kubernetes"
+	KVMProvider         = "kvm"
+	LXCProvider         = "lxc"
 )
 
 type Target struct {

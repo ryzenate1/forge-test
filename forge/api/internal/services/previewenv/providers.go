@@ -214,24 +214,24 @@ func (s *Service) HandleGitLabWebhookEvent(ctx context.Context, payload []byte, 
 
 	switch ev.ObjectKind {
 	case "merge_request":
-		if repoURL == "" || ev.MR.IID == 0 {
+		if repoURL == "" || ev.ObjectAttributes.IID == 0 {
 			return nil
 		}
-		source, err := s.resolveSource(ctx, repoURL, ev.MR.SourceBranch, verify, payload)
+		source, err := s.resolveSource(ctx, repoURL, ev.ObjectAttributes.SourceBranch, verify, payload)
 		if err != nil || source == nil {
 			return err
 		}
-		switch ev.MR.Action {
+		switch ev.ObjectAttributes.Action {
 		case "open", "reopen", "update":
-			sha := ev.MR.SHA
+			sha := ev.ObjectAttributes.SHA
 			if sha == "" {
-				sha = ev.MR.LastCommit.ID
+				sha = ev.ObjectAttributes.LastCommit.ID
 			}
 			return s.upsertAndDeploy(ctx, source, &store.PreviewDeployment{
-				PRNumber:  ev.MR.IID,
-				PRTitle:   ev.MR.Title,
-				PRURL:     ev.MR.URL,
-				Branch:    ev.MR.SourceBranch,
+				PRNumber:  ev.ObjectAttributes.IID,
+				PRTitle:   ev.ObjectAttributes.Title,
+				PRURL:     ev.ObjectAttributes.URL,
+				Branch:    ev.ObjectAttributes.SourceBranch,
 				RepoOwner: namespace,
 				RepoName:  repo,
 				CommitSHA: sha,
@@ -239,7 +239,7 @@ func (s *Service) HandleGitLabWebhookEvent(ctx context.Context, payload []byte, 
 				CreatedBy: &source.UserID,
 			})
 		case "close", "merge":
-			return s.cleanupForPR(ctx, namespace, repo, ev.MR.IID)
+			return s.cleanupForPR(ctx, namespace, repo, ev.ObjectAttributes.IID)
 		default:
 			return nil
 		}

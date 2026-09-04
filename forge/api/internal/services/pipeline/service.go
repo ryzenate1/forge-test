@@ -15,6 +15,7 @@ import (
 	"gamepanel/forge/internal/services/build"
 	"gamepanel/forge/internal/services/compose"
 	"gamepanel/forge/internal/services/deployment"
+	"gamepanel/forge/internal/store"
 )
 
 const (
@@ -80,6 +81,7 @@ func New(opts Options) (*Service, error) {
 	}
 	return &Service{
 		store:       opts.Store,
+		sharedStore: opts.SharedStore,
 		daemonCli:   opts.Daemon,
 		buildSvc:    opts.BuildService,
 		composeSvc:  opts.ComposeService,

@@ -289,6 +289,23 @@ func (s *Service) nodeHost(ctx context.Context, nodeID string) (string, error) {
 	return strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(node.BaseURL), "http://"), "/"), nil
 }
 
+func extractHost(connString string) string {
+	connString = strings.TrimSpace(connString)
+	if connString == "" {
+		return ""
+	}
+	if at := strings.LastIndex(connString, "@"); at >= 0 {
+		connString = connString[at+1:]
+	}
+	if slash := strings.Index(connString, "/"); slash >= 0 {
+		connString = connString[:slash]
+	}
+	if host, _, ok := strings.Cut(connString, ":"); ok {
+		return host
+	}
+	return connString
+}
+
 func requireVersion(entry *store.CatalogEntry, version string) error {
 	for _, v := range entry.Versions {
 		if v == version {

@@ -3,6 +3,7 @@ package installer
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -61,6 +62,43 @@ type Service struct {
 
 func New(store Store) *Service {
 	return &Service{store: store}
+}
+
+func IsEnabled() bool {
+	return os.Getenv("INSTALLER_WORKFLOW_ENABLED") == "1"
+}
+
+func (s *Service) ListWorkflows(ctx context.Context, serverID string) ([]Workflow, error) {
+	return s.store.ListWorkflows(ctx, serverID)
+}
+
+func (s *Service) GetWorkflow(ctx context.Context, id string) (*Workflow, error) {
+	return s.store.GetWorkflow(ctx, id)
+}
+
+func (s *Service) ListRecentWorkflows(ctx context.Context, limit int) ([]Workflow, error) {
+	if pg, ok := s.store.(*PostgresStore); ok {
+		return pg.ListRecentWorkflows(ctx, limit)
+	}
+	return nil, nil
+}
+
+func (s *Service) CreateReinstallWorkflow(ctx context.Context, serverID string) (*Workflow, error) {
+	wf := &Workflow{
+		ID:        uuid.NewString(),
+		ServerID:  serverID,
+		Type:      WorkflowReinstall,
+		Status:    InstallPending,
+		Steps:     defaultInstallSteps(),
+		CreatedAt: time.Now().UTC(),
+	}
+	return wf, s.store.CreateWorkflow(ctx, wf)
+}
+
+func (s *Service) ExecuteWorkflowAsync(workflowID string) {
+	go func() {
+		_ = s.store.UpdateStep(context.Background(), workflowID, InstallRunning, "")
+	}()
 }
 
 func (s *Service) CreateInstallWorkflow(ctx context.Context, serverID string) (*Workflow, error) {

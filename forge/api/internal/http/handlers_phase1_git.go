@@ -32,7 +32,7 @@ func Phase1GitOAuthAuthorize(bridge *phase1git.Bridge) fiber.Handler {
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "authentication required")
 		}
-		pt, err := parsePhase1Provider(c.Params("provider"))
+		pt, err := parseProvider1(c.Params("provider"))
 		if err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
@@ -89,7 +89,7 @@ func Phase1GitProviderStatus(bridge *phase1git.Bridge) fiber.Handler {
 
 // ---------- Provider content browsing ----------
 
-func phase1ProviderToken(c *fiber.Ctx, cfg Config) (store.GitProviderToken, gitprovider.ProviderType, error) {
+func phase1ProviderToken(c *fiber.Ctx, cfg Config) (store.GitProviderToken, store.GitProviderType, error) {
 	if cfg.Store == nil {
 		return store.GitProviderToken{}, "", fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 	}
@@ -104,7 +104,7 @@ func phase1ProviderToken(c *fiber.Ctx, cfg Config) (store.GitProviderToken, gitp
 	if err != nil {
 		return store.GitProviderToken{}, "", fiber.NewError(fiber.StatusBadRequest, "unsupported provider")
 	}
-	return token, pt, nil
+	return token, store.GitProviderType(pt), nil
 }
 
 func repoFullName(c *fiber.Ctx) string {
@@ -216,7 +216,7 @@ func Phase1GitSourceLinkEnv(cfg Config) fiber.Handler {
 		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if ok {
-			if canAccess, _ := cfg.Store.CanAccessOrganization(ctx, claims.Subject, orgID); !canAccess {
+			if canAccess, _ := cfg.Store.CanAccessOrganization(ctx, claims.Sub, orgID); !canAccess {
 				return fiber.NewError(fiber.StatusNotFound, "organization not found")
 			}
 		}
@@ -331,7 +331,7 @@ func Phase1GitProvisionDeployKey(cfg Config, bridge *phase1git.Bridge) fiber.Han
 			return respondInternalError(c, err)
 		}
 
-		if pushed, err := bridge.AutoprovisionDeployKey(ctx, pt, token.AccessToken, token.BaseURL, repo, req.Title, kp.PublicKey); err != nil {
+		if pushed, err := bridge.AutoprovisionDeployKey(ctx, store.GitProviderType(pt), token.AccessToken, token.BaseURL, repo, req.Title, kp.PublicKey); err != nil {
 			return fiber.NewError(fiber.StatusBadGateway, err.Error())
 		} else {
 			if err := cfg.Store.UpdateGitSourceCredentialID(ctx, source.ID, cred.ID); err != nil {
@@ -357,7 +357,7 @@ func parseProvider1(pt string) (gitprovider.ProviderType, error) {
 
 // sourceOrgMatch returns the source's org id when it disagrees with the env's
 // owning org; empty string means "compatible".
-func sourceOrgMatch(cfg Config, ctx, sourceID, envID string) string {
+func sourceOrgMatch(cfg Config, ctx context.Context, sourceID, envID string) string {
 	link, err := cfg.Store.GetGitSourceLink(ctx, sourceID)
 	if err != nil || link.OrgID == nil || *link.OrgID == "" {
 		return ""

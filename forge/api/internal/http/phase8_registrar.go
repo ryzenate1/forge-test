@@ -26,8 +26,8 @@ func RegisterPhase8(v1 fiber.Router, protected fiber.Router, cfg *Config) error 
 	admin.Get("/branding/file/:name", brandingFileHandler(cfg))
 
 	protected.Get("/forgefile", listForgefileManifestsHandler(ffSvc))
-	protected.Get("/forgefile/validate", validateForgefileHandler(ffSvc, false))
-	protected.Post("/forgefile/validate", validateForgefileHandler(ffSvc, false))
+	protected.Get("/forgefile/validate", validateForgefileHandler(ffSvc))
+	protected.Post("/forgefile/validate", validateForgefileHandler(ffSvc))
 	protected.Post("/forgefile/apply", applyForgefileHandler(ffSvc))
 	protected.Get("/forgefile/:slug", getForgefileHandler(ffSvc))
 	v1.Get("/public/forgefile/:slug", publicForgefileHandler(ffSvc))

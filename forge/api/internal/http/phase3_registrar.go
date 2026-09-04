@@ -1,7 +1,6 @@
 package http
 
 import (
-	"log/slog"
 	"strings"
 
 	"gamepanel/forge/internal/services/catalog"

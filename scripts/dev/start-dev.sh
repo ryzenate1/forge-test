@@ -71,12 +71,17 @@ if [ -z "${FORGE_MASTER_KEY:-}" ]; then
   FORGE_MASTER_KEY="$(openssl rand -base64 32)"
   export FORGE_MASTER_KEY
 fi
+if [ -z "${APP_KEY:-}" ]; then
+  APP_KEY="base64:$(openssl rand -base64 32)"
+  export APP_KEY
+fi
 mkdir -p "$ROOT/.dev-data"
 umask 077
 cat > "$DEV_SECRETS_FILE" <<EOF
 DAEMON_NODE_TOKEN=$DAEMON_NODE_TOKEN
 API_AUTH_SECRET=$API_AUTH_SECRET
 FORGE_MASTER_KEY=$FORGE_MASTER_KEY
+APP_KEY=$APP_KEY
 EOF
 umask 022
 printf "[dev] development node token: %s\n" "$DAEMON_NODE_TOKEN"
