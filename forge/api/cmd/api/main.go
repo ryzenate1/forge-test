@@ -565,6 +565,9 @@ func run() error {
 
 		autoSvc = autoscaler.New(db, cm, dockerRT, outboxPub)
 		deploySvc = deployment.New(db, outboxPub)
+		// Without this the deployment steps have no way to reach a node, and
+		// every step that claims to change what is running fails closed.
+		deployment.WireBeaconExecutor(deploySvc, db, daemonClient)
 		previewDeploySvc = previewsvc.New(db, outboxPub)
 		lbSvc = loadbalancer.New(db, outboxPub)
 

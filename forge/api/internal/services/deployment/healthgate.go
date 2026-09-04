@@ -2,9 +2,11 @@ package deployment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -15,7 +17,17 @@ func (s *Service) CheckHealth(ctx context.Context, deployment *Deployment) (*Hea
 
 	host := deployment.HealthCheckHost
 	if host == "" {
-		host = "localhost"
+		resolved, err := s.resolveWorkloadHost(ctx, deployment.ServerID)
+		if err != nil {
+			// Falling back to localhost here would probe the control plane's
+			// own machine and report the result as the workload's health.
+			// An unresolvable target is an unknown, and unknown is not healthy.
+			return &HealthCheckResult{
+				Passed: false,
+				Error:  fmt.Sprintf("health gate target unresolved for server %s: %v", deployment.ServerID, err),
+			}, nil
+		}
+		host = resolved
 	}
 	target := fmt.Sprintf("http://%s:%d%s", host, deployment.HealthCheckPort, deployment.HealthCheckPath)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -43,6 +55,34 @@ func (s *Service) CheckHealth(ctx context.Context, deployment *Deployment) (*Hea
 		Status: resp.StatusCode,
 		Body:   string(body),
 	}, nil
+}
+
+// resolveWorkloadHost derives the address to probe from the node the workload
+// actually runs on. The deployment's own HealthCheckHost wins when set; this
+// is the fallback for deployments that only specify a path and port.
+func (s *Service) resolveWorkloadHost(ctx context.Context, serverID string) (string, error) {
+	if s == nil || s.store == nil {
+		return "", errors.New("no store available to resolve the workload's node")
+	}
+	if serverID == "" {
+		return "", errors.New("deployment has no server")
+	}
+	target, err := s.store.ServerControlTarget(ctx, serverID)
+	if err != nil {
+		return "", fmt.Errorf("resolve node for server: %w", err)
+	}
+	if target.NodeURL == "" {
+		return "", errors.New("node has no base URL")
+	}
+	parsed, err := url.Parse(target.NodeURL)
+	if err != nil {
+		return "", fmt.Errorf("parse node base URL: %w", err)
+	}
+	hostname := parsed.Hostname()
+	if hostname == "" {
+		return "", fmt.Errorf("node base URL %q has no host", target.NodeURL)
+	}
+	return hostname, nil
 }
 
 func (s *Service) WaitForHealthGate(ctx context.Context, deployment *Deployment, stepID string) error {

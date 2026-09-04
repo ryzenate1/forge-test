@@ -238,18 +238,51 @@ func (s *Service) executeInitStep(ctx context.Context, deployment *Deployment) e
 	return nil
 }
 
+// executeProvisionStep puts the deployment's image onto the node. It is the
+// only step that changes what is actually running, so it fails closed: with no
+// runtime executor there is nothing to drive the node with, and a step that
+// cannot act must not report that it acted.
 func (s *Service) executeProvisionStep(ctx context.Context, deployment *Deployment) error {
+	exec := s.runtimeExecutor
+	if exec == nil {
+		return fmt.Errorf("provision step: %w", ErrNoRuntimeExecutor)
+	}
+	if err := exec.ApplyDeployment(ctx, deployment.ServerID, deployment.Image); err != nil {
+		return fmt.Errorf("provision step: apply %s to %s: %w", deployment.Image, deployment.ServerID, err)
+	}
 	if s.publisher != nil {
 		_ = s.publisher.Publish(ctx, newDeploymentEvent("deployment_provisioning", deployment))
 	}
 	return nil
 }
 
+// executePromoteStep moves live traffic onto the newly provisioned target and
+// then records the switch. Traffic moves first: if the shift cannot be made or
+// cannot be confirmed, the recorded active target must not change, otherwise
+// the control plane would claim a promotion that never reached users.
 func (s *Service) executePromoteStep(ctx context.Context, deployment *Deployment) error {
+	oldTarget := deployment.ActiveTarget
 	newTarget := "green"
-	if deployment.ActiveTarget != "blue" {
+	if oldTarget != "blue" {
 		newTarget = "blue"
 	}
+
+	switch {
+	case s.traffic != nil:
+		if err := s.traffic.ShiftTraffic(ctx, deployment.ID, deployment.ServerID, oldTarget, newTarget, fullTrafficWeight); err != nil {
+			return fmt.Errorf("promote step: shift traffic to %s: %w", newTarget, err)
+		}
+		shifted, err := s.traffic.VerifyTrafficShift(ctx, deployment.ID)
+		if err != nil {
+			return fmt.Errorf("promote step: verify traffic shift: %w", err)
+		}
+		if !shifted {
+			return fmt.Errorf("promote step: traffic shift to %s could not be confirmed", newTarget)
+		}
+	case isTrafficRequired():
+		return fmt.Errorf("promote step: %w", ErrNoTrafficExecutor)
+	}
+
 	fresh, err := s.store.GetDeployment(ctx, deployment.ID)
 	if err != nil {
 		return fmt.Errorf("re-fetch deployment: %w", err)
@@ -268,6 +301,9 @@ func (s *Service) executePromoteStep(ctx context.Context, deployment *Deployment
 }
 
 func (s *Service) executeDrainOldStep(ctx context.Context, deployment *Deployment) error {
+	if err := s.requireWorkloadRunning(ctx, deployment, StepDrainOld); err != nil {
+		return err
+	}
 	if s.publisher != nil {
 		_ = s.publisher.Publish(ctx, newDeploymentEvent("deployment_draining", deployment))
 	}
@@ -275,6 +311,9 @@ func (s *Service) executeDrainOldStep(ctx context.Context, deployment *Deploymen
 }
 
 func (s *Service) executeDrainCanaryStep(ctx context.Context, deployment *Deployment) error {
+	if err := s.requireWorkloadRunning(ctx, deployment, StepDrainCanary); err != nil {
+		return err
+	}
 	if s.publisher != nil {
 		_ = s.publisher.Publish(ctx, newDeploymentEvent("canary_draining", deployment))
 	}
@@ -282,6 +321,9 @@ func (s *Service) executeDrainCanaryStep(ctx context.Context, deployment *Deploy
 }
 
 func (s *Service) executeScaleUpStep(ctx context.Context, deployment *Deployment) error {
+	if err := s.requireWorkloadRunning(ctx, deployment, StepScaleUp); err != nil {
+		return err
+	}
 	if s.publisher != nil {
 		_ = s.publisher.Publish(ctx, newDeploymentEvent("rolling_scale_up", deployment))
 	}
@@ -289,15 +331,38 @@ func (s *Service) executeScaleUpStep(ctx context.Context, deployment *Deployment
 }
 
 func (s *Service) executeScaleDownStep(ctx context.Context, deployment *Deployment) error {
+	if err := s.requireWorkloadRunning(ctx, deployment, StepScaleDown); err != nil {
+		return err
+	}
 	if s.publisher != nil {
 		_ = s.publisher.Publish(ctx, newDeploymentEvent("rolling_scale_down", deployment))
 	}
 	return nil
 }
 
-func (s *Service) executeCleanupStep(ctx context.Context, deployment *Deployment) error {
-	if s.publisher != nil {
-		_ = s.publisher.Publish(ctx, newDeploymentEvent("deployment_cleanup", deployment))
+// executeCleanupStep has no backing capability: nothing tears down a
+// superseded target today, and no strategy in stepsForStrategy emits this
+// step. Reaching it means a step row was created out of band, so refuse
+// rather than mark a teardown that never happened as done.
+func (s *Service) executeCleanupStep(_ context.Context, _ *Deployment) error {
+	return fmt.Errorf("cleanup step: %w", ErrStepNotImplemented)
+}
+
+// requireWorkloadRunning refuses to advance a step that only makes sense
+// against a live workload. Rolling and blue/green steps reorder traffic
+// between instances; if the node cannot confirm the workload is up, the
+// reordering did not happen and must not be recorded as done.
+func (s *Service) requireWorkloadRunning(ctx context.Context, deployment *Deployment, step string) error {
+	exec := s.runtimeExecutor
+	if exec == nil {
+		return fmt.Errorf("%s step: %w", step, ErrNoRuntimeExecutor)
+	}
+	running, err := exec.VerifyRunning(ctx, deployment.ServerID)
+	if err != nil {
+		return fmt.Errorf("%s step: verify workload on %s: %w", step, deployment.ServerID, err)
+	}
+	if !running {
+		return fmt.Errorf("%s step: workload %s is not running", step, deployment.ServerID)
 	}
 	return nil
 }
