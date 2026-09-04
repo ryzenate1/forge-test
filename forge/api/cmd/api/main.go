@@ -393,8 +393,11 @@ func run() error {
 		// Initialize Beacon HTTP client for replicamanager
 		beaconHTTPClient := replicamanager.NewBeaconHTTPClient(db, daemonClient, slogLogger)
 
-		// Initialize replicamanager with all required dependencies
-		replicaMgr = replicamanager.New(db, placeEngine, sched, resMgr, nil, beaconHTTPClient, slogLogger, outboxPub)
+		// Initialize replicamanager with all required dependencies. Passing a
+		// nil dispatcher here used to fall back to a no-op that reported every
+		// replica command as "pending" without contacting any beacon.
+		instanceDispatcher := replicamanager.NewRemoteCommandDispatcher(db, daemonClient, slogLogger)
+		replicaMgr = replicamanager.New(db, placeEngine, sched, resMgr, instanceDispatcher, beaconHTTPClient, slogLogger, outboxPub)
 		hbm = heartbeatmonitor.New(db, outboxPub)
 		rec = reconciler.New(db, cm, 0, outboxPub)
 		ep = evacuationplanner.New(db, sched, outboxPub)

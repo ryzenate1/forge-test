@@ -72,7 +72,7 @@ func New(store *store.Store, engine *placement.Engine, scheduler *scheduler2.Sch
 		publisher = publishers[0]
 	}
 	if dispatcher == nil {
-		dispatcher = NoopCommandDispatcher{}
+		dispatcher = UnavailableCommandDispatcher{}
 	}
 	if logger == nil {
 		logger = slog.Default()
