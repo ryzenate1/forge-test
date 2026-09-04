@@ -19,7 +19,8 @@ export type SystemInfo = {
   disk: { total: number; used: number; free: number };
   runtime: { reachable: boolean };
   uptime: number;
-  activeSessions: number;
+  /** null when nothing measures this, which is not the same as zero. */
+  activeSessions: number | null;
 };
 
 export type Backup = {

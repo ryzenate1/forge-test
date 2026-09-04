@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import type { SystemInfo } from "@/lib/api";
 import { sanitizeError } from "@/lib/sanitize";
 import { formatBytes, formatUptime } from "@/lib/format";
@@ -17,11 +18,16 @@ export function SystemInfoDisplay() {
   const refresh = () => setRefreshKey((k) => k + 1);
   const dismissError = () => setError(null);
 
+  // These figures describe one Beacon, so the page has to say which one.
+  const nodeId = useSearchParams().get("nodeId");
+  const endpoint = nodeId ? `/api/proxy/system?nodeId=${encodeURIComponent(nodeId)}` : null;
+
   useEffect(() => {
+    if (!endpoint) return;
     const controller = new AbortController();
     const token = ++serverTokenRef.current;
     setError(null);
-    fetch("/api/proxy/system", { signal: controller.signal, credentials: "include" })
+    fetch(endpoint, { signal: controller.signal, credentials: "include" })
       .then(async (r) => {
 		redirectOnUnauthorized(r);
         if (!r.ok) {
@@ -38,15 +44,16 @@ export function SystemInfoDisplay() {
         }
       });
     return () => controller.abort();
-  }, [refreshKey]);
+  }, [refreshKey, endpoint]);
 
   useEffect(() => {
+    if (!endpoint) return;
     let lastController = new AbortController();
     const interval = setInterval(() => {
       lastController.abort();
       lastController = new AbortController();
       const token = ++serverTokenRef.current;
-      fetch("/api/proxy/system", { signal: lastController.signal, credentials: "include" })
+      fetch(endpoint, { signal: lastController.signal, credentials: "include" })
         .then((r) => {
 			redirectOnUnauthorized(r);
           if (!r.ok) {
@@ -66,7 +73,19 @@ export function SystemInfoDisplay() {
         });
     }, POLL_INTERVAL_MS);
     return () => { clearInterval(interval); lastController.abort(); };
-  }, []);
+  }, [endpoint]);
+
+  if (!nodeId) {
+    return (
+      <div role="status" className="rounded-xl border border-line bg-paper p-6">
+        <p className="font-bold text-ink">No Beacon selected</p>
+        <p className="mt-1 text-sm text-muted">
+          These figures describe a single machine. Add <code className="font-mono">?nodeId=</code> to
+          the address to choose which Beacon to inspect.
+        </p>
+      </div>
+    );
+  }
 
   if (error) {
     return (
@@ -129,7 +148,11 @@ export function SystemInfoDisplay() {
         </div>
         <div className="rounded-xl border border-line bg-paper p-5">
           <p className="text-xs font-bold uppercase text-muted">Active Sessions</p>
-          <p className="mt-1 text-lg font-bold text-ink">{info.activeSessions}</p>
+          {info.activeSessions === null ? (
+            <p className="mt-1 text-lg font-bold text-muted">Not reported</p>
+          ) : (
+            <p className="mt-1 text-lg font-bold text-ink">{info.activeSessions}</p>
+          )}
         </div>
       </div>
 

@@ -39,38 +39,33 @@ type nodeHostTarget struct {
 	NodeName  string
 }
 
+// resolveNodeHostTarget resolves the Beacon a /host or /firewall request is
+// aimed at. The node must be named explicitly.
+//
+// It used to fall back to the first node that happened to have a base URL and
+// a credential whenever nodeId was absent. That silently answered host
+// inspection for a machine the caller never asked about, and applied firewall
+// changes to an arbitrary node. Reading the wrong machine's metrics is
+// misleading; writing the wrong machine's firewall is dangerous. A request
+// that does not say which node it means is incomplete, so it is rejected.
 func resolveNodeHostTarget(cfg Config, nodeID string) (*nodeHostTarget, error) {
 	ctx, cancel := requestContext()
 	defer cancel()
-	if nodeID != "" {
-		node, err := cfg.Store.GetNode(ctx, nodeID)
-		if err != nil {
-			return nil, fiber.NewError(fiber.StatusNotFound, "node not found")
-		}
-		if node.BaseURL == "" {
-			return nil, fiber.NewError(fiber.StatusBadRequest, "node has no base URL")
-		}
-		token, err := cfg.Store.GetNodeDaemonCredential(ctx, node.ID)
-		if err != nil {
-			return nil, fiber.NewError(fiber.StatusBadGateway, "node credential unavailable")
-		}
-		return &nodeHostTarget{NodeURL: node.BaseURL, NodeToken: token, NodeID: node.ID, NodeName: node.Name}, nil
+	if nodeID == "" {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "nodeId is required: specify which Beacon this request targets")
 	}
-	nodes, err := cfg.Store.ListNodes(ctx)
-	if err != nil || len(nodes) == 0 {
-		return nil, fiber.NewError(fiber.StatusNotFound, "no nodes available")
+	node, err := cfg.Store.GetNode(ctx, nodeID)
+	if err != nil {
+		return nil, fiber.NewError(fiber.StatusNotFound, "node not found")
 	}
-	for _, n := range nodes {
-		if n.BaseURL == "" {
-			continue
-		}
-		token, err := cfg.Store.GetNodeDaemonCredential(ctx, n.ID)
-		if err != nil {
-			continue
-		}
-		return &nodeHostTarget{NodeURL: n.BaseURL, NodeToken: token, NodeID: n.ID, NodeName: n.Name}, nil
+	if node.BaseURL == "" {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "node has no base URL")
 	}
-	return nil, fiber.NewError(fiber.StatusNotFound, "no reachable nodes")
+	token, err := cfg.Store.GetNodeDaemonCredential(ctx, node.ID)
+	if err != nil {
+		return nil, fiber.NewError(fiber.StatusBadGateway, "node credential unavailable")
+	}
+	return &nodeHostTarget{NodeURL: node.BaseURL, NodeToken: token, NodeID: node.ID, NodeName: node.Name}, nil
 }
 
 func registerHostRoutes(protected fiber.Router, cfg Config) {
