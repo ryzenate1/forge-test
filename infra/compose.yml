@@ -688,32 +688,6 @@ services:
     tmpfs:
       - /tmp
 
-  docs:
-    restart: unless-stopped
-    init: true
-    image: ${DOCS_IMAGE:-gamepanel-docs:${TAG:?Set TAG in .env to a specific release}}
-    build:
-      context: ../web
-      dockerfile: Dockerfile
-      args:
-        API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8080}
-    environment:
-      API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8080}
-    ports:
-      - "127.0.0.1:${DOCS_PORT:-3002}:3000"
-    depends_on:
-      api:
-        condition: service_healthy
-    networks:
-      frontend:
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    read_only: true
-    tmpfs:
-      - /tmp
-
 volumes:
   postgres-data:
   redis-data:
