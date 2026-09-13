@@ -37,7 +37,7 @@ func registerInstallerRoutes(protected fiber.Router, cfg Config) {
 		return c.JSON(fiber.Map{
 			"data": workflows,
 			"meta": fiber.Map{
-				"executionEnabled": installersvc.IsEnabled(),
+				"executionEnabled": svc.CanExecute(),
 				"count":            len(workflows),
 			},
 		})
@@ -110,14 +110,26 @@ func registerInstallerRoutes(protected fiber.Router, cfg Config) {
 				"hint":             "Workflows are visible for audit/history. Set INSTALLER_WORKFLOW_ENABLED=1 to enable beacon execution. Existing Beacon POST /servers/:id/install remains the canonical install path (see clustermanager/service.go:216).",
 			})
 		}
+		// Opting in is not the same as being able. With the flag on but no
+		// executor wired, this used to answer 202 and then do nothing, leaving
+		// the workflow reported as running for good.
+		if !svc.CanExecute() {
+			return c.Status(fiber.StatusNotImplemented).JSON(fiber.Map{
+				"error":            installersvc.ErrNoWorkflowExecutor.Error(),
+				"executionEnabled": true,
+				"executorWired":    false,
+				"hint":             "Install via the canonical path (POST /servers/:id/install) until a workflow executor is wired.",
+			})
+		}
 		ctx, cancel := requestContext()
 		defer cancel()
 		wf, err := svc.GetWorkflow(ctx, c.Params("id"))
 		if err != nil {
 			return fiber.NewError(fiber.StatusNotFound, "workflow not found")
 		}
-		// Run async so HTTP returns 202 immediately; client polls GET.
-		svc.ExecuteWorkflowAsync(wf.ID)
+		if err := svc.ExecuteWorkflow(ctx, wf.ID); err != nil {
+			return fiber.NewError(fiber.StatusBadGateway, "workflow execution failed: "+err.Error())
+		}
 		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
 			"accepted":         true,
 			"workflowId":       wf.ID,
@@ -144,7 +156,7 @@ func registerInstallerRoutes(protected fiber.Router, cfg Config) {
 		return c.JSON(fiber.Map{
 			"data": workflows,
 			"meta": fiber.Map{
-				"executionEnabled": installersvc.IsEnabled(),
+				"executionEnabled": svc.CanExecute(),
 				"count":            len(workflows),
 			},
 		})

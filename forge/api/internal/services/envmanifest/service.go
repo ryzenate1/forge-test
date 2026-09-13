@@ -326,7 +326,7 @@ func (svc *Service) PortsURLs(ctx context.Context, envID string) (*PortsURLsView
 				if p.HostPort > 0 {
 					pv.URLs = append(pv.URLs, fmt.Sprintf("%s://localhost:%d", scheme(p.Protocol), p.HostPort))
 				}
-				pv.URLs = append(pv.URLs, svc.deriveURLs(envCtx, prov, s.Name, p)...)
+				pv.URLs = append(pv.URLs, svc.deriveURLs(envCtx.Environment.Name, prov, s.Name, p)...)
 			}
 			if pv.URLs == nil {
 				pv.URLs = []string{}

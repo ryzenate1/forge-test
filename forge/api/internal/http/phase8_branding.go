@@ -2,6 +2,7 @@ package http
 
 import (
 	"fmt"
+	"io"
 	"mime"
 	"os"
 	"path/filepath"
@@ -10,6 +11,14 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 )
+
+// maxBrandingUploadBytes bounds a branding upload so a large file cannot fill
+// the panel's data volume.
+const maxBrandingUploadBytes = 8 << 20
+
+func copyStream(dst io.Writer, src io.Reader) (int64, error) {
+	return io.Copy(dst, io.LimitReader(src, maxBrandingUploadBytes))
+}
 
 // brandingDataDir resolves the local branding asset folder. DATA_DIR defaults
 // to ./data (mirroring the repo layout and the LANGS_DIR convention); the

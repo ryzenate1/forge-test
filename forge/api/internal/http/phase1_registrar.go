@@ -17,24 +17,24 @@ func init() {
 		if cfg == nil {
 			return fmt.Errorf("phase1-git: nil config")
 		}
-		registerPhase1ProviderConfigs(cfg)
+		registerPhase1OAuthConfigs(cfg)
 		bridge := phase1git.New(cfg.GitProviderService, cfg.Store, cfg.Logger)
 
 		git := protected.Group("/git")
 
 		git.Get("/oauth/:provider/authorize", Phase1GitOAuthAuthorize(bridge))
-		git.Get("/oauth/:provider/callback", Phase1GitOAuthCallback(cfg, bridge))
+		git.Get("/oauth/:provider/callback", Phase1GitOAuthCallback(*cfg, bridge))
 		git.Get("/oauth/:provider/status", Phase1GitProviderStatus(bridge))
 
-		git.Get("/providers/:providerId/repos/:owner/:repo/tree", Phase1GitRepoTree(cfg, bridge))
-		git.Get("/providers/:providerId/repos/:owner/:repo/contents", Phase1GitRepoContents(cfg, bridge))
-		git.Get("/providers/:providerId/repos/:owner/:repo/readme", Phase1GitRepoReadme(cfg, bridge))
-		git.Get("/providers/:providerId/repos/:owner/:repo/commits", Phase1GitRepoCommits(cfg, bridge))
+		git.Get("/providers/:provider_id/repos/:owner/:repo/tree", Phase1GitRepoTree(*cfg, bridge))
+		git.Get("/providers/:provider_id/repos/:owner/:repo/contents", Phase1GitRepoContents(*cfg, bridge))
+		git.Get("/providers/:provider_id/repos/:owner/:repo/readme", Phase1GitRepoReadme(*cfg, bridge))
+		git.Get("/providers/:provider_id/repos/:owner/:repo/commits", Phase1GitRepoCommits(*cfg, bridge))
 
-		git.Post("/sources/:id/link-env", Phase1GitSourceLinkEnv(cfg))
-		git.Delete("/sources/:id/link-env", Phase1GitSourceUnlinkEnv(cfg))
-		git.Get("/sources/:id/webhook-events", Phase1GitSourceWebhookEvents(cfg))
-		git.Post("/sources/:id/provision-deploy-key", Phase1GitProvisionDeployKey(cfg, bridge))
+		git.Post("/sources/:id/link-env", Phase1GitSourceLinkEnv(*cfg))
+		git.Delete("/sources/:id/link-env", Phase1GitSourceUnlinkEnv(*cfg))
+		git.Get("/sources/:id/webhook-events", Phase1GitSourceWebhookEvents(*cfg))
+		git.Post("/sources/:id/provision-deploy-key", Phase1GitProvisionDeployKey(*cfg, bridge))
 
 		return nil
 	})

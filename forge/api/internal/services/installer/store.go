@@ -75,6 +75,36 @@ func (s *PostgresStore) ListWorkflows(ctx context.Context, serverID string) ([]W
 	return workflows, rows.Err()
 }
 
+func (s *PostgresStore) ListRecentWorkflows(ctx context.Context, limit int) ([]Workflow, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id::text, server_id::text, type, status, steps, metadata, created_at, completed_at
+		FROM install_workflows ORDER BY created_at DESC LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workflows []Workflow
+	for rows.Next() {
+		var wf Workflow
+		var stepsJSON, metaJSON []byte
+		var status, wfType string
+		if err := rows.Scan(&wf.ID, &wf.ServerID, &wfType, &status, &stepsJSON, &metaJSON, &wf.CreatedAt, &wf.CompletedAt); err != nil {
+			return nil, err
+		}
+		wf.Type = WorkflowType(wfType)
+		wf.Status = InstallStatus(status)
+		json.Unmarshal(stepsJSON, &wf.Steps)
+		json.Unmarshal(metaJSON, &wf.Metadata)
+		workflows = append(workflows, wf)
+	}
+	return workflows, rows.Err()
+}
+
 func (s *PostgresStore) UpdateStep(ctx context.Context, stepID string, status InstallStatus, errMsg string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

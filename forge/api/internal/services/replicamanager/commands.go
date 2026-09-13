@@ -2,6 +2,7 @@ package replicamanager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -71,30 +72,29 @@ type InstanceCommandDispatcher interface {
 	GetCommandStatus(ctx context.Context, commandID string) (string, error)
 }
 
-// NoopCommandDispatcher is a stub implementation of InstanceCommandDispatcher that
-// returns a CommandReceipt with status "pending" without dispatching to any beacon.
-// It is a safe default for when beacon integration is not fully wired yet.
-type NoopCommandDispatcher struct{}
+// ErrDispatcherNotConfigured is returned when a replica command has nowhere to
+// go because no beacon dispatcher was wired.
+var ErrDispatcherNotConfigured = errors.New("beacon command dispatcher is not configured")
 
-// StartInstance returns a pending receipt without performing any actual dispatch.
-func (n NoopCommandDispatcher) StartInstance(_ context.Context, req StartInstanceRequest) (CommandReceipt, error) {
-	return CommandReceipt{
-		CommandID: req.CommandID,
-		Status:    "pending",
-	}, nil
+// UnavailableCommandDispatcher is the fallback used when no real dispatcher is
+// wired. It refuses every command.
+//
+// It replaces an earlier no-op that answered "pending" with a nil error, which
+// made an unwired control plane indistinguishable from a working one: replicas
+// were recorded as commanded, no beacon ever heard about them, and the status
+// stayed "pending" forever with nothing in flight to change it.
+type UnavailableCommandDispatcher struct{}
+
+func (UnavailableCommandDispatcher) StartInstance(_ context.Context, req StartInstanceRequest) (CommandReceipt, error) {
+	return CommandReceipt{}, fmt.Errorf("start replica %s on node %s: %w", req.InstanceID, req.NodeID, ErrDispatcherNotConfigured)
 }
 
-// StopInstance returns a pending receipt without performing any actual dispatch.
-func (n NoopCommandDispatcher) StopInstance(_ context.Context, req StopInstanceRequest) (CommandReceipt, error) {
-	return CommandReceipt{
-		CommandID: req.CommandID,
-		Status:    "pending",
-	}, nil
+func (UnavailableCommandDispatcher) StopInstance(_ context.Context, req StopInstanceRequest) (CommandReceipt, error) {
+	return CommandReceipt{}, fmt.Errorf("stop replica %s on node %s: %w", req.InstanceID, req.NodeID, ErrDispatcherNotConfigured)
 }
 
-// GetCommandStatus always returns "pending" for any command ID.
-func (n NoopCommandDispatcher) GetCommandStatus(_ context.Context, _ string) (string, error) {
-	return "pending", nil
+func (UnavailableCommandDispatcher) GetCommandStatus(_ context.Context, _ string) (string, error) {
+	return "", ErrDispatcherNotConfigured
 }
 
 // instanceCommandID builds an idempotent command identifier scoped to an instance,

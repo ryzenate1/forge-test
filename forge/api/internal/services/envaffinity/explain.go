@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"gamepanel/forge/internal/domain"
 	"gamepanel/forge/internal/placement"
 	"gamepanel/forge/internal/store"
 )
@@ -23,6 +24,7 @@ type Ranking struct {
 // label constraints the placement path enforces.
 type ExplainResult struct {
 	ID              string                 `json:"id"`
+	NodeID          string                 `json:"nodeId"`
 	RequestedEnv    string                 `json:"requestedEnv,omitempty"`
 	NodeEnvGroups   []string               `json:"nodeEnvGroups"`
 	NodeLabels      map[string]string      `json:"nodeLabels"`

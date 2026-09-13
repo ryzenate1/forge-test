@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS env_domain_provisioning (
     target        TEXT NOT NULL DEFAULT '',
     dns_status    TEXT NOT NULL DEFAULT 'pending',
     tls_status    TEXT NOT NULL DEFAULT 'pending',
-    cert_id       UUID REFERENCES certificates(id) ON DELETE SET NULL,
+    -- certificates.id is VARCHAR(36), so the reference must match that type.
+    cert_id       VARCHAR(36) REFERENCES certificates(id) ON DELETE SET NULL,
     last_error    TEXT NOT NULL DEFAULT '',
     attempted_at  TIMESTAMPTZ,
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()

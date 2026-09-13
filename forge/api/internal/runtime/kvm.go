@@ -55,7 +55,7 @@ func (r *KVMAdapter) runInstaller(ctx context.Context, target Target, req Instal
 	if r == nil || r.client == nil {
 		return InstallResponse{}, ErrRuntimeUnavailable
 	}
-	request := daemon.InstallRequest{ServerID: req.ServerID, Image: req.Image, Entrypoint: req.Entrypoint, Script: req.Script, InstallSteps: req.InstallSteps, Env: req.Env}
+	request := daemon.InstallRequest{ServerID: req.ServerID, Image: req.Image, Entrypoint: req.Entrypoint, Script: req.Script, Env: req.Env}
 	var response daemon.InstallResponse
 	var err error
 	if reinstall {

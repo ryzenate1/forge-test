@@ -243,7 +243,7 @@ func (s *Service) GetOrgUsage(ctx context.Context, orgID string) (*UsageSummary,
 		summary.Servers = quota.ServersCount
 		summary.Memory = quota.MemoryUsageBytes
 		summary.Storage = quota.StorageBytes
-		summary.Environments = quota.EnvironmentsCount
+		summary.Env = quota.EnvironmentsCount
 		summary.Nodes = quota.NodesCount
 	}
 	summary.Events = int64(len(events))

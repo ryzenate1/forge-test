@@ -39,19 +39,21 @@ type Metrics struct {
 }
 
 type Manager struct {
-	store        *store.Store
-	engine       *placement.Engine
-	scheduler    *scheduler2.Scheduler
-	reservations *reservations.Manager
-	dispatcher   InstanceCommandDispatcher
-	beaconClient BeaconClient
-	publisher    events.Publisher
-	logger       *slog.Logger
-	mu           sync.Mutex
-	metrics      Metrics
-	stopCh       chan struct{}
-	started      atomic.Bool
-	appLocks     [64]sync.Mutex
+	store             *store.Store
+	engine            *placement.Engine
+	scheduler         *scheduler2.Scheduler
+	reservations      *reservations.Manager
+	dispatcher        InstanceCommandDispatcher
+	beaconClient      BeaconClient
+	publisher         events.Publisher
+	logger            *slog.Logger
+	blockedQueue      *BlockedEvalQueue
+	reschedulePolicy  *ReschedulePolicy
+	mu                sync.Mutex
+	metrics           Metrics
+	stopCh            chan struct{}
+	started           atomic.Bool
+	appLocks          [64]sync.Mutex
 }
 
 type CreateAppRequest struct {
@@ -70,20 +72,22 @@ func New(store *store.Store, engine *placement.Engine, scheduler *scheduler2.Sch
 		publisher = publishers[0]
 	}
 	if dispatcher == nil {
-		dispatcher = NoopCommandDispatcher{}
+		dispatcher = UnavailableCommandDispatcher{}
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Manager{
-		store:        store,
-		engine:       engine,
-		scheduler:    scheduler,
-		reservations: reservationMgr,
-		dispatcher:   dispatcher,
-		beaconClient: beaconClient,
-		publisher:    publisher,
-		logger:       logger,
+		store:            store,
+		engine:           engine,
+		scheduler:        scheduler,
+		reservations:     reservationMgr,
+		dispatcher:       dispatcher,
+		beaconClient:     beaconClient,
+		publisher:        publisher,
+		logger:           logger,
+		blockedQueue:     NewBlockedEvalQueue(),
+		reschedulePolicy: &DefaultReschedulePolicy,
 	}
 }
 

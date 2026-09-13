@@ -1,10 +1,23 @@
 package http
 
 import (
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
+
+// normalizeMetricPath replaces identifier-looking path segments with a
+// placeholder so unmatched routes cannot explode metric cardinality.
+func normalizeMetricPath(path string) string {
+	segments := strings.Split(path, "/")
+	for i, segment := range segments {
+		if len(segment) >= 8 || strings.ContainsAny(segment, "0123456789") {
+			segments[i] = ":id"
+		}
+	}
+	return strings.Join(segments, "/")
+}
 
 // MetricsMiddleware records RED metrics (Rate, Errors, Duration) for every HTTP request.
 // Route labels are bounded via normalizeMetricPath and c.Route().Path so cardinality stays

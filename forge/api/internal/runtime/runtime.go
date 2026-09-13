@@ -3,6 +3,9 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"strings"
 )
 
 const (
@@ -11,6 +14,8 @@ const (
 	PodmanProvider      = "podman"
 	FirecrackerProvider = "firecracker"
 	KubernetesProvider  = "kubernetes"
+	KVMProvider         = "kvm"
+	LXCProvider         = "lxc"
 )
 
 type Target struct {
@@ -174,3 +179,51 @@ type Runtime interface {
 var ErrRuntimeUnavailable = errors.New("runtime unavailable")
 var ErrMigrationManagedByControlPlane = errors.New("migration is managed by the control-plane migration service")
 var ErrUnsupportedRuntimeOperation = errors.New("runtime operation is unsupported")
+
+// ErrUnsupportedProvider is returned for a runtime provider Forge cannot
+// actually run. Handlers map it to HTTP 400.
+var ErrUnsupportedProvider = errors.New("unsupported runtime provider")
+
+// experimentalRuntimesEnabled reports whether providers that exist as adapters
+// but have no verified execution path may be selected.
+func experimentalRuntimesEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ENABLE_EXPERIMENTAL_RUNTIMES"))) {
+	case "", "0", "false", "no":
+		return false
+	default:
+		return true
+	}
+}
+
+// NormalizeProvider trims and lowercases a provider name so that lookups and
+// validation agree regardless of how a caller spelled it.
+func NormalizeProvider(provider string) string {
+	return strings.ToLower(strings.TrimSpace(provider))
+}
+
+// IsSupportedProvider reports whether Forge can run a workload with the given
+// provider. An empty provider means "use the node's default" and is allowed.
+//
+// KVM and LXC have adapters but advertise no capabilities and have no verified
+// path through beacon, which still creates a Docker container whatever the
+// request asked for. Accepting them by default let a user select a hypervisor
+// and silently receive a container, so they are gated behind
+// ENABLE_EXPERIMENTAL_RUNTIMES.
+func IsSupportedProvider(provider string) bool {
+	switch NormalizeProvider(provider) {
+	case "", DockerProvider, ContainerdProvider, PodmanProvider, FirecrackerProvider, KubernetesProvider:
+		return true
+	case KVMProvider, LXCProvider:
+		return experimentalRuntimesEnabled()
+	default:
+		return false
+	}
+}
+
+// ValidateProvider returns ErrUnsupportedProvider for anything Forge cannot run.
+func ValidateProvider(provider string) error {
+	if IsSupportedProvider(provider) {
+		return nil
+	}
+	return fmt.Errorf("%q: %w", NormalizeProvider(provider), ErrUnsupportedProvider)
+}

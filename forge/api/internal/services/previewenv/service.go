@@ -171,7 +171,7 @@ func (s *Service) Create(ctx context.Context, serverID string, req *store.Previe
 		CommitSHA:    req.CommitSHA,
 		Status:       "deploying",
 		Source:       req.Source,
-		UniqueSuffix: uuid.NewString()[:8],
+		UniqueSuffix: suffix,
 		IsIsolated:   true,
 		CreatedBy:    req.CreatedBy,
 		CreatedAt:    now,
@@ -250,7 +250,7 @@ func (s *Service) Deploy(ctx context.Context, id string) error {
 	// Routing: register the per-PR host with the traffic manager so the
 	// gateway can serve it before the next reconcile tick.
 	if s.opts.TrafficMgr != nil {
-		if err := s.ensureRoutingRule(ctx, p); err != nil && s.opts.Logger != nil {
+		if err := s.ensureRoutingRule(ctx, &p); err != nil && s.opts.Logger != nil {
 			s.opts.Logger.Warn("previewenv: traffic route step skipped",
 				"preview", p.ID, "host", previewURL, "err", err)
 		}
@@ -258,7 +258,7 @@ func (s *Service) Deploy(ctx context.Context, id string) error {
 
 	// Domains: track the wildcard base so domain reverify picks previews up.
 	if s.opts.DomainSvc != nil {
-		if err := s.ensureWildcardDomain(ctx, p); err != nil && s.opts.Logger != nil {
+		if err := s.ensureWildcardDomain(ctx, &p); err != nil && s.opts.Logger != nil {
 			s.opts.Logger.Warn("previewenv: wildcard domain step skipped",
 				"preview", p.ID, "wildcard", "*."+s.opts.BaseDomain, "err", err)
 		}
@@ -278,7 +278,7 @@ func (s *Service) Deploy(ctx context.Context, id string) error {
 		"prNumber":   p.PRNumber,
 	})
 
-	s.reportStatus(ctx, p, "success", "preview environment is running at "+previewURL)
+	s.reportStatus(ctx, &p, "success", "preview environment is running at "+previewURL)
 	return nil
 }
 
@@ -310,7 +310,7 @@ func (s *Service) Cleanup(ctx context.Context, id string) error {
 		"cleanedAt": time.Now().UTC(),
 	})
 
-	s.reportStatus(ctx, p, "failure", "preview environment was cleaned up")
+	s.reportStatus(ctx, &p, "failure", "preview environment was cleaned up")
 	return nil
 }
 
@@ -369,7 +369,7 @@ func (s *Service) ensureRoutingRule(ctx context.Context, p *store.PreviewDeploym
 		return nil
 	}
 	host := strings.TrimPrefix(s.opts.PreviewURL(p.PRNumber, p.RepoOwner, p.RepoName), "https://")
-	_, err := s.opts.TrafficMgr.CreateRoutingRule(ctx, &trafficmanager.RoutingRule{
+	err := s.opts.TrafficMgr.CreateRoutingRule(ctx, &trafficmanager.RoutingRule{
 		ID:         "preview-" + p.ID,
 		Name:       "preview-" + p.ID,
 		ServerID:   p.ServerID,

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -110,9 +111,39 @@ type HealthCheckResult struct {
 	Error  string `json:"error,omitempty"`
 }
 
+// RuntimeExecutor is how a deployment reaches the machine that runs the
+// workload. Every step that claims to have changed what is running must go
+// through it; a nil executor means the step cannot act and must fail.
+type RuntimeExecutor interface {
+	ApplyDeployment(ctx context.Context, serverID, image string) error
+	VerifyRunning(ctx context.Context, serverID string) (bool, error)
+}
+
+// TrafficExecutor moves live traffic between deployment targets. It is
+// optional: with no gateway configured a promotion is only a control-plane
+// bookkeeping change, which is honest as long as nothing claims otherwise.
+// Setting FORGE_DEPLOY_REQUIRE_TRAFFIC=true turns that into a hard
+// requirement, so promotions fail rather than silently move no traffic.
+type TrafficExecutor interface {
+	ShiftTraffic(ctx context.Context, deploymentID, serverID, fromTarget, toTarget string, weight int) error
+	VerifyTrafficShift(ctx context.Context, deploymentID string) (bool, error)
+}
+
+// fullTrafficWeight is the weight used when a promotion moves all traffic to
+// the new target rather than splitting it.
+const fullTrafficWeight = 100
+
+// isTrafficRequired reports whether promotions must be backed by a real
+// traffic shift.
+func isTrafficRequired() bool {
+	return os.Getenv("FORGE_DEPLOY_REQUIRE_TRAFFIC") == "true"
+}
+
 type Service struct {
 	store                *store.Store
 	publisher            events.Publisher
+	runtimeExecutor      RuntimeExecutor
+	traffic              TrafficExecutor
 	resumeMu             sync.Mutex
 	executingDeployments sync.Map
 	wg                   sync.WaitGroup
@@ -133,7 +164,33 @@ func New(store *store.Store, publishers ...events.Publisher) *Service {
 	}
 }
 
+func (s *Service) SetRuntimeExecutor(exec RuntimeExecutor) {
+	if s == nil {
+		return
+	}
+	s.runtimeExecutor = exec
+}
+
+func (s *Service) SetTrafficExecutor(exec TrafficExecutor) {
+	if s == nil {
+		return
+	}
+	s.traffic = exec
+}
+
 var (
+	// ErrNoRuntimeExecutor is returned by any step that would otherwise have
+	// to guess whether the node did what it was asked. Its wording is asserted
+	// by provision_regression_test.go.
+	ErrNoRuntimeExecutor = errors.New("no runtime executor is wired, refusing to report success for work that was not performed")
+	// ErrNoTrafficExecutor is returned when FORGE_DEPLOY_REQUIRE_TRAFFIC
+	// demands a real traffic shift and no gateway is configured to make one.
+	ErrNoTrafficExecutor = errors.New("no traffic executor is wired, refusing to report a promotion that moved no traffic")
+	// ErrStepNotImplemented is returned by steps that have no backing
+	// capability at all, so that the deployment fails visibly instead of
+	// completing with the step silently skipped.
+	ErrStepNotImplemented = errors.New("deployment step has no implementation")
+
 	ErrNotFound           = errors.New("deployment not found")
 	ErrInProgress         = errors.New("deployment already in progress for this server")
 	ErrInvalidImage       = errors.New("image is required")

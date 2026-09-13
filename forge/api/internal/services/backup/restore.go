@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"gamepanel/forge/internal/daemon"
 	"gamepanel/forge/internal/store"
@@ -622,8 +623,15 @@ func (s *RestoreService) TestRestore(ctx context.Context, artifactID string) (*B
 	}
 
 	restore.TriggeredBy = "verification"
-	verificationStatus := "passed"
+	// This path ran the restore with SkipVerification set, so all that is
+	// established is that the restore executed without error. Claiming
+	// "passed" here would report an unchecked restore as a proven one.
+	verificationStatus := VerificationArtifactOnly
 	restore.VerificationStatus = &verificationStatus
+	restore.VerificationResults = verificationResults(
+		verificationStatus,
+		"test restore executed with verification skipped; restored target not confirmed",
+	)
 
 	if err := s.persistRestore(ctx, restore); err != nil {
 		return nil, fmt.Errorf("failed to update test restore verification: %w", err)
@@ -654,21 +662,47 @@ func (s *RestoreService) VerifyRestore(ctx context.Context, restoreID string) (b
 		return false, fmt.Errorf("artifact verification failed: %w", err)
 	}
 
+	// The artifact checksum is verified above, which proves the backup is
+	// intact. It says nothing about whether the restored system works, so the
+	// restore-level check is tracked separately and never folded into the
+	// artifact result.
+	var checkErr error
 	switch restore.RestoreType {
 	case BackupTypeDatabase:
-		err = s.verifyDatabaseRestore(ctx, restore, artifact)
-		if err != nil {
-			return false, fmt.Errorf("database verification failed: %w", err)
-		}
+		checkErr = s.verifyDatabaseRestore(ctx, restore, artifact)
 	case BackupTypeApp:
-		err = s.verifyAppRestore(ctx, restore, artifact)
-		if err != nil {
-			return false, fmt.Errorf("app verification failed: %w", err)
-		}
+		checkErr = s.verifyAppRestore(ctx, restore, artifact)
+	default:
+		checkErr = fmt.Errorf("restore type %s: %w", restore.RestoreType, ErrRestoreCheckUnavailable)
 	}
 
-	verificationStatus := "passed"
+	verified := checkErr == nil
+	verificationStatus := VerificationPassed
+	detail := "artifact checksum verified and restored target confirmed healthy"
+
+	switch {
+	case errors.Is(checkErr, ErrRestoreCheckUnavailable):
+		// The artifact is good but nothing confirmed the restored system.
+		// Recording this as "passed" would tell an operator their disaster
+		// recovery is proven when it is only plausible.
+		verificationStatus = VerificationArtifactOnly
+		detail = fmt.Sprintf("artifact checksum verified; restored target not confirmed: %v", checkErr)
+		s.logger.Infof("Restore %s verified at artifact level only: %v", restore.Name, checkErr)
+	case checkErr != nil:
+		verificationStatus = VerificationFailed
+		detail = checkErr.Error()
+		restore.VerificationStatus = &verificationStatus
+		restore.VerificationResults = verificationResults(verificationStatus, detail)
+		if persistErr := s.persistRestore(ctx, restore); persistErr != nil {
+			return false, fmt.Errorf("failed to record failed verification: %w", persistErr)
+		}
+		return false, fmt.Errorf("%s verification failed: %w", restore.RestoreType, checkErr)
+	default:
+		s.logger.Infof("Restore verification passed for: %s", restore.Name)
+	}
+
 	restore.VerificationStatus = &verificationStatus
+	restore.VerificationResults = verificationResults(verificationStatus, detail)
 	now := time.Now()
 	restore.CompletedAt = &now
 
@@ -676,9 +710,28 @@ func (s *RestoreService) VerifyRestore(ctx context.Context, restoreID string) (b
 		return false, fmt.Errorf("failed to update verification status: %w", err)
 	}
 
-	s.logger.Infof("Restore verification passed for: %s", restore.Name)
+	return verified, nil
+}
 
-	return true, nil
+// Verification outcomes recorded on a restore. "artifact_only" exists so that
+// a backup whose bytes are provably intact is not confused with a restore
+// whose result was actually checked.
+const (
+	VerificationPassed       = "passed"
+	VerificationArtifactOnly = "artifact_only"
+	VerificationFailed       = "failed"
+)
+
+func verificationResults(status, detail string) json.RawMessage {
+	payload, err := json.Marshal(map[string]any{
+		"status":     status,
+		"detail":     detail,
+		"verifiedAt": time.Now().UTC(),
+	})
+	if err != nil {
+		return nil
+	}
+	return payload
 }
 
 func (s *RestoreService) Rollback(ctx context.Context, restoreID string, userID string) (*BackupRestore, error) {
@@ -1151,17 +1204,50 @@ func (s *RestoreService) executeServerRestore(ctx context.Context, restore *Back
 	return nil
 }
 
-func (s *RestoreService) verifyDatabaseRestore(ctx context.Context, restore *BackupRestore, artifact *BackupArtifact) error {
+// ErrRestoreCheckUnavailable reports that a restore-level check could not be
+// carried out. It is distinct from a failed check: the restore may well be
+// fine, but nothing confirmed it, so it must not be recorded as verified.
+var ErrRestoreCheckUnavailable = errors.New("restore verification is unavailable")
+
+// verifyDatabaseRestore would confirm the restored database answers queries.
+// Reaching the restored engine requires per-engine credentials and a client
+// the backup service does not hold today, so it reports that the check could
+// not run rather than passing a database nobody opened.
+func (s *RestoreService) verifyDatabaseRestore(_ context.Context, restore *BackupRestore, artifact *BackupArtifact) error {
 	if artifact.DatabaseEngine == nil {
 		return fmt.Errorf("database engine not specified")
 	}
-
-	s.logger.Infof("Verifying database restore for: %s", restore.Name)
-	return nil
+	s.logger.Infof("Database restore %s: no engine client is wired, restore left unverified", restore.Name)
+	return fmt.Errorf("database restore for %s: %w", restore.Name, ErrRestoreCheckUnavailable)
 }
 
-func (s *RestoreService) verifyAppRestore(ctx context.Context, restore *BackupRestore, artifact *BackupArtifact) error {
-	s.logger.Infof("Verifying app restore for: %s", restore.Name)
+// verifyAppRestore confirms the restored workload is observable on its node.
+// Beacon's stats endpoint errors for containers that do not exist, so a
+// successful read means the workload came back rather than merely that the
+// archive unpacked.
+func (s *RestoreService) verifyAppRestore(ctx context.Context, restore *BackupRestore, _ *BackupArtifact) error {
+	if s.daemonClient == nil || s.store == nil {
+		return fmt.Errorf("app restore for %s: %w", restore.Name, ErrRestoreCheckUnavailable)
+	}
+	serverID := ""
+	if restore.TargetServerID != nil {
+		serverID = *restore.TargetServerID
+	} else if restore.TargetAppID != nil {
+		serverID = *restore.TargetAppID
+	}
+	if serverID == "" {
+		return fmt.Errorf("app restore for %s has no target workload: %w", restore.Name, ErrRestoreCheckUnavailable)
+	}
+
+	target, err := s.store.ServerControlTarget(ctx, serverID)
+	if err != nil {
+		return fmt.Errorf("resolve node for workload %s: %w", serverID, err)
+	}
+	if _, err := s.daemonClient.Stats(ctx, target.NodeURL, target.NodeToken, serverID); err != nil {
+		return fmt.Errorf("workload %s is not observable after restore: %w", serverID, err)
+	}
+
+	s.logger.Infof("Verified app restore for: %s", restore.Name)
 	return nil
 }
 

@@ -131,6 +131,19 @@ type EnvVarGroup struct {
 	UpdatedAt     time.Time         `json:"updatedAt"`
 }
 
+// EnsureEnvVarEnv verifies the environment exists before group writes so a
+// group can never be attached to a missing environment.
+func (s *Store) EnsureEnvVarEnv(ctx context.Context, envID string) error {
+	var exists bool
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM environments WHERE id = $1)`, envID).Scan(&exists); err != nil {
+		return fmt.Errorf("check environment: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("environment %s not found", envID)
+	}
+	return nil
+}
+
 // ListEnvVarGroups returns all groups for an environment, ordered by name.
 func (s *Store) ListEnvVarGroups(ctx context.Context, envID string) ([]EnvVarGroup, error) {
 	rows, err := s.db.Query(ctx, `
