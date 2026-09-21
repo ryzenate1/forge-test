@@ -19,7 +19,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"gamepanel/forge/internal/daemon"
@@ -271,7 +270,7 @@ func (s *Service) CancelBuild(ctx context.Context, buildID string) error {
 			return err
 		}
 	} else if record.PID != nil && *record.PID > 0 {
-		_ = syscall.Kill(-*record.PID, syscall.SIGTERM)
+		killPID(*record.PID)
 	}
 	s.finishBuild(ctx, record, BuildCanceled, -1, "build canceled by operator")
 	return nil
@@ -599,7 +598,7 @@ func runBuildCommand(ctx context.Context, name string, args []string) ([]string,
 		return nil, fmt.Errorf("unsupported build command %q", name)
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setSysProcAttr(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err

@@ -32,7 +32,7 @@ function CopyField({ label, value }: { label: string; value: string }) {
     <div>
       <label className="mb-1 block text-xs font-medium text-slate-400 uppercase tracking-wider">{label}</label>
       <div className="flex items-center gap-2">
-        <code className="flex-1 rounded-lg bg-[#0f141f] px-3 py-2 text-sm text-emerald-300 break-all font-mono">
+        <code className="flex-1 rounded-lg bg-[var(--surface)] px-3 py-2 text-sm text-emerald-300 break-all font-mono">
           {revealed ? value : "••••••••••••••••••••••"}
         </code>
         <button
@@ -96,7 +96,7 @@ export function DBContainerCredentialsModal({
           {credsQuery.data.credentials && Object.keys(credsQuery.data.credentials).length > 0 && (
             <div className="space-y-3">
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Credentials</p>
-              <div className="rounded-lg bg-[#0f141f] p-3 space-y-3">
+              <div className="rounded-lg bg-[var(--surface)] p-3 space-y-3">
                 {Object.entries(credsQuery.data.credentials).map(([key, value]) => (
                   <CopyField key={key} label={key} value={value} />
                 ))}
@@ -106,7 +106,7 @@ export function DBContainerCredentialsModal({
 
           <div className="flex justify-end">
             <button
-              className="rounded-lg bg-[#1e2536] px-4 py-2 text-sm font-medium text-slate-300 hover:bg-[#2a3348]"
+              className="rounded-lg bg-[var(--surface-raised)] px-4 py-2 text-sm font-medium text-slate-300 hover:bg-[var(--surface-raised)]"
               onClick={onClose}
               type="button"
             >

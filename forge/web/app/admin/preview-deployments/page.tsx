@@ -81,7 +81,7 @@ export default function AdminPreviewDeploymentsPage() {
         <CardHeader title={`${filtered.length.toLocaleString()} preview${filtered.length === 1 ? "" : "s"}`} icon={GitPullRequest} />
         <AdminToolbar>
           <select
-            className="h-9 rounded-lg border border-white/10 bg-[#161b28] px-3 text-xs text-slate-300 outline-none"
+            className="h-9 rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-xs text-slate-300 outline-none"
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
           >

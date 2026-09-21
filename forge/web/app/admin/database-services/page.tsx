@@ -312,7 +312,7 @@ function DetailModal({ serviceId, onClose }: { serviceId: string; onClose: () =>
   return (
     <Modal title={`Service: ${svc.name || svc.id.slice(0, 8)}`} onClose={onClose} wide>
       <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-4 rounded-lg bg-[#161b28] p-4 text-sm">
+        <div className="grid grid-cols-2 gap-4 rounded-lg bg-[var(--surface-input)] p-4 text-sm">
           <div><span className="text-slate-500">Type:</span> <span className="text-slate-200">{engineLabels[svc.type] || svc.type} {svc.version}</span></div>
           <div><span className="text-slate-500">Status:</span> <Pill tone={statusTone[svc.status] || "neutral"}>{svc.status}</Pill></div>
           {svc.connectionString && (
@@ -335,7 +335,7 @@ function DetailModal({ serviceId, onClose }: { serviceId: string; onClose: () =>
               <Archive size={13} /> {backupMut.isPending ? "Creating..." : "Create Backup"}
             </Btn>
           </div>
-          <div className="rounded-lg bg-[#161b28]">
+          <div className="rounded-lg bg-[var(--surface-input)]">
             {backupsQuery.isLoading ? (
               <div className="p-3 text-xs text-slate-500">Loading...</div>
             ) : !Array.isArray(backups) || backups.length === 0 ? (
@@ -374,7 +374,7 @@ function DetailModal({ serviceId, onClose }: { serviceId: string; onClose: () =>
             <h3 className="text-sm font-semibold text-slate-300">Credentials</h3>
             <Btn size="sm" tone="ghost" onClick={() => setShowNewCred(true)}><Plus size={13} /> New Credential</Btn>
           </div>
-          <div className="rounded-lg bg-[#161b28]">
+          <div className="rounded-lg bg-[var(--surface-input)]">
             {credsQuery.isLoading ? (
               <div className="p-3 text-xs text-slate-500">Loading...</div>
             ) : !Array.isArray(creds) || creds.length === 0 ? (
@@ -411,7 +411,7 @@ function DetailModal({ serviceId, onClose }: { serviceId: string; onClose: () =>
         </div>
 
         {showNewCred && (
-          <div className="rounded-lg border border-white/10 bg-[#1e2536] p-4 space-y-3">
+          <div className="rounded-lg border border-white/10 bg-[var(--surface-raised)] p-4 space-y-3">
             <h4 className="text-sm font-semibold text-slate-300">New Credential</h4>
             <AdminFormSection title="Credential Details">
               <div className="grid gap-3 md:grid-cols-2">

@@ -179,6 +179,9 @@ fi
 
 if command -v free &>/dev/null; then
   MEM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
+elif [ "$(uname -s 2>/dev/null)" = "Darwin" ] && command -v sysctl &>/dev/null; then
+  MEM_TOTAL_BYTES=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+  MEM_TOTAL=$((MEM_TOTAL_BYTES / 1024 / 1024))
 elif [ -f /proc/meminfo ]; then
   MEM_TOTAL_KB=$(grep -i '^MemTotal:' /proc/meminfo | awk '{print $2}')
   MEM_TOTAL=$((MEM_TOTAL_KB / 1024))

@@ -106,7 +106,7 @@ function CreateMigrationModal({ open, onClose }: { open: boolean; onClose: () =>
         <label className="block text-sm text-slate-300">
           Server
           <select
-            className="mt-1 h-9 w-full rounded border border-white/10 bg-[#161b28] px-3"
+            className="mt-1 h-9 w-full rounded border border-white/10 bg-[var(--surface-input)] px-3"
             value={serverId}
             onChange={(e) => setServerId(e.target.value)}
           >
@@ -117,7 +117,7 @@ function CreateMigrationModal({ open, onClose }: { open: boolean; onClose: () =>
         <label className="block text-sm text-slate-300">
           Target node (optional)
           <select
-            className="mt-1 h-9 w-full rounded border border-white/10 bg-[#161b28] px-3"
+            className="mt-1 h-9 w-full rounded border border-white/10 bg-[var(--surface-input)] px-3"
             value={targetNodeId}
             onChange={(e) => setTargetNodeId(e.target.value)}
           >
@@ -167,7 +167,7 @@ function CreateRecoveryPlanModal({ open, onClose }: { open: boolean; onClose: ()
         <label className="block text-sm text-slate-300">
           Affected node
           <select
-            className="mt-1 h-9 w-full rounded border border-white/10 bg-[#161b28] px-3"
+            className="mt-1 h-9 w-full rounded border border-white/10 bg-[var(--surface-input)] px-3"
             value={nodeId}
             onChange={(e) => setNodeId(e.target.value)}
           >

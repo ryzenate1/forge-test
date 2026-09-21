@@ -147,7 +147,7 @@ export default function AdminDeploymentsPage() {
             onChange={setSearch}
           />
           <select
-            className="h-9 rounded-lg border border-white/10 bg-[#161b28] px-3 text-xs text-slate-300 outline-none"
+            className="h-9 rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-xs text-slate-300 outline-none"
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
           >
@@ -158,7 +158,7 @@ export default function AdminDeploymentsPage() {
           </select>
           {tab === "servers" && (
             <select
-              className="h-9 rounded-lg border border-white/10 bg-[#161b28] px-3 text-xs text-slate-300 outline-none"
+              className="h-9 rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-xs text-slate-300 outline-none"
               value={strategyFilter}
               onChange={(e) => setStrategyFilter(e.target.value)}
             >
@@ -381,7 +381,7 @@ function DeploymentDetailModal({
           {dep.log && (
             <div>
               <p className="mb-2 text-xs font-semibold text-slate-400">Build/Deploy Log</p>
-              <pre className="max-h-48 overflow-y-auto rounded-lg border border-white/[0.06] bg-[#0a0e14] p-3 font-mono text-xs text-slate-400 whitespace-pre-wrap">
+              <pre className="max-h-48 overflow-y-auto rounded-lg border border-white/[0.06] bg-[var(--canvas)] p-3 font-mono text-xs text-slate-400 whitespace-pre-wrap">
                 {dep.log}
               </pre>
             </div>
@@ -446,7 +446,7 @@ function DeploymentDetailModal({
         {dep.log && (
           <div>
             <p className="mb-2 text-xs font-semibold text-slate-400">Deployment Log</p>
-            <pre className="max-h-48 overflow-y-auto rounded-lg border border-white/[0.06] bg-[#0a0e14] p-3 font-mono text-xs text-slate-400 whitespace-pre-wrap">
+            <pre className="max-h-48 overflow-y-auto rounded-lg border border-white/[0.06] bg-[var(--canvas)] p-3 font-mono text-xs text-slate-400 whitespace-pre-wrap">
               {dep.log}
             </pre>
           </div>

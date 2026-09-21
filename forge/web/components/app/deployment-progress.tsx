@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import { Check, X, Loader2, Clock, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { fetchDeploymentSteps } from "@/lib/api/deployments";
+import { useDeploymentSteps } from "@/hooks/useDeploymentSteps";
 import type { DeploymentStep } from "@/lib/api/deployments";
 
 interface DeploymentProgressProps {
@@ -37,46 +37,24 @@ const statusConfig: Record<string, { icon: typeof Loader2; className: string }> 
 };
 
 export function DeploymentProgress({ deploymentId, onComplete, onError }: DeploymentProgressProps) {
-  const [steps, setSteps] = useState<DeploymentStep[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data: steps = [], isLoading: loading } = useDeploymentSteps(deploymentId);
   const [expandedStep, setExpandedStep] = useState<string | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const prevStatusRef = useRef<string>("");
 
   useEffect(() => {
-    const load = async () => {
-      try {
-        const data = await fetchDeploymentSteps(deploymentId);
-        setSteps(data);
-        setLoading(false);
-        const terminal = data.length > 0 && data.every(
-          (s) => s.status === "completed" || s.status === "failed" || s.status === "cancelled" || s.status === "skipped",
-        );
-        if (terminal && intervalRef.current) {
-          clearInterval(intervalRef.current);
-          intervalRef.current = null;
-        }
-        const allCompleted = data.length > 0 && data.every((s) => s.status === "completed");
-        const anyFailed = data.some((s) => s.status === "failed");
-        if (allCompleted && prevStatusRef.current !== "completed") {
-          prevStatusRef.current = "completed";
-          onComplete?.();
-        }
-        if (anyFailed && prevStatusRef.current !== "failed") {
-          const failedStep = data.find((s) => s.status === "failed");
-          prevStatusRef.current = "failed";
-          onError?.(failedStep?.error ?? "Deployment step failed");
-        }
-      } catch {
-        setLoading(false);
-      }
-    };
-    load();
-    intervalRef.current = setInterval(load, 2000);
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, [deploymentId, onComplete, onError]);
+    if (!steps || steps.length === 0) return;
+    const allCompleted = steps.length > 0 && steps.every((s) => s.status === "completed");
+    const anyFailed = steps.some((s) => s.status === "failed");
+    if (allCompleted && prevStatusRef.current !== "completed") {
+      prevStatusRef.current = "completed";
+      onComplete?.();
+    }
+    if (anyFailed && prevStatusRef.current !== "failed") {
+      const failedStep = steps.find((s) => s.status === "failed");
+      prevStatusRef.current = "failed";
+      onError?.(failedStep?.error ?? "Deployment step failed");
+    }
+  }, [steps, onComplete, onError]);
 
   const completed = steps.filter((s) => s.status === "completed").length;
   const total = steps.length;

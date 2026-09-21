@@ -112,3 +112,5 @@ Ports: API `8080`, web `3000`, Beacon `9090`, Postgres `5432`, Redis `6379`.
   credentials.
 - `.reference-repos/` holds third-party code under mixed licenses, several
   AGPL. Study concepts, re-implement in Forge's own code. Never copy source.
+
+@RTK.md

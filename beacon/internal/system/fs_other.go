@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Fallback filesystem operations for non-Linux platforms.
 
-//go:build !linux
+//go:build !linux && !windows
 
 package system
 

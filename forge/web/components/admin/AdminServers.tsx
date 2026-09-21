@@ -88,7 +88,7 @@ export function AdminServers() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500">
+                <tr className="border-b border-white/[0.06] bg-[var(--surface-input)] text-left text-[10px] uppercase tracking-widest text-slate-500">
                   <th className="px-4 py-3">Name</th>
                   <th className="px-4 py-3">UUID</th>
                   <th className="px-4 py-3">Owner</th>
@@ -211,8 +211,8 @@ function CreateServerModal({ users, nodes, allocations, templates, eggs, regions
     onError: (error) => toast({ tone: "error", title: "Create failed", message: error instanceof Error ? error.message : "Could not create server" }),
   });
 
-  const inputBase = "h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15";
-  const selectBase = "h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15";
+  const inputBase = "h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15";
+  const selectBase = "h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15";
 
   const iconClasses = "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500";
 
@@ -391,7 +391,7 @@ function ServerAboutTab({ server, users, nodes, allocations }: { server: ApiServ
   const owner = users.find((u) => u.id === server.owner)?.email ?? server.owner ?? "—";
   const node = nodes.find((n) => n.id === server.node)?.name ?? server.node ?? "—";
   const alloc = allocations.find((a) => a.id === server.allocation);
-  const fieldClasses = "h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] text-sm leading-10 shadow-inner shadow-black/10";
+  const fieldClasses = "h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] text-sm leading-10 shadow-inner shadow-black/10";
   const iconClasses = "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500";
   return (
     <div className="space-y-5">
@@ -512,12 +512,12 @@ function ServerDetailsTab({ server, users }: { server: ApiServer; users: ApiUser
           <Textarea label="Description" value={description} onChange={setDescription} rows={3} />
           <Input label="Owner Email Search" value={userSearch} onChange={setUserSearch} placeholder="Search by email or username…" />
           {userResults && userResults.length > 0 && (
-            <ul className="max-h-40 overflow-y-auto rounded border border-white/10 bg-[#0a0e16] p-2 text-sm">
+            <ul className="max-h-40 overflow-y-auto rounded border border-white/10 bg-[var(--canvas)] p-2 text-sm">
               {userResults.map((u) => (
                 <li key={u.id}>
                   <button
                     type="button"
-                    className={cn("w-full rounded px-2 py-1 text-left hover:bg-white/5", ownerId === u.id && "bg-[#dc2626]/20")}
+                    className={cn("w-full rounded px-2 py-1 text-left hover:bg-white/5", ownerId === u.id && "bg-[var(--brand)]/20")}
                     onClick={() => { setOwnerId(u.id); setUserSearch(""); }}
                   >
                     {u.email} <span className="text-xs text-slate-400">({u.username})</span>
@@ -590,7 +590,7 @@ function ServerBuildTab({ server, users, allocations }: { server: ApiServer; use
             <div className="space-y-3 p-4">
               <label className="block text-sm">
                 <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">Default Allocation</span>
-                <select className="h-10 w-full rounded-lg border border-white/10 bg-[#141824] px-3 text-slate-100" value={allocationId} onChange={(event) => setAllocationId(event.target.value)}>
+                <select className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] px-3 text-slate-100" value={allocationId} onChange={(event) => setAllocationId(event.target.value)}>
                   <option value="">Keep current allocation</option>
                   {serverAllocs.map((allocation) => <option key={allocation.id} value={allocation.id}>{allocation.ip}:{allocation.port}</option>)}
                 </select>
@@ -635,8 +635,8 @@ function ServerStartupTab({ server }: { server: ApiServer }) {
       <Card>
         <CardHeader title="Startup Command" icon={Zap} />
         <div className="space-y-3 p-4">
-          <label className="block text-sm font-medium text-slate-300">Resolved Startup Command<input className="mt-1.5 h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 font-mono text-xs text-slate-400" readOnly value={startup?.startup_command ?? ""} /></label>
-          <label className="block text-sm font-medium text-slate-300">Raw Startup Command<input className="mt-1.5 h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 font-mono text-xs text-slate-400" readOnly value={startup?.raw_startup_command ?? ""} /></label>
+          <label className="block text-sm font-medium text-slate-300">Resolved Startup Command<input className="mt-1.5 h-9 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 font-mono text-xs text-slate-400" readOnly value={startup?.startup_command ?? ""} /></label>
+          <label className="block text-sm font-medium text-slate-300">Raw Startup Command<input className="mt-1.5 h-9 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 font-mono text-xs text-slate-400" readOnly value={startup?.raw_startup_command ?? ""} /></label>
           <p className="text-xs text-amber-300">Startup command editing is unavailable because the current backend PATCH endpoint does not persist it safely.</p>
         </div>
       </Card>
@@ -650,7 +650,7 @@ function ServerStartupTab({ server }: { server: ApiServer }) {
         <Card>
           <CardHeader title="Available Docker Images" icon={Box} />
           <div className="space-y-2 p-4 text-sm text-slate-300">
-            {imageEntries.length === 0 ? <p className="text-slate-500">No Docker images were reported by this template.</p> : imageEntries.map(([label, image]) => <div key={image} className="rounded border border-white/[0.06] bg-[#161b28] px-3 py-2"><span className="block text-xs text-slate-500">{label || "Image"}</span><code className="break-all text-xs">{image}</code></div>)}
+            {imageEntries.length === 0 ? <p className="text-slate-500">No Docker images were reported by this template.</p> : imageEntries.map(([label, image]) => <div key={image} className="rounded border border-white/[0.06] bg-[var(--surface-input)] px-3 py-2"><span className="block text-xs text-slate-500">{label || "Image"}</span><code className="break-all text-xs">{image}</code></div>)}
           </div>
         </Card>
       </div>
@@ -666,7 +666,7 @@ function ServerStartupTab({ server }: { server: ApiServer }) {
                 <label className="block text-sm font-medium text-slate-300" key={envVarKey}>
                   <span className="mb-1.5 block">{variable.name} ({envVarKey})</span>
                   <input
-                    className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="h-9 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                     disabled={!isEditable}
                     onChange={(event) => updateVar(envVarKey, event.target.value)}
                     value={vars[envVarKey] ?? serverValue}
@@ -702,7 +702,7 @@ function ServerAllocationsTab({ server, allocations }: { server: ApiServer; allo
   const unassignMut = useMutation({ mutationFn: (id: string) => unassignServerAllocation(server.id, id), onSuccess: refresh, onError: (error) => toast({ tone: "error", title: "Unassign failed", message: error instanceof Error ? error.message : "Could not unassign allocation" }) });
   const primaryMut = useMutation({ mutationFn: (id: string) => setPrimaryServerAllocation(server.id, id), onSuccess: refresh, onError: (error) => toast({ tone: "error", title: "Set primary failed", message: error instanceof Error ? error.message : "Could not set primary allocation" }) });
   const primaryId = server.primaryAllocationId ?? server.allocationId;
-  return <div className="space-y-4"><Card><CardHeader title="Assigned Allocations" icon={Network}/>{assigned.length === 0 ? <EmptyState icon={Network} message="No allocations assigned."/> : <div className="overflow-x-auto"><table className="w-full text-sm"><tbody className="divide-y divide-white/[0.04]">{assigned.map((allocation) => { const primary = allocation.id === primaryId || allocation.primary || allocation.isPrimary; return <tr key={allocation.id}><td className="px-4 py-3 font-mono text-xs">{allocation.ip}:{allocation.port}</td><td className="px-4 py-3">{primary ? <Pill tone="green">Primary</Pill> : <Btn size="sm" tone="ghost" onClick={() => primaryMut.mutate(allocation.id)}>Make primary</Btn>}</td><td className="px-4 py-3 text-right"><Btn size="sm" tone="danger" disabled={Boolean(primary) || unassignMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: `Unassign ${allocation.ip}:${allocation.port}?`, description: "The allocation will be released from this server.", danger: true, confirmLabel: "Unassign" })) unassignMut.mutate(allocation.id); })(); }}>Unassign</Btn></td></tr>; })}</tbody></table></div>}</Card><Card><CardHeader title="Assign Allocation" icon={Plus}/><div className="flex flex-col gap-3 p-4 sm:flex-row"><select className="h-9 flex-1 rounded border border-white/10 bg-[#161b28] px-3 text-sm" value={allocationId} onChange={(event) => setAllocationId(event.target.value)}><option value="">Select an unassigned allocation…</option>{available.map((allocation) => <option key={allocation.id} value={allocation.id}>{allocation.ip}:{allocation.port}</option>)}</select><Btn disabled={!allocationId || assignMut.isPending} onClick={() => assignMut.mutate()}>Assign</Btn></div></Card>{renderConfirm()}</div>;
+  return <div className="space-y-4"><Card><CardHeader title="Assigned Allocations" icon={Network}/>{assigned.length === 0 ? <EmptyState icon={Network} message="No allocations assigned."/> : <div className="overflow-x-auto"><table className="w-full text-sm"><tbody className="divide-y divide-white/[0.04]">{assigned.map((allocation) => { const primary = allocation.id === primaryId || allocation.primary || allocation.isPrimary; return <tr key={allocation.id}><td className="px-4 py-3 font-mono text-xs">{allocation.ip}:{allocation.port}</td><td className="px-4 py-3">{primary ? <Pill tone="green">Primary</Pill> : <Btn size="sm" tone="ghost" onClick={() => primaryMut.mutate(allocation.id)}>Make primary</Btn>}</td><td className="px-4 py-3 text-right"><Btn size="sm" tone="danger" disabled={Boolean(primary) || unassignMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: `Unassign ${allocation.ip}:${allocation.port}?`, description: "The allocation will be released from this server.", danger: true, confirmLabel: "Unassign" })) unassignMut.mutate(allocation.id); })(); }}>Unassign</Btn></td></tr>; })}</tbody></table></div>}</Card><Card><CardHeader title="Assign Allocation" icon={Plus}/><div className="flex flex-col gap-3 p-4 sm:flex-row"><select className="h-9 flex-1 rounded border border-white/10 bg-[var(--surface-input)] px-3 text-sm" value={allocationId} onChange={(event) => setAllocationId(event.target.value)}><option value="">Select an unassigned allocation…</option>{available.map((allocation) => <option key={allocation.id} value={allocation.id}>{allocation.ip}:{allocation.port}</option>)}</select><Btn disabled={!allocationId || assignMut.isPending} onClick={() => assignMut.mutate()}>Assign</Btn></div></Card>{renderConfirm()}</div>;
 }
 
 function ServerDatabaseTab({ serverId }: { serverId: string }) {
@@ -729,7 +729,7 @@ function ServerDatabaseTab({ serverId }: { serverId: string }) {
         ) : (
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500">
+              <tr className="border-b border-white/[0.06] bg-[var(--surface-input)] text-left text-[10px] uppercase tracking-widest text-slate-500">
                 <th className="px-4 py-2">Database</th>
                 <th className="px-4 py-2">Username</th>
                 <th className="px-4 py-2">Host</th>
@@ -831,7 +831,7 @@ function ServerMountsTab({ server, mounts }: { server: ApiServer; mounts: ApiMou
       ) : (
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500">
+            <tr className="border-b border-white/[0.06] bg-[var(--surface-input)] text-left text-[10px] uppercase tracking-widest text-slate-500">
               <th className="px-4 py-2">ID</th>
               <th className="px-4 py-2">Name</th>
               <th className="px-4 py-2">Source</th>
@@ -910,8 +910,8 @@ function ServerManageTab({ server, reinstallMut, suspendMut, unsuspendMut, nodes
         <CardHeader title="Transfer" icon={Network} action={transfer ? <Pill tone={transfer.error ? "red" : transfer.transferring ? "yellow" : "blue"}>{transfer.state}</Pill> : undefined}/>
         <div className="space-y-3 p-4">
           {transfer?.error ? <p className="text-xs text-red-300">{transfer.error}</p> : null}
-          <label className="block text-xs text-slate-400">Target node<select className="mt-1 h-9 w-full rounded border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100" value={targetNodeId} onChange={(event) => { setTargetNodeId(event.target.value); setPrimaryAllocationId(""); }}><option value="">Select…</option>{nodes.filter((node) => node.id !== server.nodeId && node.name !== server.node).map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}</select></label>
-          <label className="block text-xs text-slate-400">Primary allocation<select className="mt-1 h-9 w-full rounded border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100" value={primaryAllocationId} onChange={(event) => setPrimaryAllocationId(event.target.value)}><option value="">Select…</option>{targetAllocations.map((allocation) => <option key={allocation.id} value={allocation.id}>{allocation.ip}:{allocation.port}</option>)}</select></label>
+          <label className="block text-xs text-slate-400">Target node<select className="mt-1 h-9 w-full rounded border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100" value={targetNodeId} onChange={(event) => { setTargetNodeId(event.target.value); setPrimaryAllocationId(""); }}><option value="">Select…</option>{nodes.filter((node) => node.id !== server.nodeId && node.name !== server.node).map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}</select></label>
+          <label className="block text-xs text-slate-400">Primary allocation<select className="mt-1 h-9 w-full rounded border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100" value={primaryAllocationId} onChange={(event) => setPrimaryAllocationId(event.target.value)}><option value="">Select…</option>{targetAllocations.map((allocation) => <option key={allocation.id} value={allocation.id}>{allocation.ip}:{allocation.port}</option>)}</select></label>
           {transfer?.transferring ? <Btn tone="danger" disabled={cancelMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: "Cancel this transfer?", description: "The in-progress server transfer will be aborted.", danger: true, confirmLabel: "Cancel Transfer" })) cancelMut.mutate(); })(); }}>Cancel Transfer</Btn> : <Btn disabled={!targetNodeId || !primaryAllocationId || transferMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: "Start this server transfer?", description: `The server will move to the selected node. Services may be interrupted.`, confirmLabel: "Start Transfer" })) transferMut.mutate(); })(); }}>Start Transfer</Btn>}
         </div>
       </Card>

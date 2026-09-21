@@ -1,10 +1,9 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Circle, Clock, LoaderCircle, XCircle } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Card, CardHeader } from "@/components/admin/admin-ui";
-import { fetchDeploymentSteps } from "@/lib/api/deployments";
+import { useDeploymentSteps } from "@/hooks/useDeploymentSteps";
 import { cn } from "@/lib/utils";
 
 interface DeploymentTimelineProps {
@@ -21,16 +20,7 @@ const statusConfig: Record<string, { icon: LucideIcon; color: string; bg: string
 };
 
 export function DeploymentTimeline({ deploymentId }: DeploymentTimelineProps) {
-  const { data: steps, isLoading, isError } = useQuery({
-    queryKey: ["deployment-steps", deploymentId],
-    queryFn: () => fetchDeploymentSteps(deploymentId),
-    refetchInterval: (query) => {
-      const hasActive = query.state.data?.some(
-        (s) => s.status === "in_progress" || s.status === "pending",
-      );
-      return hasActive ? 5000 : false;
-    },
-  });
+  const { data: steps, isLoading, isError } = useDeploymentSteps(deploymentId);
 
   if (isLoading) {
     return (

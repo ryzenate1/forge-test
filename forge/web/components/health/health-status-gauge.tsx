@@ -1,24 +1,30 @@
 "use client";
 
-import type { ApiEndpointHealthRecord } from "@/lib/api";
+import type { MonitoringHealthRecord } from "@/lib/api/monitoring";
 import { cn } from "@/lib/utils";
 
 export type HealthLevel = "healthy" | "degraded" | "critical" | "unknown";
 
-export function aggregateHealth(checks: ApiEndpointHealthRecord[]): {
+export function healthLevel(check: MonitoringHealthRecord): HealthLevel {
+  if (check.reachable === false) return "critical";
+  if (check.status === "healthy" || check.status === "degraded" || check.status === "critical") return check.status;
+  return "unknown";
+}
+
+export function aggregateHealth(checks: MonitoringHealthRecord[]): {
   level: HealthLevel;
   score: number | null;
   reachable: number;
   total: number;
 } {
   if (checks.length === 0) return { level: "unknown", score: null, reachable: 0, total: 0 };
-  const reachable = checks.filter((check) => check.reachable).length;
-  const scored = checks.filter((check) => check.healthScore > 0);
-  const score = scored.length > 0 ? scored.reduce((sum, check) => sum + check.healthScore, 0) / scored.length : null;
-  const level: HealthLevel =
-    reachable === checks.length ? "healthy"
-    : reachable === 0 ? "critical"
-    : "degraded";
+  const reachable = checks.filter((check) => check.reachable === true).length;
+  const scores = checks.map((check) => check.healthScore).filter((score): score is number => typeof score === "number" && Number.isFinite(score) && score >= 0 && score <= 100);
+  const score = scores.length === checks.length ? scores.reduce((sum, value) => sum + value, 0) / scores.length : null;
+  const levels = checks.map(healthLevel);
+  const level: HealthLevel = levels.every((value) => value === "healthy") ? "healthy"
+    : levels.every((value) => value === "critical") ? "critical"
+    : levels.some((value) => value === "critical" || value === "degraded") ? "degraded" : "unknown";
   return { level, score, reachable, total: checks.length };
 }
 
@@ -29,7 +35,7 @@ const LEVEL_STYLES: Record<HealthLevel, { stroke: string; label: string; text: s
   unknown: { stroke: "text-slate-400", label: "No data", text: "text-slate-400", dot: "bg-slate-500" },
 };
 
-export function HealthStatusGauge({ checks, className }: { checks: ApiEndpointHealthRecord[]; className?: string }) {
+export function HealthStatusGauge({ checks, className }: { checks: MonitoringHealthRecord[]; className?: string }) {
   const { level, score, reachable, total } = aggregateHealth(checks);
   const styles = LEVEL_STYLES[level];
   const pct = score != null ? Math.max(0, Math.min(100, score)) : 0;
@@ -61,11 +67,13 @@ export function HealthStatusGauge({ checks, className }: { checks: ApiEndpointHe
         <p className="mt-1 text-xs text-slate-400">
           {total === 0
             ? "No endpoint health checks recorded yet."
-            : `${reachable} of ${total} endpoints reachable`}
+            : checks.every((check) => typeof check.reachable === "boolean")
+              ? `${reachable} of ${total} endpoints reachable`
+              : `${checks.filter((check) => healthLevel(check) === "healthy").length} of ${total} checks healthy; reachability unreported`}
         </p>
         {level !== "unknown" ? (
           <p className="mt-3 text-xs text-slate-400">
-            Aggregate score across the last recorded health checks. Updated every few minutes by the monitoring loop.
+            {score === null ? "Health score not reported. Status reflects recorded checks only." : "Aggregate score across the last recorded health checks."}
           </p>
         ) : null}
       </div>

@@ -80,7 +80,7 @@ function ToggleSection({
 
 function DemoRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center gap-4 rounded-lg border border-white/[0.06] bg-[#161b28] px-4 py-3">
+    <div className="flex flex-wrap items-center gap-4 rounded-lg border border-white/[0.06] bg-[var(--surface-input)] px-4 py-3">
       <span className="min-w-[140px] text-xs font-semibold uppercase tracking-wider text-slate-500">
         {label}
       </span>
@@ -145,7 +145,7 @@ export default function StatesDemoPage() {
               </button>
             </DemoRow>
             <DemoRow label="SpinnerPage">
-              <div className="h-48 w-full rounded-lg border border-white/[0.06] bg-[#0a0e16]">
+              <div className="h-48 w-full rounded-lg border border-white/[0.06] bg-[var(--canvas)]">
                 <SpinnerPage message="Loading app details…" />
               </div>
             </DemoRow>

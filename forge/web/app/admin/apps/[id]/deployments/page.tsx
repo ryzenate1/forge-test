@@ -286,7 +286,7 @@ export default function AppDeploymentsPage({ params }: { params: Promise<{ id: s
             {selectedDeployment.log && (
               <div>
                 <p className="mb-2 text-xs font-semibold text-slate-400">Build/Deploy Log</p>
-                <pre className="max-h-48 overflow-y-auto rounded-lg border border-white/[0.06] bg-[#0a0e14] p-3 font-mono text-xs text-slate-400 whitespace-pre-wrap">
+                <pre className="max-h-48 overflow-y-auto rounded-lg border border-white/[0.06] bg-[var(--canvas)] p-3 font-mono text-xs text-slate-400 whitespace-pre-wrap">
                   {selectedDeployment.log}
                 </pre>
               </div>

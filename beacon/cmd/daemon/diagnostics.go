@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 
 	daemonhttp "gamepanel/beacon/internal/server"
@@ -91,10 +90,7 @@ func diagnosticsCmdRun(_ *cobra.Command, _ []string) error {
 	if dataDir == "" {
 		dataDir = "/srv/game-panel/servers"
 	}
-	var stat unix.Statfs_t
-	if err := unix.Statfs(dataDir, &stat); err == nil {
-		available := stat.Bavail * uint64(stat.Bsize) / (1024 * 1024 * 1024)
-		total := stat.Blocks * uint64(stat.Bsize) / (1024 * 1024 * 1024)
+	if available, total, err := readDiskCapacity(dataDir); err == nil {
 		status := "PASS"
 		if available < 10 {
 			status = "WARN"

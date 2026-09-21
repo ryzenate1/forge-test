@@ -37,7 +37,7 @@ function EggCard({
 }) {
   const primaryImage = dockerImageLines(egg.dockerImages)[0] ?? egg.dockerImage;
   return (
-    <div className="group rounded-xl border border-white/[0.06] bg-[#111722] p-4 transition hover:border-white/[0.12] hover:bg-[#141b2b] sm:p-5">
+    <div className="group rounded-xl border border-white/[0.06] bg-[var(--surface)] p-4 transition hover:border-white/[0.12] hover:bg-[var(--surface-raised)] sm:p-5">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1 space-y-1.5">
           <h3 className="truncate text-base font-semibold text-slate-100">{egg.name}</h3>

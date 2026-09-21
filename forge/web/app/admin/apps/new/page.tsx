@@ -298,7 +298,7 @@ export default function CreateAppPage() {
             <div className={cn(
               "flex h-7 w-7 sm:h-8 sm:w-8 items-center justify-center rounded-full text-[10px] sm:text-xs font-bold shrink-0",
               step === s
-                ? "bg-[#dc2626] text-white"
+                ? "bg-[var(--brand)] text-white"
                 : i < stepIndex
                   ? "bg-emerald-500/20 text-emerald-400"
                   : "bg-white/[0.06] text-slate-500",
@@ -328,7 +328,7 @@ export default function CreateAppPage() {
                   className={cn(
                     "flex flex-col items-center gap-3 rounded-xl border p-5 sm:p-6 text-center transition-all duration-200",
                     sourceType === id
-                      ? "border-[#dc2626] bg-[#dc2626]/5 shadow-sm shadow-[#dc2626]/10"
+                      ? "border-[#dc2626] bg-[var(--brand)]/5 shadow-sm shadow-[#dc2626]/10"
                       : "border-white/[0.08] bg-white/[0.02] hover:border-white/[0.15] hover:bg-white/[0.04]",
                   )}
                   onClick={() => { setSourceType(id); setFieldsDirty(false); setTemplateConfirm(null); }}
@@ -372,7 +372,7 @@ export default function CreateAppPage() {
                       className={cn(
                         "rounded-xl border p-4 text-left transition-all duration-200",
                         selectedTemplate === tpl.id
-                          ? "border-[#dc2626] bg-[#dc2626]/5 shadow-sm shadow-[#dc2626]/10"
+                          ? "border-[#dc2626] bg-[var(--brand)]/5 shadow-sm shadow-[#dc2626]/10"
                           : "border-white/[0.08] bg-white/[0.02] hover:border-white/[0.15] hover:bg-white/[0.04]",
                       )}
                       onClick={() => handleTemplateClick(tpl.id)}
@@ -473,7 +473,7 @@ export default function CreateAppPage() {
                     <input
                       className={cn(
                         "block h-10 w-full rounded-lg border px-3.5 pr-10 text-sm outline-none transition-all duration-200",
-                        "bg-[#0d131d] text-slate-100 shadow-inner shadow-black/10 placeholder:text-slate-600",
+                        "bg-[var(--surface-input)] text-slate-100 shadow-inner shadow-black/10 placeholder:text-slate-600",
                         gitUrlStatus === "invalid"
                           ? "border-red-400/70 focus:border-red-400 focus:ring-2 focus:ring-red-500/15"
                           : gitUrlStatus === "valid"
@@ -512,7 +512,7 @@ export default function CreateAppPage() {
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-slate-300">Provider</label>
                   <select
-                    className="h-10 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                    className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
                     value={gitProvider}
                     onChange={(e) => setGitProvider(e.target.value as GitProviderType)}
                   >
@@ -555,7 +555,7 @@ export default function CreateAppPage() {
                       const file = e.target.files?.[0];
                       if (file) setComposeFile(file);
                     }}
-                    className="block w-full text-xs text-slate-400 file:mr-4 file:cursor-pointer file:rounded-lg file:border-0 file:bg-[#dc2626]/20 file:px-4 file:py-2 file:text-xs file:font-semibold file:text-[#dc2626] hover:file:bg-[#dc2626]/30"
+                    className="block w-full text-xs text-slate-400 file:mr-4 file:cursor-pointer file:rounded-lg file:border-0 file:bg-[var(--brand)]/20 file:px-4 file:py-2 file:text-xs file:font-semibold file:text-[#dc2626] hover:file:bg-[var(--brand)]/30"
                   />
                 </div>
                 <div>
@@ -564,7 +564,7 @@ export default function CreateAppPage() {
                   </label>
                   <textarea
                     className={cn(
-                      "h-48 w-full rounded-lg border bg-[#0d131d] p-3 font-mono text-xs text-slate-100 outline-none resize-none transition",
+                      "h-48 w-full rounded-lg border bg-[var(--surface-input)] p-3 font-mono text-xs text-slate-100 outline-none resize-none transition",
                       fieldErrors.composeContent ? "border-red-400/70" : "border-white/10 hover:border-white/20",
                       "focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15",
                     )}
@@ -599,7 +599,7 @@ export default function CreateAppPage() {
                   <div>
                     <label className="mb-1.5 flex items-center gap-2 text-sm font-medium text-slate-300">Beacon <span className="font-normal text-slate-500">(auto recommended · Why? below)</span></label>
                     <select
-                      className="h-10 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                      className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
                       value={nodeId}
                       onChange={(e) => setNodeId(e.target.value)}
                     >
@@ -618,7 +618,7 @@ export default function CreateAppPage() {
                   <div>
                     <label className="mb-1.5 block text-sm font-medium text-slate-300">Region</label>
                     <select
-                      className="h-10 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                      className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
                       value={regionId}
                       onChange={(e) => setRegionId(e.target.value)}
                     >
@@ -776,7 +776,7 @@ export default function CreateAppPage() {
               {sourceType === "compose" && (
                 <div className="px-4 py-3">
                   <span className="text-slate-400">Compose File</span>
-                  <pre className="mt-1 max-h-24 overflow-y-auto rounded border border-white/[0.06] bg-[#0a0e14] p-2 font-mono text-xs text-slate-400 whitespace-pre-wrap break-all">
+                  <pre className="mt-1 max-h-24 overflow-y-auto rounded border border-white/[0.06] bg-[var(--canvas)] p-2 font-mono text-xs text-slate-400 whitespace-pre-wrap break-all">
                     {composeContent.slice(0, 300)}{composeContent.length > 300 ? "..." : ""}
                   </pre>
                 </div>

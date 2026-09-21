@@ -253,6 +253,9 @@ func (s *Store) CreateScheduleTask(ctx context.Context, serverID, scheduleID str
 	if strings.TrimSpace(req.Action) == "" {
 		return ScheduleTask{}, errors.New("action is required")
 	}
+	if !isValidScheduleTaskAction(req.Action) {
+		return ScheduleTask{}, fmt.Errorf("unsupported task action: %s", strings.TrimSpace(req.Action))
+	}
 	if req.TimeOffsetSeconds < 0 {
 		return ScheduleTask{}, errors.New("timeOffsetSeconds cannot be negative")
 	}

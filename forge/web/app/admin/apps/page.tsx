@@ -11,13 +11,7 @@ import {
 import { fetchApps, startApp, stopApp, restartApp, deleteApp, typeLabel, type ApiApp, type AppType } from "@/lib/api/apps";
 import { Btn, Card, CardHeader, EmptyState, Input, Pill, SectionHeader, Modal, ModalFooter } from "@/components/admin/admin-ui";
 import { DeployStatusBadge } from "@/components/admin/AdminAppsShared";
-
-const typeIcons: Record<AppType, typeof Container> = {
-  image: Box,
-  git: GitBranch,
-  compose: Container,
-  game_server: Layers,
-};
+import { APP_TYPE_ICONS } from "@/lib/app-type-icons";
 
 export default function AdminAppsPage() {
   const router = useRouter();
@@ -85,7 +79,7 @@ export default function AdminAppsPage() {
             <Input placeholder="Search by name..." value={search} onChange={setSearch} />
           </div>
           <select
-            className="h-9 rounded-lg border border-white/10 bg-[#161b28] px-3 text-xs text-slate-300 outline-none"
+            className="h-9 rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-xs text-slate-300 outline-none"
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value)}
           >
@@ -115,7 +109,7 @@ export default function AdminAppsPage() {
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
                 {filtered.map((app) => {
-                  const Icon = typeIcons[app.type] ?? Layers;
+                  const Icon = APP_TYPE_ICONS[app.type] ?? Layers;
                   return (
                     <tr key={app.id} className="hover:bg-white/[0.02]">
                       <td className="px-4 py-3">

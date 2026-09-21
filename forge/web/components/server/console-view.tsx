@@ -13,6 +13,38 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 const MAX_LINES = 500;
 const MAX_POINTS = 60;
 
+type ConsoleEntry = { text: string; ts: number; serverTs: string | null };
+
+export function extractServerTimestamp(line: string): string | null {
+  const bracket = line.match(/^\[(\d{2}:\d{2}:\d{2}(?:\.\d+)?)\]/);
+  if (bracket) return bracket[1];
+  const iso = line.match(/^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)/);
+  return iso?.[1] ?? null;
+}
+
+function consoleEntries(text: string): ConsoleEntry[] {
+  // Freeze the receipt time once per batch, not on every render.
+  const ts = Date.now();
+  return text.split("\n").filter(Boolean).map((line) => ({ text: line, ts, serverTs: extractServerTimestamp(line) }));
+}
+
+export function computeNetworkDelta(rx: number, tx: number, prevRx: number | null, prevTx: number | null) {
+  let delta = 0;
+  if (prevRx !== null && prevTx !== null) {
+    const drx = rx - prevRx;
+    const dtx = tx - prevTx;
+    // Each counter can reset independently. Never add an unchanged lifetime total.
+    delta = Math.max(0, drx < 0 ? rx : drx) + Math.max(0, dtx < 0 ? tx : dtx);
+  }
+  return { delta, nextPrevRx: rx, nextPrevTx: tx };
+}
+
+export function getChartMax(values: number[], limit?: number): number {
+  const observedMax = values.length ? Math.max(...values) : 0;
+  const ceiling = typeof limit === "number" && Number.isFinite(limit) && limit > 0 ? limit : 100;
+  return Math.max(observedMax, ceiling, 1);
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Uptime display                                                            */
 /* -------------------------------------------------------------------------- */
@@ -88,10 +120,10 @@ function SuspendedBanner() {
 /*  Sparkline chart                                                            */
 /* -------------------------------------------------------------------------- */
 
-function Chart({ label, value, detail, values, icon: Icon }: { label: string; value: string; detail: string; values: number[]; icon: typeof Cpu }) {
-  const max = Math.max(...values, 1);
+function Chart({ label, value, detail, values, limit, icon: Icon }: { label: string; value: string; detail: string; values: number[]; limit?: number; icon: typeof Cpu }) {
+  const max = getChartMax(values, limit);
   const points = values.map((point, index) => `${values.length < 2 ? 0 : (index / (values.length - 1)) * 100},${100 - (point / max) * 92}`).join(" ");
-  return <section className="rounded-xl border border-white/[0.07] bg-[#151b27] p-4" aria-label={`${label} chart`}><div className="flex items-start justify-between gap-3"><div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400"><Icon size={15} />{label}</div><div className="text-right"><p className="font-mono text-sm font-bold text-slate-100">{value}</p><p className="text-[10px] text-slate-500">{detail}</p></div></div><svg aria-hidden="true" className="mt-4 h-24 w-full" preserveAspectRatio="none" viewBox="0 0 100 100"><line stroke="#334155" strokeWidth=".5" x1="0" x2="100" y1="50" y2="50" /><polygon fill="rgba(220,38,38,.16)" points={`0,100 ${points} 100,100`} /><polyline fill="none" points={points} stroke="#ef4444" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" /></svg></section>;
+  return <section className="rounded-xl border border-white/[0.07] bg-[var(--surface-raised)] p-4" aria-label={`${label} chart`}><div className="flex items-start justify-between gap-3"><div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400"><Icon size={15} />{label}</div><div className="text-right"><p className="font-mono text-sm font-bold text-slate-100">{value}</p><p className="text-[10px] text-slate-500">{detail}</p></div></div><svg aria-hidden="true" className="mt-4 h-24 w-full" preserveAspectRatio="none" viewBox="0 0 100 100"><line stroke="#334155" strokeWidth=".5" x1="0" x2="100" y1="50" y2="50" /><polygon fill="rgba(220,38,38,.16)" points={`0,100 ${points} 100,100`} /><polyline fill="none" points={points} stroke="#ef4444" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" /></svg></section>;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -100,7 +132,7 @@ function Chart({ label, value, detail, values, icon: Icon }: { label: string; va
 
 export function ConsoleView({ server }: { server: ApiServer }) {
   const { access, refreshServer } = useServerContext();
-  const [lines, setLines] = useState<string[]>([]);
+  const [lines, setLines] = useState<ConsoleEntry[]>([]);
   const [command, setCommand] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -119,6 +151,9 @@ export function ConsoleView({ server }: { server: ApiServer }) {
   const [cpuHistory, setCpuHistory] = useState<number[]>([]);
   const [memoryHistory, setMemoryHistory] = useState<number[]>([]);
   const [networkHistory, setNetworkHistory] = useState<number[]>([]);
+  const [networkDelta, setNetworkDelta] = useState<number | null>(null);
+  const prevRxRef = useRef<number | null>(null);
+  const prevTxRef = useRef<number | null>(null);
   const outputRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const canConsole = hasServerPermission(access, ["websocket.connect", "control.console"]);
@@ -137,7 +172,7 @@ export function ConsoleView({ server }: { server: ApiServer }) {
     let aborted = false;
     void fetchServerLogs(server.id).then((logs) => {
       if (aborted) return;
-      setLines(logs.split("\n").filter(Boolean).slice(-MAX_LINES));
+      setLines(consoleEntries(logs).slice(-MAX_LINES));
     }).catch((error) => {
       if (aborted) return;
       setConnectionError(error instanceof Error ? error.message : "Previous logs could not be loaded.");
@@ -152,7 +187,10 @@ export function ConsoleView({ server }: { server: ApiServer }) {
         messageCount.current += 1;
         let text = String(data);
         try { const payload = JSON.parse(text) as { data?: string; error?: string }; text = payload.data ?? payload.error ?? text; } catch { /* plain daemon output */ }
-        if (text) setLines((current) => [...current, ...text.split("\n").filter(Boolean)].slice(-MAX_LINES));
+        if (text) {
+          const entries = consoleEntries(text);
+          setLines((current) => [...current, ...entries].slice(-MAX_LINES));
+        }
       },
       onStatusChange: (status) => {
         switch (status) {
@@ -187,6 +225,13 @@ export function ConsoleView({ server }: { server: ApiServer }) {
   }, [canConsole, nonce, server.id]);
 
   useEffect(() => {
+    prevRxRef.current = null;
+    prevTxRef.current = null;
+    setStats(null);
+    setCpuHistory([]);
+    setMemoryHistory([]);
+    setNetworkHistory([]);
+    setNetworkDelta(null);
     if (!canConsole) return;
     let aborted = false;
     const statsManager = new WebSocketManager({
@@ -200,10 +245,15 @@ export function ConsoleView({ server }: { server: ApiServer }) {
         if (statsData.error) return;
         setStats(statsData);
         const memory = statsData.memoryLimit > 0 ? (statsData.memoryBytes / statsData.memoryLimit) * 100 : 0;
-        const network = statsData.networkRxBytes + statsData.networkTxBytes;
+        // Plot bytes transferred between samples, not lifetime counters or bytes/second.
+        const hasBaseline = prevRxRef.current !== null && prevTxRef.current !== null;
+        const network = computeNetworkDelta(statsData.networkRxBytes, statsData.networkTxBytes, prevRxRef.current, prevTxRef.current);
+        prevRxRef.current = network.nextPrevRx;
+        prevTxRef.current = network.nextPrevTx;
+        setNetworkDelta(hasBaseline ? network.delta : null);
         setCpuHistory((items) => [...items.slice(-(MAX_POINTS - 1)), statsData.cpuPercent]);
         setMemoryHistory((items) => [...items.slice(-(MAX_POINTS - 1)), memory]);
-        setNetworkHistory((items) => [...items.slice(-(MAX_POINTS - 1)), network]);
+        setNetworkHistory((items) => [...items.slice(-(MAX_POINTS - 1)), network.delta]);
       },
       onError: () => { if (!aborted) setConnectionError("Stats connection failed."); },
     });
@@ -219,7 +269,7 @@ export function ConsoleView({ server }: { server: ApiServer }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const filteredLines = searchQuery ? lines.filter((l) => l.toLowerCase().includes(searchQuery.toLowerCase())) : lines;
+  const filteredLines = searchQuery ? lines.filter((entry) => entry.text.toLowerCase().includes(searchQuery.toLowerCase())) : lines;
 
   const memoryPercent = stats && stats.memoryLimit > 0 ? (stats.memoryBytes / stats.memoryLimit) * 100 : null;
   const stateLabel = connection === "connected" ? "Connected" : connection === "connecting" ? "Connecting" : connection === "reconnecting" ? "Reconnecting" : "Connection error";
@@ -244,11 +294,11 @@ export function ConsoleView({ server }: { server: ApiServer }) {
 
     {/* Stats row with uptime */}
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      <Chart detail="Current process usage" icon={Cpu} label="CPU" value={stats ? `${stats.cpuPercent.toFixed(1)}%` : "Waiting for telemetry"} values={cpuHistory} />
-      <Chart detail={stats ? `${formatBytes(stats.memoryBytes)} of ${formatBytes(stats.memoryLimit)}` : "No telemetry received"} icon={MemoryStick} label="Memory" value={memoryPercent === null ? "Waiting for telemetry" : `${memoryPercent.toFixed(1)}%`} values={memoryHistory} />
-      <Chart detail={stats ? `RX ${formatBytes(stats.networkRxBytes)} · TX ${formatBytes(stats.networkTxBytes)}` : "No telemetry received"} icon={Network} label="Network transfer" value={stats ? formatBytes(stats.networkRxBytes + stats.networkTxBytes) : "Waiting for telemetry"} values={networkHistory} />
+      <Chart detail="Current process usage" icon={Cpu} label="CPU" limit={100} value={stats ? `${stats.cpuPercent.toFixed(1)}%` : "Waiting for telemetry"} values={cpuHistory} />
+      <Chart detail={stats ? `${formatBytes(stats.memoryBytes)} of ${formatBytes(stats.memoryLimit)}` : "No telemetry received"} icon={MemoryStick} label="Memory" limit={100} value={memoryPercent === null ? "Waiting for telemetry" : `${memoryPercent.toFixed(1)}%`} values={memoryHistory} />
+      <Chart detail={stats ? `Since previous sample · RX total ${formatBytes(stats.networkRxBytes)} · TX total ${formatBytes(stats.networkTxBytes)}` : "No telemetry received"} icon={Network} label="Network" value={networkDelta === null ? "Waiting for next sample" : formatBytes(networkDelta)} values={networkHistory} />
       {/* Uptime card */}
-      <section className="rounded-xl border border-white/[0.07] bg-[#151b27] p-4" aria-label="Uptime">
+      <section className="rounded-xl border border-white/[0.07] bg-[var(--surface-raised)] p-4" aria-label="Uptime">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400"><Clock size={15} />Uptime</div>
           <div className="text-right">
@@ -264,8 +314,8 @@ export function ConsoleView({ server }: { server: ApiServer }) {
       </section>
     </div>
 
-    <section className="overflow-hidden rounded-xl border border-white/[0.08] bg-[#060a11] shadow-xl" aria-label="Server console">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.07] bg-[#111722] px-4 py-3">
+    <section className="overflow-hidden rounded-xl border border-white/[0.08] bg-[var(--canvas)] shadow-xl" aria-label="Server console">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.07] bg-[var(--surface)] px-4 py-3">
         <div className="flex items-center gap-2 text-sm font-semibold">
           <PlugZap size={16} className={connection === "connected" ? "text-emerald-400" : "text-amber-300"} />
           <span>{stateLabel}</span>
@@ -283,7 +333,7 @@ export function ConsoleView({ server }: { server: ApiServer }) {
         </div>
       </div>
       {searchOpen ? (
-        <div className="border-b border-white/[0.07] bg-[#111722] px-4 py-2">
+        <div className="border-b border-white/[0.07] bg-[var(--surface)] px-4 py-2">
           <input
             autoComplete="off"
             className="w-full bg-transparent font-mono text-sm text-white outline-none placeholder:text-slate-600"
@@ -294,16 +344,16 @@ export function ConsoleView({ server }: { server: ApiServer }) {
         </div>
       ) : null}
       <div aria-live="polite" className="h-[50vh] min-h-80 overflow-y-auto p-4 font-mono text-xs leading-5 text-slate-200 sm:text-[13px]" ref={outputRef} role="log" tabIndex={0}>
-        {filteredLines.length ? filteredLines.map((line, index) => (
-          <div className="whitespace-pre-wrap break-words" key={`${index}-${line}`}>
-            {showTimestamps ? <span className="mr-2 text-slate-500">{new Date().toLocaleTimeString()}</span> : null}
-            {line}
+        {filteredLines.length ? filteredLines.map((entry, index) => (
+          <div className="whitespace-pre-wrap break-words" key={`${index}-${entry.ts}-${entry.text}`}>
+            {showTimestamps ? <span className="mr-2 text-slate-500">{entry.serverTs ?? new Date(entry.ts).toLocaleTimeString()}</span> : null}
+            {entry.text}
           </div>
         )) : (
           <p className="text-slate-500">{searchQuery ? "No matching console output." : connectionError || "Waiting for console output…"}</p>
         )}
       </div>
-      <form className="flex items-center gap-2 border-t border-white/[0.07] bg-[#111722] p-3" onSubmit={submit}>
+      <form className="flex items-center gap-2 border-t border-white/[0.07] bg-[var(--surface)] p-3" onSubmit={submit}>
         <Server className="text-slate-500" size={16} />
         <label className="sr-only" htmlFor="console-command">Console command</label>
         <input autoComplete="off" className="min-w-0 flex-1 bg-transparent font-mono text-sm text-white outline-none placeholder:text-slate-600" disabled={connection !== "connected" || !canConsole} id="console-command" onChange={(event) => setCommand(event.target.value)} onKeyDown={historyKey} placeholder={connection === "connected" ? "Type a command; use ↑ and ↓ for history" : "Console is not connected"} value={command} />

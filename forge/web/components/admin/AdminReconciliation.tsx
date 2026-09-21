@@ -241,7 +241,7 @@ export function AdminReconciliation() {
         action={
           <div className="flex flex-wrap items-center gap-2">
             <select
-              className="h-9 rounded-lg border border-white/10 bg-[#161b28] px-3 text-xs text-slate-200"
+              className="h-9 rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-xs text-slate-200"
               value={triggerKind}
               onChange={(e) => setTriggerKind(e.target.value)}
             >
@@ -279,31 +279,31 @@ export function AdminReconciliation() {
         </div>
       ) : summaryData ? (
         <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-5">
-          <div className="rounded-xl border border-white/[0.09] bg-[#111722] p-4">
+          <div className="rounded-xl border border-white/[0.09] bg-[var(--surface)] p-4">
             <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
               <Clock size={12} /> Total Plans
             </div>
             <div className="text-2xl font-bold tracking-tight text-slate-100">{summaryData.totalPlans}</div>
           </div>
-          <div className="rounded-xl border border-white/[0.09] bg-[#111722] p-4">
+          <div className="rounded-xl border border-white/[0.09] bg-[var(--surface)] p-4">
             <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
               <Clock size={12} /> Pending
             </div>
             <div className="text-2xl font-bold tracking-tight text-amber-400">{summaryData.pendingPlans}</div>
           </div>
-          <div className="rounded-xl border border-white/[0.09] bg-[#111722] p-4">
+          <div className="rounded-xl border border-white/[0.09] bg-[var(--surface)] p-4">
             <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
               <AlertTriangle size={12} /> Failed
             </div>
             <div className="text-2xl font-bold tracking-tight text-red-400">{summaryData.failedPlans}</div>
           </div>
-          <div className="rounded-xl border border-white/[0.09] bg-[#111722] p-4">
+          <div className="rounded-xl border border-white/[0.09] bg-[var(--surface)] p-4">
             <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
               <FileWarning size={12} /> Drifts
             </div>
             <div className="text-2xl font-bold tracking-tight text-yellow-400">{summaryData.totalDrifts}</div>
           </div>
-          <div className="rounded-xl border border-white/[0.09] bg-[#111722] p-4">
+          <div className="rounded-xl border border-white/[0.09] bg-[var(--surface)] p-4">
             <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
               <ShieldAlert size={12} /> Unresolved
             </div>

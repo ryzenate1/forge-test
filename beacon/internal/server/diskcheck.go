@@ -2,8 +2,6 @@ package server
 
 import (
 	"fmt"
-
-	"golang.org/x/sys/unix"
 )
 
 // spoolDiskHeadroomBytes is reserved beyond any payload being spooled to
@@ -14,16 +12,7 @@ const spoolDiskHeadroomBytes = int64(10 << 30)
 
 // availableDiskBytes reports the free bytes on the filesystem holding path.
 func availableDiskBytes(path string) (int64, error) {
-	var stat unix.Statfs_t
-	if err := unix.Statfs(path, &stat); err != nil {
-		return 0, err
-	}
-	free := uint64(stat.Bavail) * uint64(stat.Bsize)
-	const maxInt64 = uint64(^uint64(0) >> 1)
-	if free > maxInt64 {
-		return int64(maxInt64), nil
-	}
-	return int64(free), nil
+	return availableDiskBytesPlatform(path)
 }
 
 // ensureDiskSpaceForSpool verifies the filesystem holding dir has room for

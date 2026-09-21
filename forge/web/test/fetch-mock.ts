@@ -67,15 +67,38 @@ function matches(route: UrlRoute, url: string, init: RequestInit): boolean {
  *   "/users/u1": { method: "DELETE", response: jsonResponse({ ok: true }) },
  * });
  */
+function toReusableResponder(responder: FetchResponder): FetchResponder {
+  if (responder instanceof Response) {
+    const status = responder.status;
+    const statusText = responder.statusText;
+    const headers = Array.from(responder.headers.entries());
+    let cachedBody: string | null = null;
+    let cached = false;
+
+    return async () => {
+      if (!cached) {
+        cachedBody = responder.status === 204 ? null : await responder.text();
+        cached = true;
+      }
+      return new Response(cachedBody, {
+        status,
+        statusText,
+        headers: new Headers(headers),
+      });
+    };
+  }
+  return responder;
+}
+
 export function mockFetchByUrl(
   routes: Record<string, FetchResponder | { method?: string; response: FetchResponder }>,
 ) {
   const calls: FetchCall[] = [];
   const parsedRoutes: UrlRoute[] = Object.entries(routes).map(([matcher, value]) => {
     if (value && typeof value === "object" && "response" in value) {
-      return { matcher, method: value.method, responder: value.response };
+      return { matcher, method: value.method, responder: toReusableResponder(value.response) };
     }
-    return { matcher, responder: value as FetchResponder };
+    return { matcher, responder: toReusableResponder(value as FetchResponder) };
   });
   const fallbackQueue: FetchResponder[] = [];
 
@@ -98,7 +121,7 @@ export function mockFetchByUrl(
     },
     /** Adds or overrides a route after initial setup. */
     addRoute(matcher: UrlMatcher, responder: FetchResponder, method?: string) {
-      parsedRoutes.push({ matcher, method, responder });
+      parsedRoutes.unshift({ matcher, method, responder: toReusableResponder(responder) });
     },
   };
 }

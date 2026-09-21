@@ -26,8 +26,8 @@ function EmptyCard({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-white/10 px-6 py-14 text-center">
-      <div className="grid h-12 w-12 place-items-center rounded-full bg-white/[0.05] text-slate-500">
+    <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[var(--line)] bg-[var(--surface)] px-6 py-14 text-center">
+      <div className="grid h-12 w-12 place-items-center rounded-full bg-[var(--surface-raised)] text-slate-500">
         <Icon size={22} strokeWidth={1.5} aria-hidden="true" />
       </div>
       <h3 className="mt-4 text-base font-semibold text-slate-200">{title}</h3>

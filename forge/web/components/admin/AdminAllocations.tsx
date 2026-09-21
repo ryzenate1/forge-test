@@ -225,7 +225,7 @@ export function AdminAllocations() {
                       type="checkbox"
                       checked={allVisibleFreeSelected}
                       onChange={toggleSelectAllVisible}
-                      className="h-4 w-4 cursor-pointer rounded border-white/20 bg-[#0d131d] text-red-500 focus:ring-red-500/30"
+                      className="h-4 w-4 cursor-pointer rounded border-white/20 bg-[var(--surface-input)] text-red-500 focus:ring-red-500/30"
                       aria-label="Select all visible free allocations"
                       disabled={visibleFreeIds.length === 0}
                     />
@@ -252,7 +252,7 @@ export function AdminAllocations() {
                         disabled={Boolean(alloc.server)}
                         checked={selectedIds.includes(alloc.id)}
                         onChange={() => toggleSelected(alloc.id)}
-                        className="h-4 w-4 cursor-pointer rounded border-white/20 bg-[#0d131d] text-red-500 focus:ring-red-500/30 disabled:cursor-not-allowed disabled:opacity-30"
+                        className="h-4 w-4 cursor-pointer rounded border-white/20 bg-[var(--surface-input)] text-red-500 focus:ring-red-500/30 disabled:cursor-not-allowed disabled:opacity-30"
                         aria-label={`Select ${alloc.ip}:${alloc.port}`}
                       />
                     </td>

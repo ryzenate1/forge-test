@@ -135,7 +135,7 @@ export default function DeploymentRevisionsPage() {
           <div className="border-b border-white/[0.06] p-4">
             <div className="flex items-center gap-3 mb-3">
               <select
-                className="h-9 rounded-lg border border-white/10 bg-[#161b28] px-3 text-xs text-slate-300 outline-none"
+                className="h-9 rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-xs text-slate-300 outline-none"
                 value={diffFrom}
                 onChange={(e) => setDiffFrom(e.target.value)}
               >
@@ -148,7 +148,7 @@ export default function DeploymentRevisionsPage() {
               </select>
               <ArrowRightLeft size={14} className="text-slate-500" />
               <select
-                className="h-9 rounded-lg border border-white/10 bg-[#161b28] px-3 text-xs text-slate-300 outline-none"
+                className="h-9 rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-xs text-slate-300 outline-none"
                 value={diffTo}
                 onChange={(e) => setDiffTo(e.target.value)}
               >
@@ -209,7 +209,7 @@ export default function DeploymentRevisionsPage() {
                   <div
                     className={cn(
                       "absolute -left-[19px] mt-1 h-3 w-3 rounded-full border-2",
-                      isActive ? "border-emerald-500 bg-emerald-500/20" : "border-slate-600 bg-[#1e2536]"
+                      isActive ? "border-emerald-500 bg-emerald-500/20" : "border-slate-600 bg-[var(--surface-raised)]"
                     )}
                   />
                   <div className="flex items-start justify-between gap-4">

@@ -166,7 +166,7 @@ export default function ComposeStackPage({ params }: { params: Promise<{ id: str
 
       {showConfig && composeData && (
         <Modal title="Compose Configuration" onClose={() => setShowConfig(false)} wide>
-          <pre className="max-h-96 overflow-y-auto rounded-lg border border-white/[0.06] bg-[#0a0e14] p-4 font-mono text-xs text-slate-400 whitespace-pre-wrap">
+          <pre className="max-h-96 overflow-y-auto rounded-lg border border-white/[0.06] bg-[var(--canvas)] p-4 font-mono text-xs text-slate-400 whitespace-pre-wrap">
             {composeContent || JSON.stringify(composeData.sourceConfig, null, 2)}
           </pre>
         </Modal>

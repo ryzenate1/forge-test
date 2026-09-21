@@ -84,6 +84,14 @@ func registerComposeRoutes(protected fiber.Router, cfg Config, mutationLimiter f
 			return fiber.NewError(fiber.StatusBadRequest, "content is required")
 		}
 		result := composeSvc.ValidateCompose([]byte(req.Content), "")
+		for _, errItem := range result.Errors {
+			if strings.Contains(strings.ToLower(errItem.Field), "env_file") || strings.Contains(strings.ToLower(errItem.Message), "env_file") {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"error":   "env_file not supported, inline env vars",
+					"details": result,
+				})
+			}
+		}
 		return c.JSON(result)
 	})
 
@@ -103,6 +111,14 @@ func registerComposeRoutes(protected fiber.Router, cfg Config, mutationLimiter f
 			return fiber.NewError(fiber.StatusBadRequest, "content is required")
 		}
 		result := composeSvc.ValidateCompose([]byte(req.Content), "")
+		for _, errItem := range result.Errors {
+			if strings.Contains(strings.ToLower(errItem.Field), "env_file") || strings.Contains(strings.ToLower(errItem.Message), "env_file") {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"error":   "env_file not supported, inline env vars",
+					"details": result,
+				})
+			}
+		}
 		if !result.Valid {
 			return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
 				"error":   "validation failed",
@@ -318,6 +334,16 @@ func registerComposeRoutes(protected fiber.Router, cfg Config, mutationLimiter f
 		}
 		if req.Name == "" || req.ComposeYAML == "" {
 			return fiber.NewError(fiber.StatusBadRequest, "name and composeYaml are required")
+		}
+		if strings.Contains(req.ComposeYAML, "env_file") {
+			valResult := composeSvc.ValidateCompose([]byte(req.ComposeYAML), "")
+			for _, errItem := range valResult.Errors {
+				if strings.Contains(strings.ToLower(errItem.Field), "env_file") || strings.Contains(strings.ToLower(errItem.Message), "env_file") {
+					return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+						"error": "env_file not supported, inline env vars",
+					})
+				}
+			}
 		}
 		userID := getUserID(c)
 		ctx, cancel := requestContext()

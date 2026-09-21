@@ -886,16 +886,4 @@ func buildBackupAdapter(backupRoot string, legacyDataRoot ...string) (backup.Bac
 }
 
 // readMemoryMB is defined in mem_linux.go (Linux) and mem_other.go (other OS).
-
-func readDiskMB(dataDir string) int64 {
-	if dataDir == "" {
-		return 0
-	}
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(dataDir, &stat); err != nil {
-		log.Printf("read disk capacity for %s failed: %v", dataDir, err)
-		return 0
-	}
-	bytes := uint64(stat.Bavail) * uint64(stat.Bsize)
-	return int64(bytes / (1024 * 1024))
-}
+// readDiskMB is defined in disk_unix.go and disk_windows.go.

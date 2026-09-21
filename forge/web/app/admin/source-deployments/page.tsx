@@ -143,7 +143,7 @@ export default function SourceDeploymentsPage() {
                 <div>
                   <label className="block text-sm font-medium mb-1">Repository URL</label>
                   <input
-                    className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                    className="block min-h-11 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
                     placeholder="https://github.com/user/repo.git"
                     value={form.repository}
                     onChange={(e) => setForm({ ...form, repository: e.target.value })}
@@ -152,7 +152,7 @@ export default function SourceDeploymentsPage() {
                 <div>
                   <label className="block text-sm font-medium mb-1">Branch</label>
                   <input
-                    className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                    className="block min-h-11 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
                     placeholder="main"
                     value={form.branch}
                     onChange={(e) => setForm({ ...form, branch: e.target.value })}
@@ -165,7 +165,7 @@ export default function SourceDeploymentsPage() {
                 <div>
                   <label className="block text-sm font-medium mb-1">Build Type</label>
                   <select
-                    className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                    className="block min-h-11 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
                     value={form.buildType}
                     onChange={(e) => setForm({ ...form, buildType: e.target.value })}
                   >
@@ -179,7 +179,7 @@ export default function SourceDeploymentsPage() {
                 <div>
                   <label className="block text-sm font-medium mb-1">Git Provider (optional)</label>
                   <select
-                    className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                    className="block min-h-11 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
                     value={form.gitProviderId}
                     onChange={(e) => setForm({ ...form, gitProviderId: e.target.value })}
                   >
@@ -194,7 +194,7 @@ export default function SourceDeploymentsPage() {
             <AdminFormSection title="Target">
               <div>
                 <label className="mb-1 block text-sm font-medium">Target server ID</label>
-                <input className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 outline-none focus:border-red-400/70" placeholder="Server UUID required for deployment" value={form.serverId} onChange={(e) => setForm({ ...form, serverId: e.target.value })} required />
+                <input className="block min-h-11 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3.5 text-sm text-slate-100 outline-none focus:border-red-400/70" placeholder="Server UUID required for deployment" value={form.serverId} onChange={(e) => setForm({ ...form, serverId: e.target.value })} required />
               </div>
             </AdminFormSection>
             <AdminFormSection title="Options">
@@ -204,7 +204,7 @@ export default function SourceDeploymentsPage() {
                     type="checkbox"
                     checked={form.autoDeploy}
                     onChange={(e) => setForm({ ...form, autoDeploy: e.target.checked })}
-                    className="rounded border-white/10 bg-[#161b28]"
+                    className="rounded border-white/10 bg-[var(--surface-input)]"
                   />
                   <span className="text-sm">Auto-deploy on push</span>
                 </label>

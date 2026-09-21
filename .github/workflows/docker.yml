@@ -1,0 +1,57 @@
+name: Docker Build Validation
+
+on:
+  pull_request:
+    paths:
+      - "forge/api/**"
+      - "beacon/**"
+      - "forge/web/**"
+      - "packages/**"
+      - "lang/**"
+      - "infra/**"
+      - ".github/workflows/docker.yml"
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-docker:
+    name: Build Docker Images (no-push)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build forge-api image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: forge/api/Dockerfile
+          push: false
+          tags: ghcr.io/gamepanel/forge-api:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build beacon image
+        uses: docker/build-push-action@v6
+        with:
+          context: beacon
+          file: beacon/Dockerfile
+          push: false
+          tags: ghcr.io/gamepanel/beacon:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build forge-web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: forge/web/Dockerfile
+          push: false
+          tags: ghcr.io/gamepanel/forge-web:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

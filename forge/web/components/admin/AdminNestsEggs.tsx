@@ -250,7 +250,7 @@ export function AdminNestsEggs() {
     className={cn(
       "group flex items-center transition cursor-pointer",
       "hover:bg-white/[0.03]",
-      isSelected && "border-l-2 border-[#dc2626] bg-[#dc2626]/10",
+      isSelected && "border-l-2 border-[#dc2626] bg-[var(--brand)]/10",
     )}
   >
   <button
@@ -276,7 +276,7 @@ export function AdminNestsEggs() {
 
  {/* Eggs panel */}
  <Card>
- <div className="flex items-center justify-between border-b border-white/[0.06] bg-[#161b28] px-4 h-11">
+ <div className="flex items-center justify-between border-b border-white/[0.06] bg-[var(--surface-input)] px-4 h-11">
  <span className="text-xs font-semibold uppercase tracking-widest text-slate-400">
  {selectedNest ? `Eggs: ${selectedNest.name}` : "Select a nest"}
  </span>

@@ -7,6 +7,7 @@ import { fetchJSON, postJSON, deleteJSON } from "@/lib/api";
 import { errorMessage } from "@/lib/utils";
 import { ConfirmDialog, EmptyState, StatusPill } from "@/components/ui/primitives";
 import { CardSkeleton } from "@/components/ui/loading-skeleton";
+import { useOptionalServerContext } from "@/components/server/server-context";
 
 interface GitDeployment {
   id: string;
@@ -53,6 +54,8 @@ export default function GitDeployPage() {
   const [deletingHook, setDeletingHook] = useState(false);
   const params = useParams();
   const serverId = String(params.id ?? "");
+  const serverContext = useOptionalServerContext();
+  const canManageHooks = Boolean(serverContext?.access?.isOwner || serverContext?.access?.isAdmin);
 
   const fetchData = useCallback(async (sid: string) => {
     try {
@@ -200,6 +203,11 @@ export default function GitDeployPage() {
                 <p className="text-sm">{hookError}</p>
               </div>
             )}
+            {!canManageHooks ? (
+              <p className="mb-4 text-xs text-slate-400">
+                Only the server owner or an administrator can delete hooks.
+              </p>
+            ) : null}
             {hooks.length === 0 ? (
               <EmptyState icon={<GitBranchIcon />} title="No hooks configured" description="Create a hook to let your git provider notify this server of pushes automatically." />
             ) : (
@@ -214,6 +222,7 @@ export default function GitDeployPage() {
                     </div>
                     <button
                       onClick={() => setHookToDelete(h)}
+                      disabled={!canManageHooks || deletingHook}
                       className="ui-button ui-button-danger"
                     >
                       Delete hook

@@ -147,7 +147,7 @@ export function AdminWebhooks() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500">
+                <tr className="border-b border-white/[0.06] bg-[var(--surface-input)] text-left text-[10px] uppercase tracking-widest text-slate-500">
                   <th className="px-4 py-3">Name</th>
                   <th className="hidden sm:table-cell px-4 py-3">Type</th>
                   <th className="hidden md:table-cell px-4 py-3">Events</th>
@@ -246,14 +246,14 @@ export function AdminWebhooks() {
                 <Input label="Username Override" value={discordUsername} onChange={setDiscordUsername} placeholder="My Bot" />
                 <Input label="Avatar URL" value={discordAvatarUrl} onChange={setDiscordAvatarUrl} placeholder="https://..." />
                 <Input label="Content" value={discordContent} onChange={setDiscordContent} placeholder="Optional message content" />
-                <div className="rounded-lg bg-[#2b2d31] p-3">
+                <div className="rounded-lg bg-[var(--surface-raised)] p-3">
                   <div className="flex items-center gap-2.5 mb-2">
                     {discordAvatarUrl ? <span aria-label="Webhook avatar preview" className="h-6 w-6 rounded-full bg-cover bg-center" role="img" style={{ backgroundImage: `url(${discordAvatarUrl})` }} /> : <div className="h-6 w-6 rounded-full bg-[#5865f2]" />}
                     <span className="text-sm font-medium text-white leading-none">{discordUsername || "Webhook"}</span>
                     <span className="text-xs text-[#949ba4]">Today at 12:00</span>
                   </div>
                   {discordContent && <p className="text-sm leading-relaxed text-[#dbdee1]">{discordContent}</p>}
-                  <div className="mt-2 rounded-lg border-l-[4px] border-l-[#5865f2] bg-[#2b2d31] p-3">
+                  <div className="mt-2 rounded-lg border-l-[4px] border-l-[#5865f2] bg-[var(--surface-raised)] p-3">
                     <p className="text-sm font-semibold text-[#dbdee1]">Event Notification</p>
                     <p className="text-xs text-[#949ba4] mt-1">This is a preview of how the webhook will appear in Discord.</p>
                     {events.length > 0 && <p className="text-xs text-[#949ba4] mt-1">Triggered on: {events.join(", ")}</p>}
@@ -265,7 +265,7 @@ export function AdminWebhooks() {
             <AdminFormSection title="Events">
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 max-h-32 sm:max-h-48 overflow-y-auto">
                 {AVAILABLE_EVENTS.map((ev) => (
-                  <label key={ev} className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-white/10 bg-[#161b28] px-3 py-2.5 text-sm text-slate-200 hover:bg-white/[0.03]">
+                  <label key={ev} className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 py-2.5 text-sm text-slate-200 hover:bg-white/[0.03]">
                     <input type="checkbox" checked={events.includes(ev)} onChange={() => toggleEvent(ev)} className="accent-[#dc2626]" />
                     {ev}
                   </label>
@@ -303,7 +303,7 @@ function WebhookDeliveryModal({ webhookId, onClose }: { webhookId: string; onClo
     {query.isLoading ? <p className="text-sm text-slate-500">Loading delivery history...</p> : null}
     {query.isError ? <p className="text-sm text-red-300">{errorMessage(query.error, "Delivery history could not be loaded.")}</p> : null}
     {!query.isLoading && !query.isError && deliveries.length === 0 ? <EmptyState icon={Globe} message="No deliveries recorded."/> : null}
-    {!query.isLoading && !query.isError && Array.isArray(deliveries) && deliveries.length > 0 ? <div className="max-h-[60vh] overflow-auto"><div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500"><th className="px-3 py-2.5">Created</th><th className="px-3 py-2.5">Event</th><th className="px-3 py-2.5">State</th><th className="hidden sm:table-cell px-3 py-2.5">HTTP</th><th className="px-3 py-2.5">Attempts</th><th className="hidden md:table-cell px-3 py-2.5">Failure</th><th className="px-3 py-2.5" /></tr></thead><tbody>{Array.isArray(deliveries) && deliveries.map((delivery) => <tr className="border-b border-white/[0.04]" key={delivery.id}><td className="px-3 py-2.5 whitespace-nowrap">{new Date(delivery.createdAt).toLocaleString()}</td><td className="px-3 py-2.5 font-mono max-w-[120px] truncate">{delivery.eventName}</td><td className="px-3 py-2.5"><Pill tone={delivery.state === "delivered" ? "green" : delivery.state === "failed" ? "red" : "yellow"}>{delivery.state}</Pill></td><td className="hidden sm:table-cell px-3 py-2.5">{delivery.responseStatus ?? "—"}</td><td className="px-3 py-2.5">{delivery.attempt}</td><td className="hidden md:table-cell px-3 py-2.5 text-red-300 max-w-[160px] truncate">{delivery.lastError ?? delivery.responseBodyExcerpt ?? "—"}</td><td className="px-3 py-2.5">{delivery.state === "failed" ? <Btn size="sm" tone="ghost" disabled={retryMut.isPending} onClick={() => retryMut.mutate(delivery.id)}><RotateCcw size={12} /> Retry</Btn> : null}</td></tr>)}</tbody></table></div></div> : null}
+    {!query.isLoading && !query.isError && Array.isArray(deliveries) && deliveries.length > 0 ? <div className="max-h-[60vh] overflow-auto"><div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="border-b border-white/[0.06] bg-[var(--surface-input)] text-left text-[10px] uppercase tracking-widest text-slate-500"><th className="px-3 py-2.5">Created</th><th className="px-3 py-2.5">Event</th><th className="px-3 py-2.5">State</th><th className="hidden sm:table-cell px-3 py-2.5">HTTP</th><th className="px-3 py-2.5">Attempts</th><th className="hidden md:table-cell px-3 py-2.5">Failure</th><th className="px-3 py-2.5" /></tr></thead><tbody>{Array.isArray(deliveries) && deliveries.map((delivery) => <tr className="border-b border-white/[0.04]" key={delivery.id}><td className="px-3 py-2.5 whitespace-nowrap">{new Date(delivery.createdAt).toLocaleString()}</td><td className="px-3 py-2.5 font-mono max-w-[120px] truncate">{delivery.eventName}</td><td className="px-3 py-2.5"><Pill tone={delivery.state === "delivered" ? "green" : delivery.state === "failed" ? "red" : "yellow"}>{delivery.state}</Pill></td><td className="hidden sm:table-cell px-3 py-2.5">{delivery.responseStatus ?? "—"}</td><td className="px-3 py-2.5">{delivery.attempt}</td><td className="hidden md:table-cell px-3 py-2.5 text-red-300 max-w-[160px] truncate">{delivery.lastError ?? delivery.responseBodyExcerpt ?? "—"}</td><td className="px-3 py-2.5">{delivery.state === "failed" ? <Btn size="sm" tone="ghost" disabled={retryMut.isPending} onClick={() => retryMut.mutate(delivery.id)}><RotateCcw size={12} /> Retry</Btn> : null}</td></tr>)}</tbody></table></div></div> : null}
     {retryMut.isError ? <p className="mt-3 text-sm text-red-300">{errorMessage(retryMut.error, "Delivery could not be retried.")}</p> : null}
   </Modal>;
 }

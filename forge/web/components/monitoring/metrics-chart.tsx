@@ -52,7 +52,7 @@ function ChartTooltip({ active, payload, label, metric }: {
 }) {
   if (!active || !payload?.length) return null;
   return (
-    <div className="rounded-lg border border-white/10 bg-[#1e2536] p-3 shadow-xl">
+    <div className="rounded-lg border border-white/10 bg-[var(--surface-raised)] p-3 shadow-xl">
       <p className="text-xs text-slate-400">{new Date(label ?? "").toLocaleTimeString()}</p>
       {payload.map((entry) => (
         <p key={entry.name} className="text-sm font-semibold text-slate-200">

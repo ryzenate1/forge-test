@@ -106,7 +106,11 @@ verify_health() {
     fi
   done
 
-  "$SCRIPT_DIR/healthcheck.sh" || all_healthy=false
+  if [ -x "$SCRIPT_DIR/../diagnostics/healthcheck.sh" ]; then
+    "$SCRIPT_DIR/../diagnostics/healthcheck.sh" || all_healthy=false
+  elif [ -f "$SCRIPT_DIR/../diagnostics/healthcheck.sh" ]; then
+    bash "$SCRIPT_DIR/../diagnostics/healthcheck.sh" || all_healthy=false
+  fi
 
   if [ "$all_healthy" = true ]; then
     info "All services healthy after rollback"

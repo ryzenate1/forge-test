@@ -107,8 +107,8 @@ export function EnvironmentEditor({ variables, onChange, readOnly = false }: Env
   }, [updateVar, variables]);
 
   return (
-    <div className="rounded-lg border border-white/[0.06] bg-[#111722] overflow-hidden">
-      <div className="flex items-center justify-between border-b border-white/[0.06] bg-[#161b28] px-4 py-3">
+    <div className="rounded-lg border border-white/[0.06] bg-[var(--surface)] overflow-hidden">
+      <div className="flex items-center justify-between border-b border-white/[0.06] bg-[var(--surface-input)] px-4 py-3">
         <h3 className="text-sm font-semibold text-slate-200">
           Environment Variables ({variables.length})
         </h3>
@@ -140,7 +140,7 @@ export function EnvironmentEditor({ variables, onChange, readOnly = false }: Env
         <div className="border-b border-white/[0.06] p-4 space-y-3">
           <p className="text-xs text-slate-400">Paste .env format content below to import variables:</p>
           <textarea
-            className="w-full h-32 rounded border border-white/10 bg-[#0d131d] p-3 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-red-500/50 resize-y"
+            className="w-full h-32 rounded border border-white/10 bg-[var(--surface-input)] p-3 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-red-500/50 resize-y"
             onChange={(e) => setImportText(e.target.value)}
             placeholder="KEY=value&#10;ANOTHER_KEY=another_value"
             value={importText}
@@ -169,7 +169,7 @@ export function EnvironmentEditor({ variables, onChange, readOnly = false }: Env
         <div className="relative">
           <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
           <input
-            className="w-full rounded border border-white/10 bg-[#0d131d] py-1.5 pl-7 pr-3 text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-red-500/50"
+            className="w-full rounded border border-white/10 bg-[var(--surface-input)] py-1.5 pl-7 pr-3 text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-red-500/50"
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search variables..."
             type="text"
@@ -217,7 +217,7 @@ export function EnvironmentEditor({ variables, onChange, readOnly = false }: Env
                 ) : (
                   <>
                     <input
-                      className="flex-1 bg-[#0d131d] rounded border border-white/10 px-2 py-1 text-xs font-mono text-slate-300 outline-none focus:ring-1 focus:ring-red-500/50"
+                      className="flex-1 bg-[var(--surface-input)] rounded border border-white/10 px-2 py-1 text-xs font-mono text-slate-300 outline-none focus:ring-1 focus:ring-red-500/50"
                       onChange={(e) => updateVar(globalIndex, { value: e.target.value })}
                       type={v.encrypted && !showValues[v.key] ? "password" : "text"}
                       value={v.value}
@@ -263,7 +263,7 @@ export function EnvironmentEditor({ variables, onChange, readOnly = false }: Env
       {!readOnly && (
         <div className="flex items-center gap-2 border-t border-white/[0.06] px-4 py-2">
           <input
-            className="flex-1 bg-[#0d131d] rounded border border-white/10 px-2 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 outline-none focus:ring-1 focus:ring-red-500/50 font-mono"
+            className="flex-1 bg-[var(--surface-input)] rounded border border-white/10 px-2 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 outline-none focus:ring-1 focus:ring-red-500/50 font-mono"
             onChange={(e) => setNewKey(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") addVar(); }}
             placeholder="KEY_NAME"
@@ -271,7 +271,7 @@ export function EnvironmentEditor({ variables, onChange, readOnly = false }: Env
             value={newKey}
           />
           <input
-            className="flex-1 bg-[#0d131d] rounded border border-white/10 px-2 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 outline-none focus:ring-1 focus:ring-red-500/50"
+            className="flex-1 bg-[var(--surface-input)] rounded border border-white/10 px-2 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 outline-none focus:ring-1 focus:ring-red-500/50"
             onChange={(e) => setNewValue(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") addVar(); }}
             placeholder="value"

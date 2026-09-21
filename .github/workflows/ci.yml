@@ -60,7 +60,7 @@ jobs:
         run: go test -race -timeout 10m -count=1 ./...
 
   packages:
-    name: packages (shared-types, sdk, ui)
+    name: packages (shared-types, sdk, ui, game-templates)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -95,6 +95,9 @@ jobs:
 
       - name: Lint
         run: npm --workspace @forge/web run lint
+
+      - name: Test
+        run: npm --workspace @forge/web test
 
       - name: Build
         run: npm --workspace @forge/web run build

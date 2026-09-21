@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -297,8 +296,4 @@ func (s *Server) handleBuildStatus(w http.ResponseWriter, r *http.Request) {
 
 func removeAll(path string) error {
 	return os.RemoveAll(path)
-}
-
-func getSysProcAttr() *syscall.SysProcAttr {
-	return &syscall.SysProcAttr{Setpgid: true}
 }

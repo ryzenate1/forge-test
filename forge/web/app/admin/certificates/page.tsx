@@ -159,7 +159,7 @@ export default function AdminCertificatesPage() {
             <div>
               <label className="block text-sm font-medium text-slate-300 mb-1.5">Certificate (PEM)</label>
               <textarea
-                className="h-24 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 py-2 text-xs font-mono text-slate-100 outline-none focus:border-[#dc2626]/60 focus:ring-1 focus:ring-[#dc2626]/30"
+                className="h-24 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 py-2 text-xs font-mono text-slate-100 outline-none focus:border-[#dc2626]/60 focus:ring-1 focus:ring-[#dc2626]/30"
                 value={uploadForm.certificate}
                 onChange={(e) => setUploadForm({ ...uploadForm, certificate: e.target.value })}
                 placeholder="-----BEGIN CERTIFICATE-----"
@@ -168,7 +168,7 @@ export default function AdminCertificatesPage() {
             <div>
               <label className="block text-sm font-medium text-slate-300 mb-1.5">Private Key (PEM)</label>
               <textarea
-                className="h-24 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 py-2 text-xs font-mono text-slate-100 outline-none focus:border-[#dc2626]/60 focus:ring-1 focus:ring-[#dc2626]/30"
+                className="h-24 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 py-2 text-xs font-mono text-slate-100 outline-none focus:border-[#dc2626]/60 focus:ring-1 focus:ring-[#dc2626]/30"
                 value={uploadForm.privateKey}
                 onChange={(e) => setUploadForm({ ...uploadForm, privateKey: e.target.value })}
                 placeholder="-----BEGIN PRIVATE KEY-----"
@@ -176,7 +176,7 @@ export default function AdminCertificatesPage() {
             </div>
             <Input label="Issuer" value={uploadForm.issuer} onChange={(v) => setUploadForm({ ...uploadForm, issuer: v })} placeholder="custom" />
             <label className="flex items-center gap-2 text-sm font-medium text-slate-300">
-              <input type="checkbox" checked={uploadForm.autoRenew} onChange={(e) => setUploadForm({ ...uploadForm, autoRenew: e.target.checked })} className="rounded border-white/10 bg-[#161b28]" />
+              <input type="checkbox" checked={uploadForm.autoRenew} onChange={(e) => setUploadForm({ ...uploadForm, autoRenew: e.target.checked })} className="rounded border-white/10 bg-[var(--surface-input)]" />
               Auto-renew (Caddy managed)
             </label>
           </div>

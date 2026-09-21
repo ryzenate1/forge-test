@@ -145,7 +145,7 @@ export default function GitSourcePage({ params }: { params: Promise<{ id: string
                   type="checkbox"
                   checked={gitSource?.autoDeploy ?? false}
                   onChange={(e) => autoDeployMut.mutate(e.target.checked)}
-                  className="h-3 w-3 rounded border-white/20 bg-[#161b28] accent-[#dc2626]"
+                  className="h-3 w-3 rounded border-white/20 bg-[var(--surface-input)] accent-[#dc2626]"
                 />
                 <span className={cn("text-xs", gitSource?.autoDeploy ? "text-emerald-400" : "text-slate-500")}>
                   {gitSource?.autoDeploy ? "Enabled" : "Disabled"}
@@ -162,7 +162,7 @@ export default function GitSourcePage({ params }: { params: Promise<{ id: string
               Configure this URL in your Git provider to trigger automatic deployments.
             </p>
             <div className="flex items-center gap-2">
-              <code className="flex-1 break-all rounded-lg border border-white/[0.06] bg-[#0a0e14] p-2 font-mono text-xs text-slate-400">
+              <code className="flex-1 break-all rounded-lg border border-white/[0.06] bg-[var(--canvas)] p-2 font-mono text-xs text-slate-400">
                 {gitSource?.webhookUrl ?? "Waiting for webhook URL..."}
               </code>
               <Btn tone="ghost" size="sm" onClick={copyWebhook} disabled={!gitSource?.webhookUrl}>

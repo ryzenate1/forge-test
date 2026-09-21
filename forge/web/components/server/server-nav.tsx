@@ -66,8 +66,8 @@ export function ServerNav({ serverId, server, access, activeTab }: ServerNavProp
   </>;
 
   return <>
-    <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-white/[0.06] bg-[#0f1419]/95 px-4 backdrop-blur md:hidden"><div className="min-w-0"><p className="truncate text-sm font-bold text-white">{server.name}</p><p className="truncate font-mono text-[10px] text-slate-400">{server.allocation || state}</p></div><button aria-expanded={open} aria-label={tr("server.nav.toggleNav", "Toggle server navigation")} className="rounded-lg p-2 text-slate-300 hover:bg-white/5" onClick={() => setOpen((value) => !value)} type="button">{open ? <X /> : <Menu />}</button></header>
+    <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-white/[0.06] bg-[var(--surface)]/95 px-4 backdrop-blur md:hidden"><div className="min-w-0"><p className="truncate text-sm font-bold text-white">{server.name}</p><p className="truncate font-mono text-[10px] text-slate-400">{server.allocation || state}</p></div><button aria-expanded={open} aria-label={tr("server.nav.toggleNav", "Toggle server navigation")} className="rounded-lg p-2 text-slate-300 hover:bg-white/5" onClick={() => setOpen((value) => !value)} type="button">{open ? <X /> : <Menu />}</button></header>
     {open ? <button aria-label={tr("server.nav.closeNav", "Close server navigation")} className="fixed inset-0 z-30 bg-black/60 md:hidden" onClick={() => setOpen(false)} type="button" /> : null}
-    <aside className={cn("fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-white/[0.06] bg-[#0f1419] transition-transform md:sticky md:top-0 md:h-screen md:w-64 md:translate-x-0", open ? "translate-x-0" : "-translate-x-full")}>{content}</aside>
+    <aside className={cn("fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-white/[0.06] bg-[var(--surface)] transition-transform md:sticky md:top-0 md:h-screen md:w-64 md:translate-x-0", open ? "translate-x-0" : "-translate-x-full")}>{content}</aside>
   </>;
 }

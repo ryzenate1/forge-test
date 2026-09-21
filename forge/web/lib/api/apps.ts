@@ -222,8 +222,13 @@ export type AppLogEntry = {
 import { fetchJSON, postJSON, putJSON, patchJSON, deleteJSON, API_BASE_URL } from "./http";
 import { getAllTemplates } from "@/lib/app-templates-data";
 
-export function fetchApps(): Promise<ApiApp[]> {
-  return fetchJSON<ApiApp[]>("/apps");
+export async function fetchApps(): Promise<ApiApp[]> {
+  const response = await fetchJSON<ApiApp[] | { data: ApiApp[] }>("/apps");
+  if (Array.isArray(response)) return response;
+  if (response && Array.isArray((response as { data?: ApiApp[] }).data)) {
+    return (response as { data: ApiApp[] }).data;
+  }
+  return [];
 }
 
 export function fetchApp(id: string): Promise<ApiAppDetail> {

@@ -211,7 +211,7 @@ export function AdminNotifications() {
           {AVAILABLE_EVENTS.map((ev) => {
             const isSubscribed = subscriptions.some((s) => s.eventType === ev);
             return (
-              <label key={ev} className="flex cursor-pointer items-center gap-3 rounded-lg border border-white/[0.06] bg-[#151b27] p-3 hover:bg-[#1a2235]">
+              <label key={ev} className="flex cursor-pointer items-center gap-3 rounded-lg border border-white/[0.06] bg-[var(--surface-raised)] p-3 hover:bg-[var(--surface-raised)]">
                 <input
                   type="checkbox"
                   checked={isSubscribed}

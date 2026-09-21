@@ -330,7 +330,7 @@ export default function AdminTerminalPage() {
           ) : null}
           <div
             ref={terminalRef}
-            className={cn("h-[calc(100vh-20rem)] min-h-[300px] w-full bg-[#020617] /* intentional terminal chrome, not surface */", !terminalReady && "hidden")}
+            className={cn("h-[calc(100vh-20rem)] min-h-[300px] w-full bg-[var(--canvas)] /* intentional terminal chrome, not surface */", !terminalReady && "hidden")}
           />
           {/* Status JSON — tokenized */}
           <div className="mx-4 mb-4 mt-3 rounded-lg border border-[var(--line)] bg-[var(--surface-input)] p-3">

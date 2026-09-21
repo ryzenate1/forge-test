@@ -188,9 +188,26 @@ func validateComposePorts(service string, value any) error {
 		switch v := entry.(type) {
 		case string:
 			published = shortFormHostPort(v)
+		case int:
+			published = strconv.Itoa(v)
+		case int64:
+			published = strconv.FormatInt(v, 10)
+		case float64:
+			published = strconv.Itoa(int(v))
 		case map[string]any:
 			if raw, ok := v["published"]; ok {
-				published = fmt.Sprint(raw)
+				switch pv := raw.(type) {
+				case string:
+					published = pv
+				case int:
+					published = strconv.Itoa(pv)
+				case int64:
+					published = strconv.FormatInt(pv, 10)
+				case float64:
+					published = strconv.Itoa(int(pv))
+				default:
+					published = fmt.Sprint(raw)
+				}
 			}
 		default:
 			continue
@@ -198,27 +215,56 @@ func validateComposePorts(service string, value any) error {
 		if published == "" {
 			continue
 		}
-		port, err := strconv.Atoi(strings.TrimSpace(published))
-		if err != nil || port <= 0 {
+		var startPort int
+		var err error
+		if dashIdx := strings.Index(published, "-"); dashIdx != -1 {
+			startPort, err = strconv.Atoi(strings.TrimSpace(published[:dashIdx]))
+		} else {
+			startPort, err = strconv.Atoi(strings.TrimSpace(published))
+		}
+		if err != nil || startPort <= 0 {
 			continue
 		}
-		if port < 1024 {
-			return fmt.Errorf("service %q: publishing privileged host port %d is not allowed in compose deployments", service, port)
+		if startPort < 1024 {
+			return fmt.Errorf("service %q: publishing privileged host port %d is not allowed in compose deployments", service, startPort)
 		}
 	}
 	return nil
 }
 
-// shortFormHostPort extracts the host-side port from a short-form ports
-// entry ("80", "8080:80", "127.0.0.1:8080:80").
+// shortFormHostPort extracts the host-side port or port range (e.g. "8080-8082") from a short-form ports
+// entry ("80", "8080:80", "8080-8082:80-82", "127.0.0.1:8080:80", "[::1]:8080:80").
 func shortFormHostPort(entry string) string {
+	entry = strings.TrimSpace(entry)
+	if slashIdx := strings.Index(entry, "/"); slashIdx != -1 {
+		entry = entry[:slashIdx]
+	}
+	if entry == "" {
+		return ""
+	}
+	if strings.HasPrefix(entry, "[") {
+		closeBracket := strings.Index(entry, "]")
+		if closeBracket != -1 && closeBracket < len(entry)-1 && entry[closeBracket+1] == ':' {
+			remainder := entry[closeBracket+2:]
+			parts := strings.Split(remainder, ":")
+			if len(parts) >= 2 {
+				return parts[0]
+			}
+			return ""
+		}
+	}
 	parts := strings.Split(entry, ":")
 	switch len(parts) {
+	case 1:
+		return parts[0]
 	case 2:
 		return parts[0]
 	case 3:
 		return parts[1]
 	default:
+		if len(parts) > 3 {
+			return parts[len(parts)-2]
+		}
 		return ""
 	}
 }

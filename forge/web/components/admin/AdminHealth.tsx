@@ -123,7 +123,7 @@ function remediationFor(check: ApiHealthCheck | undefined): string | null {
 
 function MetricTile({ label, value, status }: { label: string; value: string; status?: string }) {
   return (
-    <div className="rounded-xl border border-white/[0.06] bg-[#111722] p-3.5">
+    <div className="rounded-xl border border-white/[0.06] bg-[var(--surface)] p-3.5">
       <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">{label}</p>
       <div className="mt-1 flex items-center gap-2">
         {status && statusIcon(status, 14)}
@@ -209,10 +209,16 @@ export function AdminHealth({ initialSection = "infrastructure", overview = fals
   const summary = useMemo(() => {
     const healthyNodes = nodes.filter((node) => node.heartbeatState === "healthy").length;
     const degradedNodes = nodes.filter((node) =>
-      node.heartbeatState && node.heartbeatState !== "healthy" && node.heartbeatState !== "unknown"
+      node.heartbeatState === "degraded" || node.heartbeatState === "suspected"
     ).length;
     const expectedOfflineNodes = nodes.filter((node) => node.maintenanceMode).length;
-    const unexpectedOfflineNodes = nodes.length - healthyNodes - expectedOfflineNodes - degradedNodes;
+    const unexpectedOfflineNodes = nodes.filter((node) =>
+      !node.maintenanceMode &&
+      node.heartbeatState !== "healthy" &&
+      node.heartbeatState !== "degraded" &&
+      node.heartbeatState !== "suspected" &&
+      node.heartbeatState !== "unknown"
+    ).length;
     const runningServers = servers.filter((server) => server.status === "running").length;
     const stoppedServers = servers.filter((server) => server.status === "stopped").length;
     const suspendedServers = servers.filter((server) => server.suspended).length;
@@ -321,7 +327,7 @@ export function AdminHealth({ initialSection = "infrastructure", overview = fals
       )}
 
       {/* Overall Status */}
-      <div className="rounded-2xl border border-white/[0.08] bg-[#111722] p-5">
+      <div className="rounded-2xl border border-white/[0.08] bg-[var(--surface)] p-5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             {statusIcon(overallStatus, 24)}
@@ -336,9 +342,15 @@ export function AdminHealth({ initialSection = "infrastructure", overview = fals
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {hasFailures && <Pill tone="red">{summary.failedChecks.length + summary.failedDeployments + failedReservations + failedRecoveries} failures</Pill>}
-            {hasWarnings && !hasFailures && <Pill tone="yellow">{summary.warningChecks.length + summary.degradedNodes} warnings</Pill>}
-            {!hasFailures && !hasWarnings && <Pill tone="green">All healthy</Pill>}
+            {healthQuery.isLoading ? (
+              <Pill tone="neutral">Checking...</Pill>
+            ) : (
+              <>
+                {hasFailures && <Pill tone="red">{summary.failedChecks.length + summary.failedDeployments + failedReservations + failedRecoveries} failures</Pill>}
+                {hasWarnings && !hasFailures && <Pill tone="yellow">{summary.warningChecks.length + summary.degradedNodes} warnings</Pill>}
+                {!hasFailures && !hasWarnings && <Pill tone="green">All healthy</Pill>}
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -355,7 +367,7 @@ export function AdminHealth({ initialSection = "infrastructure", overview = fals
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         <button
           className={cn(
-            "rounded-xl border bg-[#111722] p-4 text-left transition hover:border-white/20",
+            "rounded-xl border bg-[var(--surface)] p-4 text-left transition hover:border-white/20",
             selected === "infrastructure" ? "border-slate-500/50 ring-1 ring-slate-500/20" : "border-white/[0.07]"
           )}
           onClick={() => selectSection("infrastructure")}
@@ -373,13 +385,14 @@ export function AdminHealth({ initialSection = "infrastructure", overview = fals
              summary.totalNodes === 0 ? "Register a node to begin hosting workloads" :
              summary.expectedOfflineNodes > 0 ? `${summary.expectedOfflineNodes} in maintenance` :
              summary.unexpectedOfflineNodes > 0 ? `${summary.unexpectedOfflineNodes} offline unexpectedly` :
+             summary.degradedNodes > 0 ? `${summary.degradedNodes} degraded` :
              "All nodes healthy"}
           </p>
         </button>
 
         <button
           className={cn(
-            "rounded-xl border bg-[#111722] p-4 text-left transition hover:border-white/20",
+            "rounded-xl border bg-[var(--surface)] p-4 text-left transition hover:border-white/20",
             selected === "workloads" ? "border-slate-500/50 ring-1 ring-slate-500/20" : "border-white/[0.07]"
           )}
           onClick={() => selectSection("workloads")}
@@ -400,7 +413,7 @@ export function AdminHealth({ initialSection = "infrastructure", overview = fals
 
         <button
           className={cn(
-            "rounded-xl border bg-[#111722] p-4 text-left transition hover:border-white/20",
+            "rounded-xl border bg-[var(--surface)] p-4 text-left transition hover:border-white/20",
             selected === "platform" ? "border-slate-500/50 ring-1 ring-slate-500/20" : "border-white/[0.07]"
           )}
           onClick={() => selectSection("platform")}
@@ -418,7 +431,7 @@ export function AdminHealth({ initialSection = "infrastructure", overview = fals
 
         <button
           className={cn(
-            "rounded-xl border bg-[#111722] p-4 text-left transition hover:border-white/20",
+            "rounded-xl border bg-[var(--surface)] p-4 text-left transition hover:border-white/20",
             selected === "database" ? "border-slate-500/50 ring-1 ring-slate-500/20" : "border-white/[0.07]"
           )}
           onClick={() => selectSection("database")}
@@ -447,7 +460,7 @@ export function AdminHealth({ initialSection = "infrastructure", overview = fals
             {summary.failedChecks.map((check) => {
               const remediation = remediationFor(check);
               return (
-                <div key={check.name} className="rounded-lg border border-red-500/15 bg-[#111722] p-3">
+                <div key={check.name} className="rounded-lg border border-red-500/15 bg-[var(--surface)] p-3">
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <p className="text-sm font-medium text-red-200">{check.name} — {check.notificationMessage ?? "Failed"}</p>
@@ -472,7 +485,7 @@ export function AdminHealth({ initialSection = "infrastructure", overview = fals
           </h3>
           <div className="mt-3 space-y-2">
             {summary.warningChecks.map((check) => (
-              <div key={check.name} className="flex items-start justify-between gap-2 rounded-lg border border-amber-500/15 bg-[#111722] p-3">
+              <div key={check.name} className="flex items-start justify-between gap-2 rounded-lg border border-amber-500/15 bg-[var(--surface)] p-3">
                 <div>
                   <p className="text-sm font-medium text-amber-200">{check.label ?? check.name}</p>
                   {check.notificationMessage && <p className="mt-0.5 text-xs text-slate-400">{check.notificationMessage}</p>}
@@ -572,7 +585,7 @@ function NodeTable({ nodes }: { nodes: Awaited<ReturnType<typeof fetchNodes>> })
   return (
     <div className="overflow-x-auto rounded-lg border border-white/[0.06]">
       <table className="w-full text-left text-xs">
-        <thead className="border-b border-white/[0.06] bg-[#161b28] text-slate-500">
+        <thead className="border-b border-white/[0.06] bg-[var(--surface-input)] text-slate-500">
           <tr>
             <th className="px-3 py-2">Node</th>
             <th className="px-3 py-2">Status</th>

@@ -238,7 +238,7 @@ export function SchedulesView({ server }: { server?: ApiServer }) {
                           <button aria-label="Move up" className="ui-icon-button" disabled={!canUpdate || index === 0 || reorderMut.isPending} onClick={() => reorderMut.mutate({ scheduleId: schedule.id, tasks: ordered, index, direction: -1 })} type="button"><ChevronUp size={13} /></button>
                           <button aria-label="Move down" className="ui-icon-button" disabled={!canUpdate || index === ordered.length - 1 || reorderMut.isPending} onClick={() => reorderMut.mutate({ scheduleId: schedule.id, tasks: ordered, index, direction: 1 })} type="button"><ChevronDown size={13} /></button>
                           <button aria-label="Edit task" className="ui-icon-button" disabled={!canUpdate} onClick={() => { setTaskTarget({ scheduleId: schedule.id, taskId: task.id }); setTaskInitial(taskDraft(task)); }} type="button"><Pencil size={13} /></button>
-                          <button aria-label="Delete task" className="ui-icon-button ui-button-danger" disabled={!canUpdate || removeTaskMut.isPending} onClick={() => setDeleteTaskConfirm({ scheduleId: schedule.id, taskId: task.id, seq: task.sequence ?? 0 })} type="button"><Trash2 size={13} /></button>
+                          <button aria-label="Delete task" className="ui-icon-button ui-button-danger" disabled={!canDelete || removeTaskMut.isPending} onClick={() => setDeleteTaskConfirm({ scheduleId: schedule.id, taskId: task.id, seq: task.sequence ?? 0 })} type="button"><Trash2 size={13} /></button>
                         </div>
                       </div>
                     ))}

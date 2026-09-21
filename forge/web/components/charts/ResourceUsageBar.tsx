@@ -14,7 +14,7 @@ function ChartTooltip({ active, payload }: { active?: boolean; payload?: Array<{
   if (!active || !payload?.length) return null;
   const item = payload[0].payload;
   return (
-    <div className="rounded-lg border border-white/10 bg-[#1e2536] p-3 shadow-xl">
+    <div className="rounded-lg border border-white/10 bg-[var(--surface-raised)] p-3 shadow-xl">
       <p className="text-xs font-medium text-slate-200">{item.name}</p>
       {item.cpu !== undefined && (
         <p className="text-xs text-slate-400">CPU: {item.cpu.toFixed(1)}%</p>

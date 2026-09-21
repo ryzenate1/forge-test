@@ -194,14 +194,14 @@ export function AdminUsers() {
 
  <div className="mb-4 grid gap-3 md:grid-cols-[1fr_180px]">
  <Input value={search} onChange={(value) => { setSearch(value); setPage(1); }} placeholder="Search by email or role..." />
- <select className="h-9 rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100" value={roleFilter} onChange={(event) => { setRoleFilter(event.target.value as "all" | "admin" | "user"); setPage(1); }}>
+ <select className="h-9 rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100" value={roleFilter} onChange={(event) => { setRoleFilter(event.target.value as "all" | "admin" | "user"); setPage(1); }}>
  <option value="all">All roles</option>
  <option value="admin">Administrators</option>
  <option value="user">Standard users</option>
  </select>
  </div>
   {selectedIds.length > 0 ? (
-  <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-white/[0.08] bg-[#161b28] px-4 py-3" aria-busy={bulkMut.isPending}>
+  <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-white/[0.08] bg-[var(--surface-input)] px-4 py-3" aria-busy={bulkMut.isPending}>
   <p className="text-sm font-semibold text-slate-300">{selectedIds.length} selected</p>
   <div className="flex flex-wrap gap-2">
   <Btn size="sm" tone="ghost" onClick={() => bulkMut.mutate("role-user")} disabled={bulkMut.isPending}>Set User</Btn>
@@ -277,7 +277,7 @@ export function AdminUsers() {
   <Input label="New Password" value={editPassword} onChange={setEditPassword} placeholder="Leave blank to keep current password" type="password" autoComplete="new-password" />
   </AdminFormSection>
   <AdminFormSection title="Owned Servers">
-  <div className="rounded-lg border border-white/[0.06] bg-[#161b28] p-3 text-sm text-slate-300">
+  <div className="rounded-lg border border-white/[0.06] bg-[var(--surface-input)] p-3 text-sm text-slate-300">
   <p className="text-xs uppercase tracking-wide text-slate-500">Owned Servers</p>
   <p className="mt-1 text-2xl font-bold text-slate-100">{ownedCount(selectedUser)}</p>
   </div>
@@ -355,5 +355,5 @@ function UserRoleAssignments({ userId }: { userId: string }) {
   const assignMut = useMutation({ mutationFn: (roleKey: string) => assignUserRoles(userId, [roleKey]), onSuccess: refresh, onError: (e: Error) => toast.error(e.message || "Failed to assign role") });
   const removeMut = useMutation({ mutationFn: (roleKey: string) => removeUserRoles(userId, [roleKey]), onSuccess: refresh, onError: (e: Error) => toast.error(e.message || "Failed to remove role") });
   if (rolesQuery.isError || assignedQuery.isError) return <div className="flex items-start justify-between gap-3 rounded-lg border border-red-500/20 bg-red-950/10 p-2 text-xs text-red-200"><span>Additional roles could not be loaded{rolesQuery.isError ? `: ${rolesQuery.error.message}` : assignedQuery.isError ? `: ${assignedQuery.error.message}` : ""}</span><Btn size="sm" tone="ghost" onClick={() => { void rolesQuery.refetch(); void assignedQuery.refetch(); }}>Retry</Btn></div>;
-  return <div className="rounded-lg border border-white/[0.06] bg-[#161b28] p-3"><p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Additional Roles</p>{!Array.isArray(roles) || roles.length === 0 ? <p className="text-xs text-slate-400">No additional roles configured.</p> : <div className="flex flex-wrap gap-2">{Array.isArray(roles) && roles.map((role) => <label className="flex items-center gap-2 rounded border border-white/10 px-2 py-1 text-xs text-slate-300" key={role.id}><input type="checkbox" checked={assigned.has(role.key)} disabled={assignMut.isPending || removeMut.isPending} onChange={(event) => event.target.checked ? assignMut.mutate(role.key) : removeMut.mutate(role.key)}/>{role.name}</label>)}</div>}</div>;
+  return <div className="rounded-lg border border-white/[0.06] bg-[var(--surface-input)] p-3"><p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Additional Roles</p>{!Array.isArray(roles) || roles.length === 0 ? <p className="text-xs text-slate-400">No additional roles configured.</p> : <div className="flex flex-wrap gap-2">{Array.isArray(roles) && roles.map((role) => <label className="flex items-center gap-2 rounded border border-white/10 px-2 py-1 text-xs text-slate-300" key={role.id}><input type="checkbox" checked={assigned.has(role.key)} disabled={assignMut.isPending || removeMut.isPending} onChange={(event) => event.target.checked ? assignMut.mutate(role.key) : removeMut.mutate(role.key)}/>{role.name}</label>)}</div>}</div>;
 }

@@ -117,7 +117,7 @@ export function AdminNodes() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-slate-200">
               <thead>
-                <tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500">
+                <tr className="border-b border-white/[0.06] bg-[var(--surface-input)] text-left text-[10px] uppercase tracking-widest text-slate-500">
                   <th className="px-4 py-3"></th>
                   <th className="px-4 py-3">Name</th>
                   <th className="px-4 py-3">State</th>
@@ -544,7 +544,7 @@ function NodeSettingsTab({ node }: { node: ApiNode }) {
           <Textarea label="Description" value={description} onChange={setDescription} rows={3} />
           <label className="block text-sm">
             <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">Location</span>
-            <select className="h-10 w-full rounded-lg border border-white/10 bg-[#141824] px-3 text-slate-100" value={locationId} onChange={(e) => setLocationId(e.target.value)} required disabled={locationsQuery.isPending || locationsQuery.isError}>
+            <select className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] px-3 text-slate-100" value={locationId} onChange={(e) => setLocationId(e.target.value)} required disabled={locationsQuery.isPending || locationsQuery.isError}>
               <option value="">Select…</option>
               {locations.map((location) => <option key={location.id} value={location.id}>{location.short} — {location.long}</option>)}
             </select>
@@ -558,7 +558,7 @@ function NodeSettingsTab({ node }: { node: ApiNode }) {
           <Input label="FQDN" value={fqdn} onChange={setFqdn} />
           <label className="block text-sm">
             <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">SSL</span>
-            <select className="h-10 w-full rounded-lg border border-white/10 bg-[#141824] px-3 text-slate-100" value={scheme} onChange={(e) => setScheme(e.target.value)}>
+            <select className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] px-3 text-slate-100" value={scheme} onChange={(e) => setScheme(e.target.value)}>
               <option value="https">https (SSL)</option>
               <option value="http">http (no SSL)</option>
             </select>
@@ -569,7 +569,7 @@ function NodeSettingsTab({ node }: { node: ApiNode }) {
           </label>
           <label className="block text-sm">
             <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">Lifecycle state</span>
-            <select className="h-10 w-full rounded-lg border border-white/10 bg-[#141824] px-3 text-slate-100" value={desiredState} onChange={(e) => setDesiredState(e.target.value as "active" | "draining" | "maintenance")}>
+            <select className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] px-3 text-slate-100" value={desiredState} onChange={(e) => setDesiredState(e.target.value as "active" | "draining" | "maintenance")}>
               <option value="active">Active — eligible when healthy</option>
               <option value="draining">Draining — exclude from placement</option>
               <option value="maintenance">Maintenance — exclude from placement</option>
@@ -577,7 +577,7 @@ function NodeSettingsTab({ node }: { node: ApiNode }) {
           </label>
           <label className="block text-sm">
             <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">Scheduler Backend</span>
-            <select className="h-10 w-full rounded-lg border border-white/10 bg-[#141824] px-3 text-slate-100" value={schedulerType} onChange={(e) => setSchedulerType(e.target.value)}>
+            <select className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] px-3 text-slate-100" value={schedulerType} onChange={(e) => setSchedulerType(e.target.value)}>
               <option value="docker">Docker (default)</option>
               <option value="k3s">K3s (Kubernetes)</option>
               <option value="nomad">Nomad (HashiCorp)</option>
@@ -625,7 +625,7 @@ function NodeConfigurationTab({ node }: { node: ApiNode }) {
         <div className="space-y-3 p-4 text-sm text-slate-300">
           <p>Beacon reads its panel connection from environment variables. It does not load the legacy YAML file or support <code>beacon configure</code>.</p>
           <p>Use the full credential shown when this node was created or when its token was rotated. If it was not retained, rotate the token in Settings.</p>
-          <pre className="overflow-auto rounded bg-[#0a0e16] p-4 text-[11px] leading-relaxed text-slate-300">{`# /etc/forge/beacon.env (mode 0600)
+          <pre className="overflow-auto rounded bg-[var(--canvas)] p-4 text-[11px] leading-relaxed text-slate-300">{`# /etc/forge/beacon.env (mode 0600)
 APP_ENV=production
 DAEMON_NODE_ID=${node.id}
 DAEMON_NODE_TOKEN=<token-id>.<secret>
@@ -706,7 +706,7 @@ function NodeAllocationTab({ node, allocations }: { node: ApiNode; allocations: 
       <Card>
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500">
+            <tr className="border-b border-white/[0.06] bg-[var(--surface-input)] text-left text-[10px] uppercase tracking-widest text-slate-500">
               <th className="px-4 py-2">
                 <input type="checkbox" checked={allFiltered} onChange={toggleAll} disabled={deletable.length === 0 || deleteBulkMut.isPending} className="accent-[#dc2626]" />
               </th>
@@ -725,7 +725,7 @@ function NodeAllocationTab({ node, allocations }: { node: ApiNode; allocations: 
                 <td className="px-4 py-2 font-mono text-xs">{a.ip}</td>
                 <td className="px-4 py-2">
                   <input
-                    className="h-8 w-32 rounded border border-white/10 bg-[#141824] px-2 text-xs disabled:cursor-not-allowed disabled:opacity-60"
+                    className="h-8 w-32 rounded border border-white/10 bg-[var(--surface)] px-2 text-xs disabled:cursor-not-allowed disabled:opacity-60"
                     value={aliases[a.id] ?? a.alias ?? ""}
                     disabled={setAliasMut.isPending}
                     onChange={(e) => setAliases((current) => ({ ...current, [a.id]: e.target.value }))}
@@ -768,7 +768,7 @@ function NodeServersTab({ nodeId }: { nodeId: string }) {
       ) : (
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500">
+            <tr className="border-b border-white/[0.06] bg-[var(--surface-input)] text-left text-[10px] uppercase tracking-widest text-slate-500">
               <th className="px-4 py-2">Name</th>
               <th className="px-4 py-2">UUID</th>
               <th className="px-4 py-2">Status</th>
@@ -1101,7 +1101,7 @@ function CreateNodeModal({ open, onClose, locations, locationsError, onRetryLoca
       {onboarding ? (
         <div className="space-y-4">
           <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 p-4 text-sm text-amber-100">Save this credential now. Forge will not show it again; rotate the token if it is lost. Revealed values are hidden automatically when this window loses focus.</div>
-          <pre className="overflow-auto rounded bg-[#0a0e16] p-4 text-xs leading-relaxed text-emerald-300">{`# /etc/forge/beacon.env (mode 0600)
+          <pre className="overflow-auto rounded bg-[var(--canvas)] p-4 text-xs leading-relaxed text-emerald-300">{`# /etc/forge/beacon.env (mode 0600)
 APP_ENV=production
 DAEMON_NODE_ID=${onboarding.id}
 DAEMON_NODE_TOKEN=${credentialMasked ? "••••••••••••••••" : onboarding.token}

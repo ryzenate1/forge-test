@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { cookies, headers } from "next/headers";
 import { Providers } from "@/components/providers";
 import { themeScript } from "@/components/theme-provider";
-import { mono, sans } from "./fonts";
+import { display, mono, sans } from "./fonts";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -38,7 +38,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
       <head>
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: themeScript }} suppressHydrationWarning />
       </head>
-      <body className={`${sans.variable} ${mono.variable}`}>
+      <body className={`${sans.variable} ${display.variable} ${mono.variable}`}>
         <Providers>{children}</Providers>
       </body>
     </html>

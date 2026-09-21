@@ -4,7 +4,7 @@ import { LoaderCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 function Skeleton({ className }: { className?: string }) {
-  return <div aria-hidden="true" className={cn("animate-pulse rounded-lg bg-white/[0.07]", className)} />;
+  return <div aria-hidden="true" className={cn("animate-pulse rounded-lg bg-[var(--surface-raised)] border border-[var(--line)]", className)} />;
 }
 
 export function SkeletonList({ rows = 5, columns = 4 }: { rows?: number; columns?: number }) {

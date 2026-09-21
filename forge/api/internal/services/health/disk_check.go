@@ -3,8 +3,6 @@ package health
 import (
 	"context"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 type DiskCheck struct {
@@ -40,18 +38,13 @@ func (c *DiskCheck) Run(ctx context.Context) CheckResult {
 		Status: StatusOK,
 	}
 
-	var stat unix.Statfs_t
-	if err := unix.Statfs(c.path, &stat); err != nil {
+	total, _, used, err := getDiskSpace(c.path)
+	if err != nil {
 		result.Status = StatusFailed
 		result.Message = "Disk stat failed: " + err.Error()
 		result.LatencyMs = time.Since(start).Milliseconds()
 		return result
 	}
-
-	total := stat.Blocks * uint64(stat.Bsize)
-	avail := stat.Bavail * uint64(stat.Bsize)
-	free := stat.Bfree * uint64(stat.Bsize)
-	used := total - free
 
 	var usagePct float64
 	if total > 0 {
@@ -63,7 +56,6 @@ func (c *DiskCheck) Run(ctx context.Context) CheckResult {
 		"usedBytes":    used,
 		"usagePercent": usagePct,
 	}
-	_ = avail
 	result.Details = details
 
 	switch {

@@ -170,7 +170,7 @@ export function AdminActivityLog() {
 
   const advancedFiltersCount = [actorId, subjectType, subjectId, source, level].filter(Boolean).length;
 
-  const inputBase = "h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15";
+  const inputBase = "h-9 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15";
   const selectBase = cn(selectStyle, "h-9");
 
   return (

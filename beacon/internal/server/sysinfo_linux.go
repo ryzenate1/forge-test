@@ -132,3 +132,55 @@ func processListPlatform() ([]ProcessEntry, error) {
 	}
 	return processes, nil
 }
+
+func availableDiskBytesPlatform(path string) (int64, error) {
+	var stat unix.Statfs_t
+	if err := unix.Statfs(path, &stat); err != nil {
+		return 0, err
+	}
+	free := uint64(stat.Bavail) * uint64(stat.Bsize)
+	const maxInt64 = uint64(^uint64(0) >> 1)
+	if free > maxInt64 {
+		return int64(maxInt64), nil
+	}
+	return int64(free), nil
+}
+
+func hostDiskPartitionsPlatform() []DiskPartition {
+	partitions := []DiskPartition{}
+	rootStat := unix.Statfs_t{}
+	if err := unix.Statfs("/", &rootStat); err == nil {
+		total := uint64(rootStat.Blocks) * uint64(rootStat.Bsize) / (1024 * 1024)
+		free := uint64(rootStat.Bavail) * uint64(rootStat.Bsize) / (1024 * 1024)
+		used := total - free
+		var usedPct float64
+		if total > 0 {
+			usedPct = float64(used) / float64(total) * 100
+		}
+		partitions = append(partitions, DiskPartition{
+			MountPoint: "/",
+			Device:     "/",
+			FSType:     "rootfs",
+			TotalMB:    total,
+			UsedMB:     used,
+			FreeMB:     free,
+			UsedPct:    usedPct,
+		})
+	}
+	return partitions
+}
+
+func kernelVersionPlatform() string {
+	uts := unix.Utsname{}
+	if err := unix.Uname(&uts); err != nil {
+		return ""
+	}
+	b := make([]byte, 0, len(uts.Release))
+	for _, v := range uts.Release {
+		if v == 0 {
+			break
+		}
+		b = append(b, byte(v))
+	}
+	return string(b)
+}

@@ -46,7 +46,7 @@ function validate(values: FormValues): FormErrors {
 }
 
 const fieldClass =
-  "mt-1 h-10 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-red-500/50";
+  "mt-1 h-10 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-red-500/50";
 
 export function CreateAppForm({
   onSuccess,

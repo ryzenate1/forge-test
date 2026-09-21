@@ -97,7 +97,7 @@ export default function AdminMTLSPage() {
         </div>
         <button
           onClick={() => setShowGenerateCA(true)}
-          className="flex items-center gap-2 rounded-lg bg-[#dc2626] px-4 py-2 text-sm font-bold text-white hover:bg-[#b91c1c] transition"
+          className="flex items-center gap-2 rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-bold text-white hover:bg-[var(--brand-dark)] transition"
           type="button"
         >
           <Plus className="h-4 w-4" />
@@ -131,7 +131,7 @@ export default function AdminMTLSPage() {
               <button
                 onClick={() => generateCAMutation.mutate()}
                 disabled={generateCAMutation.isPending}
-                className="rounded-lg bg-[#dc2626] px-4 py-2 text-sm font-bold text-white hover:bg-[#b91c1c] disabled:opacity-60 transition"
+                className="rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-bold text-white hover:bg-[var(--brand-dark)] disabled:opacity-60 transition"
                 type="button"
               >
                 {generateCAMutation.isPending ? "Generating..." : "Generate"}
@@ -317,7 +317,7 @@ export default function AdminMTLSPage() {
               <button
                 onClick={() => migrationMutation.mutate()}
                 disabled={migrationMutation.isPending}
-                className="flex items-center gap-2 rounded-lg bg-[#dc2626] px-4 py-2 text-sm font-bold text-white hover:bg-[#b91c1c] disabled:opacity-60 transition"
+                className="flex items-center gap-2 rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-bold text-white hover:bg-[var(--brand-dark)] disabled:opacity-60 transition"
                 type="button"
               >
                 <RefreshCw className={`h-4 w-4 ${migrationMutation.isPending ? "animate-spin" : ""}`} />

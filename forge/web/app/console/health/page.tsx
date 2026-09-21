@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { BellRing, HeartPulse } from "lucide-react";
+import { BellRing } from "lucide-react";
 import { Card, CardHeader, SectionHeader, AdminErrorState, AdminLoadingState, Pill } from "@/components/admin/admin-ui";
 import { getSystemInfo } from "@/lib/api/monitoring";
 import { SystemMetrics } from "@/components/monitoring/system-metrics";
@@ -20,7 +20,7 @@ export default function ConsoleHealthPage() {
     retry: 1,
   });
 
-  const isDegraded = !isLoading && !isError && data?.recentHealthChecks?.some((c: { reachable?: boolean; status?: string }) => !c.reachable || c.status === "degraded");
+  const isDegraded = !isLoading && !isError && data?.recentHealthChecks?.some((check) => check.reachable === false || check.status === "degraded" || check.status === "critical");
 
   if (isError) {
     const kind = error instanceof ApiError ? error.status : 0;
@@ -30,7 +30,12 @@ export default function ConsoleHealthPage() {
     if (kind === 502 || kind === 504) {
       return <BeaconUnavailableState message={error instanceof Error ? error.message : "Beacon daemon is unreachable"} onRetry={() => void refetch()} />;
     }
-    return <AdminErrorState message={error instanceof Error ? error.message : "Health data is unavailable right now. Please try again."} retry={() => void refetch()} />;
+    return (
+      <AdminErrorState
+        message={error instanceof Error ? `Health data is unavailable: ${error.message}` : "Health data is unavailable right now. Please try again."}
+        retry={() => void refetch()}
+      />
+    );
   }
 
   return (
@@ -41,7 +46,7 @@ export default function ConsoleHealthPage() {
       <SectionHeader
         title="Health"
         sub="Node status, endpoint checks and system resource usage across the fleet"
-        action={<Pill tone={data?.unacknowledgedAlerts ? "red" : "green"}>{data?.unacknowledgedAlerts ?? "…"} unacknowledged alerts</Pill>}
+        action={<Pill tone={data?.unacknowledgedAlerts == null ? "neutral" : data.unacknowledgedAlerts > 0 ? "red" : "green"}>{data?.unacknowledgedAlerts ?? "Unreported"} unacknowledged alerts</Pill>}
       />
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -49,7 +54,9 @@ export default function ConsoleHealthPage() {
         <Card>
           <CardHeader title="Alert Queue" icon={BellRing} />
           <div className="p-4 text-sm text-slate-300">
-            {data?.unacknowledgedAlerts
+            {data?.unacknowledgedAlerts == null
+              ? "Alert count is unavailable."
+              : data.unacknowledgedAlerts > 0
               ? `${data.unacknowledgedAlerts} unacknowledged alert${data.unacknowledgedAlerts === 1 ? "" : "s"} require attention.`
               : "All alerts are acknowledged. No action needed right now."}
           </div>

@@ -8,6 +8,7 @@ import { ServerConsoleLayout } from "@/components/server/server-console-layout";
 import { useToast } from "@/components/ui/toast";
 import { ConfirmDialog } from "@/components/ui/primitives";
 import { CardSkeleton } from "@/components/ui/loading-skeleton";
+import { useOptionalServerContext } from "@/components/server/server-context";
 import {
   listServerDatabaseServices,
   createServiceBackup,
@@ -59,6 +60,8 @@ function ServerDatabaseView({ serverId }: { serverId: string }) {
   const [showLink, setShowLink] = useState(false);
   const [showDetail, setShowDetail] = useState<string | null>(null);
   const [unlinkTarget, setUnlinkTarget] = useState<{ id: string; name: string } | null>(null);
+  const serverContext = useOptionalServerContext();
+  const isAdmin = Boolean(serverContext?.access?.isAdmin);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["server-database-services", serverId] });
@@ -85,10 +88,17 @@ function ServerDatabaseView({ serverId }: { serverId: string }) {
           <p className="mt-1 text-sm text-slate-400">
             Managed database services linked to this server
           </p>
+          {!isAdmin && (
+            <p className="mt-2 text-xs text-slate-400">
+              Only administrators can link, unlink, back up, or view credentials for managed database services.
+            </p>
+          )}
         </div>
-        <Btn onClick={() => { allSvcsQuery.refetch(); setShowLink(true); }}>
-          <Plus size={14} /> Link Service
-        </Btn>
+        {isAdmin && (
+          <Btn onClick={() => { allSvcsQuery.refetch(); setShowLink(true); }}>
+            <Plus size={14} /> Link Service
+          </Btn>
+        )}
       </div>
 
       <Card>
@@ -117,33 +127,35 @@ function ServerDatabaseView({ serverId }: { serverId: string }) {
                   <td className="px-4 py-3"><Pill tone={statusTone[svc.status] || "neutral"}>{svc.status}</Pill></td>
                   <td className="px-4 py-3 font-mono text-xs text-slate-400">{svc.memoryMb}MB</td>
                   <td className="px-4 py-3">
-                    {svc.connectionString ? (
+                    {isAdmin && svc.connectionString ? (
                       <Btn size="sm" tone="ghost" onClick={() => setShowDetail(svc.id)}><Eye size={13} /> View</Btn>
                     ) : (
                       <span className="text-xs text-slate-500">-</span>
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1">
-                      <button
-                        className="grid h-8 w-8 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-amber-200 disabled:opacity-40"
-                        disabled={backupMut.isPending}
-                        onClick={() => backupMut.mutate(svc.id)}
-                        title="Backup"
-                        type="button"
-                      >
-                        <Archive size={14} />
-                      </button>
-                      <button
-                        className="grid h-8 w-8 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-red-200 disabled:opacity-40"
-                        disabled={unlinkMut.isPending}
-                        onClick={() => setUnlinkTarget({ id: svc.id, name: svc.name || svc.id.slice(0, 8) })}
-                        title="Unlink"
-                        type="button"
-                      >
-                        <RotateCcw size={14} />
-                      </button>
-                    </div>
+                    {isAdmin && (
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          className="grid h-8 w-8 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-amber-200 disabled:opacity-40"
+                          disabled={backupMut.isPending}
+                          onClick={() => backupMut.mutate(svc.id)}
+                          title="Backup"
+                          type="button"
+                        >
+                          <Archive size={14} />
+                        </button>
+                        <button
+                          className="grid h-8 w-8 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-red-200 disabled:opacity-40"
+                          disabled={unlinkMut.isPending}
+                          onClick={() => setUnlinkTarget({ id: svc.id, name: svc.name || svc.id.slice(0, 8) })}
+                          title="Unlink"
+                          type="button"
+                        >
+                          <RotateCcw size={14} />
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}

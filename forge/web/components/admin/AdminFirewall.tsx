@@ -164,7 +164,7 @@ export function AdminFirewall() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500">
+                    <tr className="border-b border-white/[0.06] bg-[var(--surface-input)] text-left text-[10px] uppercase tracking-widest text-slate-500">
                       <th className="px-4 py-3">Port</th>
                       <th className="px-4 py-3">Protocol</th>
                       <th className="px-4 py-3">Source</th>
@@ -216,7 +216,7 @@ export function AdminFirewall() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500">
+                    <tr className="border-b border-white/[0.06] bg-[var(--surface-input)] text-left text-[10px] uppercase tracking-widest text-slate-500">
                       <th className="px-4 py-3">From Port</th>
                       <th className="px-4 py-3">To Port</th>
                       <th className="px-4 py-3">To IP</th>

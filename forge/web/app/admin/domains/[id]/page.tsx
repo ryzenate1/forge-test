@@ -426,7 +426,7 @@ function RedirectsSection({ domainId }: { domainId: string }) {
         : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead><tr className="border-b border-white/[0.06] bg-[#161b28] text-left text-[10px] uppercase tracking-widest text-slate-500"><th className="px-4 py-3">Source</th><th className="px-4 py-3">Target</th><th className="px-4 py-3">Code</th><th className="px-4 py-3">Enabled</th><th className="px-4 py-3"></th></tr></thead>
+              <thead><tr className="border-b border-white/[0.06] bg-[var(--surface-input)] text-left text-[10px] uppercase tracking-widest text-slate-500"><th className="px-4 py-3">Source</th><th className="px-4 py-3">Target</th><th className="px-4 py-3">Code</th><th className="px-4 py-3">Enabled</th><th className="px-4 py-3"></th></tr></thead>
               <tbody className="divide-y divide-white/[0.04]">
                 {redirects.map((r) => (
                   <tr key={r.id} className="hover:bg-white/[0.02]">

@@ -97,7 +97,7 @@ export function DBContainerCreateModal({ onClose, onCreated, defaultServerId }: 
             <input
               type="text"
               placeholder="leave blank for standalone"
-              className="h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15"
+              className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15"
               value={serverId}
               onChange={(e) => setServerId(e.target.value)}
             />
@@ -111,7 +111,7 @@ export function DBContainerCreateModal({ onClose, onCreated, defaultServerId }: 
           <div>
             <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Version</label>
             <select
-              className="h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] px-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15"
+              className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] px-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15"
               value={version}
               onChange={(e) => setVersion(e.target.value)}
             >
@@ -137,7 +137,7 @@ export function DBContainerCreateModal({ onClose, onCreated, defaultServerId }: 
                 min={64}
                 max={65536}
                 step={64}
-                className="h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15 [&::-webkit-inner-spin-button]:appearance-none"
+                className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15 [&::-webkit-inner-spin-button]:appearance-none"
                 value={memoryMb}
                 onChange={(e) => setMemoryMb(e.target.value)}
                 placeholder="256"
@@ -158,7 +158,7 @@ export function DBContainerCreateModal({ onClose, onCreated, defaultServerId }: 
                 min={0}
                 max={1024}
                 step={1}
-                className="h-10 w-full rounded-lg border border-white/10 bg-[#0f141f] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15 [&::-webkit-inner-spin-button]:appearance-none"
+                className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15 [&::-webkit-inner-spin-button]:appearance-none"
                 value={cpuShares}
                 onChange={(e) => setCpuShares(e.target.value)}
                 placeholder="0"

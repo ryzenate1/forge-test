@@ -151,15 +151,33 @@ type Configuration struct {
 }
 
 func Default() *Configuration {
+	root := "/srv/game-panel"
+	logDir := "/var/log/beacon"
+	archiveDir := "/srv/game-panel/archives"
+	backupDir := "/srv/game-panel/backups"
+	dataDir := SystemDataDirectoryEntry.Default
+	tempDir := SystemTempDirectoryEntry.Default
+	if runtime.GOOS == "windows" {
+		sysDrive := os.Getenv("SystemDrive")
+		if sysDrive == "" {
+			sysDrive = "C:"
+		}
+		root = sysDrive + `\srv\game-panel`
+		logDir = sysDrive + `\srv\game-panel\logs`
+		archiveDir = sysDrive + `\srv\game-panel\archives`
+		backupDir = sysDrive + `\srv\game-panel\backups`
+		dataDir = sysDrive + `\srv\game-panel\servers`
+		tempDir = sysDrive + `\srv\game-panel\tmp`
+	}
 	return &Configuration{
 		Debug: DebugEntry.Default,
 		System: SystemConfiguration{
-			DataDirectory:    SystemDataDirectoryEntry.Default,
-			TempDirectory:    SystemTempDirectoryEntry.Default,
-			RootDirectory:    "/srv/game-panel",
-			LogDirectory:     "/var/log/beacon",
-			ArchiveDirectory: "/srv/game-panel/archives",
-			BackupDirectory:  "/srv/game-panel/backups",
+			DataDirectory:    dataDir,
+			TempDirectory:    tempDir,
+			RootDirectory:    root,
+			LogDirectory:     logDir,
+			ArchiveDirectory: archiveDir,
+			BackupDirectory:  backupDir,
 			Username:         "beacon",
 			Sftp: SftpConfiguration{
 				Address:  SystemSFTPBindAddressEntry.Default,

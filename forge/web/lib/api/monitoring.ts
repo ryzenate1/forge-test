@@ -21,10 +21,21 @@ export interface NodeMetrics {
   observedAt: string;
 }
 
+// The summary returns health_history rows, not complete endpoint telemetry.
+// Optional endpoint fields are retained only when actually reported.
+export type MonitoringHealthRecord = Partial<ApiEndpointHealthRecord> & {
+  checkName?: string;
+  name?: string;
+  message?: string;
+  latencyMs?: number;
+  critical?: boolean;
+  details?: Record<string, unknown>;
+};
+
 export interface SystemInfo {
-  nodes: NodeMetrics[];
-  unacknowledgedAlerts: number;
-  recentHealthChecks: ApiEndpointHealthRecord[];
+  nodes?: NodeMetrics[] | null;
+  unacknowledgedAlerts?: number | null;
+  recentHealthChecks?: MonitoringHealthRecord[] | null;
   totalServers?: number;
   totalUsers?: number;
 }
@@ -49,8 +60,15 @@ export async function getNodeMetrics(params?: { nodeId?: string; period?: string
   return res.data ?? [];
 }
 
-export function getSystemInfo(): Promise<SystemInfo> {
-  return fetchJSON<SystemInfo>('/monitoring/summary');
+export async function getSystemInfo(): Promise<SystemInfo> {
+  const data = await fetchJSON<SystemInfo>('/monitoring/summary');
+  return {
+    ...data,
+    recentHealthChecks: data.recentHealthChecks?.map((row) => ({
+      ...row,
+      endpointId: row.endpointId ?? row.checkName ?? row.name,
+    })),
+  };
 }
 
 export async function getAlertHistory(params?: { page?: number; limit?: number }): Promise<AlertEvent[]> {

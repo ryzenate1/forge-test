@@ -35,6 +35,17 @@ describe("aggregateHealth", () => {
     expect(aggregateHealth([check({}), check({ id: "h2", reachable: false })]).level).toBe("degraded");
     expect(aggregateHealth([]).level).toBe("unknown");
   });
+
+  it("includes measured zero scores and never invents missing scores", () => {
+    expect(aggregateHealth([check({ healthScore: 0 }), check({ healthScore: 100 })]).score).toBe(50);
+    expect(aggregateHealth([{ status: "healthy" }]).score).toBeNull();
+    expect(aggregateHealth([{}]).level).toBe("unknown");
+    expect(aggregateHealth([check({}), { status: "healthy" }]).score).toBeNull();
+  });
+
+  it("does not label a reachable but degraded endpoint healthy", () => {
+    expect(aggregateHealth([check({ status: "degraded", reachable: true })]).level).toBe("degraded");
+  });
 });
 
 describe("health status gauge", () => {
@@ -73,8 +84,7 @@ describe("health summary", () => {
 
 describe("console health page", () => {
   it("renders gauge, alert queue and node list from the summary endpoint", async () => {
-    // The summary endpoint returns health-history rows; getSystemInfo maps
-    // them into endpoint records (healthy ⇒ 100 score, checkName ⇒ label).
+    // Health-history status is reported, but numeric scores and inventory are not.
     mockFetchByUrl({
       "/monitoring/summary": jsonResponse({
         nodes: [],
@@ -87,10 +97,25 @@ describe("console health page", () => {
       "/monitoring/nodes/metrics": jsonResponse([]),
     });
     renderWithQuery(<ConsoleHealthPage />);
-    expect(await screen.findByText("100%")).toBeInTheDocument();
+    expect(await screen.findByText("1 of 1 checks healthy; reachability unreported")).toBeInTheDocument();
+    expect(screen.queryByText("100%")).not.toBeInTheDocument();
+    expect(screen.queryByText(/0 containers/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Degraded performance")).not.toBeInTheDocument();
     expect(screen.getByText("2 unacknowledged alerts")).toBeInTheDocument();
     expect(screen.getByText("2 unacknowledged alerts require attention.")).toBeInTheDocument();
     expect(screen.getByText("forge-api-1")).toBeInTheDocument();
+  });
+
+  it("does not report an empty alert queue when the count is missing", async () => {
+    mockFetchByUrl({
+      "/monitoring/summary": jsonResponse({ nodes: [], recentHealthChecks: [] }),
+      "/nodes": jsonResponse([]),
+      "/monitoring/nodes/metrics": jsonResponse([]),
+    });
+    renderWithQuery(<ConsoleHealthPage />);
+    expect(await screen.findByText("No health checks yet")).toBeInTheDocument();
+    expect(screen.getByText("Alert count is unavailable.")).toBeInTheDocument();
+    expect(screen.queryByText(/All alerts are acknowledged/)).not.toBeInTheDocument();
   });
 
   it("shows the error state when the summary endpoint fails", async () => {

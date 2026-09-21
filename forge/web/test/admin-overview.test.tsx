@@ -14,6 +14,14 @@ import { apiPage } from "@/test/fixtures";
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
+const push = vi.fn();
+const replace = vi.fn();
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push, replace, back: vi.fn(), forward: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() }),
+  usePathname: () => "/admin/overview",
+  useSearchParams: () => new URLSearchParams(),
+}));
+
 vi.mock("next/link", () => ({
   default: ({ children, href, ...props }: { children: ReactNode; href: string }) => (
     <a href={href} {...props}>
@@ -28,10 +36,15 @@ vi.mock("recharts", () => ({
   ResponsiveContainer: ({ children }: { children: ReactNode }) => <div data-testid="chart">{children}</div>,
   AreaChart: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   Area: () => null,
+  BarChart: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  Bar: () => null,
+  LineChart: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  Line: () => null,
   CartesianGrid: () => null,
   XAxis: () => null,
   YAxis: () => null,
   Tooltip: () => null,
+  Legend: () => null,
 }));
 
 beforeEach(() => {
@@ -52,13 +65,18 @@ function installFetch(routes: Route[], fallback?: (url: string) => Response) {
         const res = raw instanceof Promise ? await raw : raw;
         // Response bodies can only be read once — clone a shared instance so repeated calls (e.g. polling or metric switches) don't hit "body already used"
         if (res instanceof Response) {
-          try {
-            return res.clone();
-          } catch {
-            // Fallback: reconstruct from text if clone fails (body already disturbed)
-            const txt = await res.text().catch(() => "");
-            return new Response(txt, { status: res.status, headers: res.headers });
+          const status = res.status;
+          const statusText = res.statusText;
+          const headers = Array.from(res.headers.entries());
+          let text: string;
+          const holder = res as unknown as { _cachedText?: string };
+          if (holder._cachedText !== undefined) {
+            text = holder._cachedText;
+          } else {
+            text = await res.text().catch(() => "");
+            holder._cachedText = text;
           }
+          return new Response(text, { status, statusText, headers: new Headers(headers) });
         }
         return res;
       }
@@ -270,6 +288,7 @@ describe("AdminHealth — health checks", () => {
     ];
     return installFetch([
       { test: (u) => u.includes("/health"), response: jsonResponse(opts.health ?? healthReport()) },
+      { test: (u) => u.includes("/activity"), response: jsonResponse([]) },
       // fetchNodes (AdminHealth) hits /nodes without page param; fetchAll* hits with pagination — both routed
       { test: (u) => u.includes("/nodes"), response: jsonResponse(apiPage(nodes as unknown[])) },
       { test: (u) => u.includes("/servers"), response: jsonResponse(apiPage(servers as unknown[])) },
@@ -281,7 +300,7 @@ describe("AdminHealth — health checks", () => {
   it("renders overall operational state and health meta", async () => {
     installHealthFetch();
     renderWithQuery(<AdminHealth />);
-    expect(await screen.findByText("All systems operational")).toBeInTheDocument();
+    expect(await screen.findByText(/All systems operational/i)).toBeInTheDocument();
     // health meta contains checked time and counts (multiple places show node counts)
     await waitFor(() => expect(screen.getAllByText(/2 nodes/).length).toBeGreaterThanOrEqual(1));
   });
@@ -294,18 +313,26 @@ describe("AdminHealth — health checks", () => {
         { name: "daemon", status: "failed", label: "Daemon", notificationMessage: "Heartbeat missing", critical: true },
       ],
     });
-    installHealthFetch({ health: failed });
+    installHealthFetch({
+      health: failed,
+      servers: [
+        { id: "s1", name: "mc-1", status: "running" },
+        { id: "s2", name: "mc-2", status: "failed" },
+      ],
+    });
 
     renderWithQuery(<AdminHealth />);
 
-    expect(await screen.findByText("Issues detected")).toBeInTheDocument();
-    // each failed check appears with label + critical badge + remediation (multiple DB tiles exist)
-    expect(screen.getAllByText("Database").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("Critical").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText(/Check DB credentials/)).toBeInTheDocument();
-    expect(screen.getByText(/1 node.*offline/i)).toBeInTheDocument();
-    // crashed workload box
-    expect(screen.getByText(/1 workload\(s\) crashed/)).toBeInTheDocument();
+    expect(await screen.findByText(/Issues Detected/i)).toBeInTheDocument();
+    // Actionable failures list checks: "database — cannot connect"
+    expect(screen.getByText(/database — cannot connect/i)).toBeInTheDocument();
+    expect(screen.getByText(/daemon — Heartbeat missing/i)).toBeInTheDocument();
+    // Remediation for database check
+    expect(screen.getByText(/Check database credentials/i)).toBeInTheDocument();
+    // Node offline count in infrastructure summary tile
+    expect(await screen.findByText(/1 offline unexpectedly/i)).toBeInTheDocument();
+    // Workloads tile shows 1 failed
+    expect(screen.getByText(/1 failed/i)).toBeInTheDocument();
   });
 
   it("renders warnings section for warning checks and degraded nodes", async () => {
@@ -325,11 +352,11 @@ describe("AdminHealth — health checks", () => {
     });
 
     renderWithQuery(<AdminHealth />);
-    expect(await screen.findByText("Degraded performance")).toBeInTheDocument();
+    expect(await screen.findByText(/Degraded Performance/i)).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("Warnings")).toBeInTheDocument());
-    expect(screen.getAllByText("Memory").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("Warning").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText(/1 node\(s\) degraded/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Memory/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/warnings/i).length).toBeGreaterThanOrEqual(1);
+    expect(await screen.findByText(/1 degraded/i)).toBeInTheDocument();
   });
 
   it("renders empty-state when no failures and shows infrastructure heartbeat table", async () => {
@@ -342,12 +369,12 @@ describe("AdminHealth — health checks", () => {
 
     renderWithQuery(<AdminHealth />);
 
-    expect(await screen.findByText(/No failures/)).toBeInTheDocument();
-    // Infrastructure section shows 1/1 healthy count in header
-    expect(screen.getAllByText(/1\/1 healthy/).length).toBeGreaterThanOrEqual(1);
+    expect(await screen.findByText(/All healthy/i)).toBeInTheDocument();
+    // Infrastructure section shows 1/1 nodes
+    expect(await screen.findByText(/1\/1 nodes/)).toBeInTheDocument();
     // table contains node name and View link
     expect(screen.getByText("alpha")).toBeInTheDocument();
-    expect(screen.getAllByText("View").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/View/i).length).toBeGreaterThanOrEqual(1);
   });
 
   it("shows database & cache and control plane metric tiles", async () => {
@@ -361,19 +388,22 @@ describe("AdminHealth — health checks", () => {
     });
     installHealthFetch({ health: detailed });
 
-    renderWithQuery(<AdminHealth />);
+    renderWithQuery(<AdminHealth initialSection="database" />);
 
-    expect(await screen.findByText(/Database.*cache/)).toBeInTheDocument();
-    expect(screen.getByText("Latency")).toBeInTheDocument();
-    expect(screen.getByText(/Control plane/)).toBeInTheDocument();
-    expect(screen.getByText("Goroutines")).toBeInTheDocument();
+    expect((await screen.findAllByText(/Database & Cache/i)).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/Database Latency/i)).toBeInTheDocument();
+    expect(screen.getByText(/Control-Plane/i)).toBeInTheDocument();
+    // Open control-plane section to see system details
+    await userEvent.click(screen.getByText(/Control-Plane Services/i));
+    expect(screen.getByText(/API Runtime/i)).toBeInTheDocument();
+    expect(screen.getByText(/Queue Health/i)).toBeInTheDocument();
   });
 });
 
 // ===========================================================================
-// Monitoring — isSynthetic
+// Monitoring — time-series and telemetry
 // ===========================================================================
-describe("AdminMonitoring — isSynthetic", () => {
+describe("AdminMonitoring — time-series and telemetry", () => {
   function installMonitoringFetch(metrics: ReturnType<typeof nodeMetrics>, extra: { nodes?: unknown[]; summary?: unknown; alerts?: unknown[] } = {}) {
     const nodes = extra.nodes ?? [{ id: "n1", name: "alpha" }];
     const summary = extra.summary ?? { nodes: [], unacknowledgedAlerts: 0, recentHealthChecks: [] };
@@ -388,26 +418,16 @@ describe("AdminMonitoring — isSynthetic", () => {
     ]);
   }
 
-  it("shows synthetic allocated-capacity banner and No data for synthetic networkRxBytes metric", async () => {
-    const syntheticMetrics = nodeMetrics([
-      { cpuLoad1m: 0, networkRxBytes: 0, cpuPercent: 23, memoryPercent: 45 },
-      { cpuLoad1m: 0, networkRxBytes: 0, cpuPercent: 24, memoryPercent: 46 },
-    ]);
-
-    installMonitoringFetch(syntheticMetrics);
+  it("shows empty telemetry banner when no telemetry has been recorded", async () => {
+    installMonitoringFetch([]);
 
     renderWithQuery(<AdminMonitoring />);
 
-    expect(await screen.findByText(/allocated capacity/, {}, { timeout: 5000 })).toBeInTheDocument();
-    const networkBtn = screen.getByRole("button", { name: "Network RX" });
-    await userEvent.click(networkBtn);
-    expect(await screen.findByText(/No data — network\/load not yet collected/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "CPU" }));
-    await waitFor(() => expect(screen.getByText(/allocated capacity/)).toBeInTheDocument());
-    expect(screen.queryByText(/No data — network\/load not yet collected/)).not.toBeInTheDocument();
+    expect(await screen.findByText(/No telemetry for 1 hour yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/Charts stay empty until beacons report/i)).toBeInTheDocument();
   });
 
-  it("does not show synthetic banner for live metrics and renders chart area", async () => {
+  it("renders charts and beacon list when telemetry is present", async () => {
     const liveMetrics = nodeMetrics([
       { cpuLoad1m: 1.2, networkRxBytes: 1024, cpuPercent: 30 },
       { cpuLoad1m: 0.9, networkRxBytes: 2048, cpuPercent: 32 },
@@ -417,36 +437,32 @@ describe("AdminMonitoring — isSynthetic", () => {
 
     renderWithQuery(<AdminMonitoring />);
 
-    // Should have chart + controls, no synthetic banner
-    await waitFor(() => expect(screen.getByText(/CPU — 5m trend/)).toBeInTheDocument());
-    expect(screen.queryByText(/allocated capacity/)).not.toBeInTheDocument();
-    // No data banner should not appear (function matcher for split text)
-    expect(screen.queryByText((c) => typeof c === "string" && c.includes("No data — network"))).not.toBeInTheDocument();
+    // Should render monitoring heading and window controls
+    expect(await screen.findByRole("heading", { name: "Monitoring", level: 1 })).toBeInTheDocument();
+    expect(screen.getByText(/What happens over time/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "1 hour" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "6 hours" })).toBeInTheDocument();
+    expect(screen.getByText(/Filter by beacon/i)).toBeInTheDocument();
   });
 
-  it("shows No telemetry message when metrics array is empty", async () => {
+  it("allows switching time window", async () => {
     installMonitoringFetch([]);
 
     renderWithQuery(<AdminMonitoring />);
 
-    expect(await screen.findByText(/No telemetry available/)).toBeInTheDocument();
-    expect(screen.queryByText(/allocated capacity/)).not.toBeInTheDocument();
+    expect(await screen.findByText(/No telemetry for 1 hour yet/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "6 hours" }));
+    expect(await screen.findByText(/No telemetry for 6 hours yet/i)).toBeInTheDocument();
   });
 
-  it("period switches retain isSynthetic semantics", async () => {
-    // use 2 points to guarantee synthetic detection (single-point edge can be masked by loading state)
-    const syntheticMetrics = nodeMetrics([
-      { cpuLoad1m: 0, networkRxBytes: 0 },
-      { cpuLoad1m: 0, networkRxBytes: 0 },
-    ]);
-    installMonitoringFetch(syntheticMetrics);
+  it("navigates or displays About Monitoring info cards", async () => {
+    installMonitoringFetch([]);
 
     renderWithQuery(<AdminMonitoring />);
 
-    expect(await screen.findByText(/allocated capacity/)).toBeInTheDocument();
-    // Switch period to 1h — still synthetic (data unchanged)
-    await userEvent.click(screen.getByRole("button", { name: "1h" }));
-    await waitFor(() => expect(screen.getByText(/allocated capacity/)).toBeInTheDocument());
+    expect(await screen.findByText(/About Monitoring/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Overview" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /Health/i }).length).toBeGreaterThanOrEqual(1);
   });
 
   // Unit sanity for the isSynthetic predicate itself (mirrors component logic)
@@ -485,7 +501,7 @@ describe("AdminHost page", () => {
     installHostFetch();
     renderWithQuery(<AdminHost />);
 
-    expect(await screen.findByText("Host")).toBeInTheDocument();
+    expect(await screen.findByText(/Host Management/)).toBeInTheDocument();
     // default tab is System
     expect(await screen.findByText("Hostname")).toBeInTheDocument();
     expect(screen.getByText("host-1")).toBeInTheDocument();
@@ -497,25 +513,25 @@ describe("AdminHost page", () => {
 
     await screen.findByText("Hostname");
 
-    await userEvent.click(screen.getByRole("button", { name: /Storage/ }));
+    await userEvent.click(screen.getByRole("tab", { name: "Disk" }));
     expect(await screen.findByText("/")).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: /Memory/ }));
+    await userEvent.click(screen.getByRole("tab", { name: "Memory" }));
     // Memory tab formats via fmtMB -> 8192 MiB becomes "8.0 GB"
     expect(await screen.findByText(/8\.0 GB/)).toBeInTheDocument();
     expect(await screen.findByText(/50\.0%/)).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: /Network/ }));
+    await userEvent.click(screen.getByRole("tab", { name: "Network" }));
     expect(await screen.findByText("eth0")).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: /Processes/ }));
+    await userEvent.click(screen.getByRole("tab", { name: "Processes" }));
     expect(await screen.findByText("init")).toBeInTheDocument();
   });
 
   it("shows no-nodes empty state", async () => {
     installHostFetch({ nodes: [] });
     renderWithQuery(<AdminHost />);
-    expect(await screen.findByText("No nodes")).toBeInTheDocument();
+    expect(await screen.findByText(/No nodes/)).toBeInTheDocument();
   });
 });
 
@@ -565,13 +581,13 @@ describe("AdminServers page", () => {
   it("shows empty state when no servers", async () => {
     installServersFetch([]);
     renderWithQuery(<AdminServers />);
-    expect(await screen.findByText("No servers")).toBeInTheDocument();
+    expect(await screen.findByText(/No servers/)).toBeInTheDocument();
   });
 
   it("allows opening create modal and typing server name", async () => {
     installServersFetch([]);
     renderWithQuery(<AdminServers />);
-    await screen.findByText("No servers");
+    await screen.findByText(/No servers/);
     await userEvent.click(screen.getByRole("button", { name: /Create New/ }));
     // dialog title — scope inside dialog: heading + button share the same label so use getAll
     const dialog = screen.getByRole("dialog");

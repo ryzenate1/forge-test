@@ -167,7 +167,7 @@ export default function AppTemplatesPage() {
                 "rounded-xl border p-4 text-left",
                 isDefault(tpl.id)
                   ? "border-white/[0.08] bg-white/[0.02]"
-                  : "border-[#dc2626]/20 bg-[#dc2626]/[0.02]",
+                  : "border-[#dc2626]/20 bg-[var(--brand)]/[0.02]",
               )}
             >
               <div className="flex items-start justify-between gap-2">
@@ -226,7 +226,7 @@ export default function AppTemplatesPage() {
               <div className="sm:col-span-2">
                 <label className="mb-1.5 block text-sm font-medium text-slate-300">Description</label>
                 <input
-                  className="h-10 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                  className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3.5 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
                   value={form.description}
                   onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
                   placeholder="Brief description of this template"
@@ -235,7 +235,7 @@ export default function AppTemplatesPage() {
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-slate-300">Type</label>
                 <select
-                  className="h-10 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                  className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
                   value={form.type}
                   onChange={(e) => setForm((f) => ({ ...f, type: e.target.value as AppType }))}
                 >
@@ -261,7 +261,7 @@ export default function AppTemplatesPage() {
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-slate-300">Compose YAML</label>
                 <textarea
-                  className="h-40 w-full rounded-lg border border-white/10 bg-[#0d131d] p-3 font-mono text-xs text-slate-100 outline-none resize-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                  className="h-40 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] p-3 font-mono text-xs text-slate-100 outline-none resize-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
                   value={form.composeContent}
                   onChange={(e) => setForm((f) => ({ ...f, composeContent: e.target.value }))}
                   placeholder={`services:\n  web:\n    image: nginx:latest\n    ports:\n      - "8080:80"`}

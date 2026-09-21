@@ -39,7 +39,12 @@ function AdminAppDetailContent({ params }: { params: Promise<{ id: string }> }) 
   const { id } = use(params);
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [tab, setTab] = useState<TabId>((searchParams.get("tab") as TabId) || "overview");
+  const rawTab = searchParams.get("tab");
+  const tab: TabId = rawTab && TABS.some((t) => t.id === rawTab) ? (rawTab as TabId) : "overview";
+
+  const setTab = (tId: TabId) => {
+    router.replace(`/admin/apps/${encodeURIComponent(id)}?tab=${encodeURIComponent(tId)}`, { scroll: false });
+  };
 
   const { data: app, isLoading, error } = useQuery({
     queryKey: ["app", id],
@@ -364,7 +369,7 @@ function DeploymentsTab({ appId }: { appId: string }) {
             {selected.log && (
               <div>
                 <p className="mb-2 text-xs font-semibold text-slate-400">Build/Deploy Log</p>
-                <pre className="max-h-48 overflow-y-auto rounded-lg border border-white/[0.06] bg-[#0a0e14] p-3 font-mono text-xs text-slate-400 whitespace-pre-wrap">
+                <pre className="max-h-48 overflow-y-auto rounded-lg border border-white/[0.06] bg-[var(--canvas)] p-3 font-mono text-xs text-slate-400 whitespace-pre-wrap">
                   {selected.log}
                 </pre>
               </div>
@@ -562,7 +567,7 @@ function ConsoleTab({ app }: { app: ApiAppDetail }) {
       <div className="p-4 space-y-3">
         <div
           ref={terminalRef}
-          className="h-96 overflow-y-auto rounded-lg border border-white/[0.06] bg-[#0a0e14] p-3 font-mono text-xs text-slate-300"
+          className="h-96 overflow-y-auto rounded-lg border border-white/[0.06] bg-[var(--canvas)] p-3 font-mono text-xs text-slate-300"
         >
           {output.length === 0 ? (
             <div className="py-8 text-center text-slate-500">
@@ -578,7 +583,7 @@ function ConsoleTab({ app }: { app: ApiAppDetail }) {
         </div>
         <form onSubmit={send} className="flex gap-2">
           <input
-            className="flex-1 h-9 rounded-lg border border-white/10 bg-[#161b28] px-3 font-mono text-xs text-slate-100 outline-none"
+            className="flex-1 h-9 rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 font-mono text-xs text-slate-100 outline-none"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Type a command..."
@@ -634,7 +639,7 @@ function DomainsTab({ appId }: { appId: string }) {
               type="checkbox"
               checked={enableTls}
               onChange={(e) => setEnableTls(e.target.checked)}
-              className="h-3 w-3 rounded border-white/20 bg-[#161b28] accent-[#dc2626]"
+              className="h-3 w-3 rounded border-white/20 bg-[var(--surface-input)] accent-[#dc2626]"
             />
             Enable TLS
           </label>

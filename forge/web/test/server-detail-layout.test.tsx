@@ -1,7 +1,7 @@
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import ServerDetailLayout from "@/app/console/servers/[id]/layout";
+import ServerDetailLayout from "@/app/server/[id]/layout";
 import { useServerContext } from "@/components/server/server-context";
 import { jsonResponse, mockFetchByUrl } from "@/test/fetch-mock";
 import { renderWithQuery } from "@/test/render";
@@ -9,7 +9,7 @@ import { fixtureServer, makeServer, fixtureUser } from "@/test/fixtures";
 
 const replace = vi.fn();
 const push = vi.fn();
-vi.mock("next/navigation", () => ({ useRouter: () => ({ replace, push }), useParams: () => ({ id: "s1" }) }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ replace, push }), useParams: () => ({ id: "s1" }), usePathname: () => "/server/s1" }));
 
 function Probe() {
   const { server, access, refreshServer } = useServerContext();

@@ -30,7 +30,7 @@ function VariableCard({
       onDragOver={dragHandlers.onDragOver}
       onDragEnd={dragHandlers.onDragEnd}
       className={cn(
-        "flex items-start gap-3 rounded-lg border border-white/[0.06] bg-[#111722] p-3 transition hover:border-white/[0.12] sm:p-4",
+        "flex items-start gap-3 rounded-lg border border-white/[0.06] bg-[var(--surface)] p-3 transition hover:border-white/[0.12] sm:p-4",
         isDragging && "opacity-40 ring-2 ring-red-500/30",
       )}
     >
@@ -339,7 +339,7 @@ export function AdminEggVariables({ egg }: { egg: ApiEgg }) {
             </div>
             <Input label="Default Value" value={varDefaultValue} onChange={setVarDefaultValue} placeholder="25565" />
             <Input label="Validation Rules" value={varRules} onChange={setVarRules} placeholder="required|integer|min:1024|max:65535" mono />
-            <label className="flex items-center gap-3 rounded-lg border border-white/10 bg-[#0d131d] px-4 py-3 transition hover:border-white/20">
+            <label className="flex items-center gap-3 rounded-lg border border-white/10 bg-[var(--surface-input)] px-4 py-3 transition hover:border-white/20">
               <input
                 type="checkbox"
                 className="h-4 w-4 accent-[#dc2626]"
@@ -348,7 +348,7 @@ export function AdminEggVariables({ egg }: { egg: ApiEgg }) {
               />
               <span className="text-sm text-slate-300">User viewable</span>
             </label>
-            <label className="flex items-center gap-3 rounded-lg border border-white/10 bg-[#0d131d] px-4 py-3 transition hover:border-white/20">
+            <label className="flex items-center gap-3 rounded-lg border border-white/10 bg-[var(--surface-input)] px-4 py-3 transition hover:border-white/20">
               <input
                 type="checkbox"
                 className="h-4 w-4 accent-[#dc2626]"

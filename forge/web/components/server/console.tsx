@@ -201,9 +201,9 @@ export function ServerConsole({ serverId, server }: ServerConsoleProps) {
   };
 
   return (
-    <div className="rounded-lg border border-white/[0.06] bg-[#1e2536] overflow-hidden">
+    <div className="rounded-lg border border-white/[0.06] bg-[var(--surface-raised)] overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-3 bg-[#161b28]">
+      <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-3 bg-[var(--surface-input)]">
         <h3 className="font-semibold text-slate-200">Console</h3>
         <div className="flex items-center gap-2">
           <span className={`px-2 py-1 rounded text-xs font-medium ${
@@ -231,7 +231,7 @@ export function ServerConsole({ serverId, server }: ServerConsoleProps) {
       />
 
       {/* Command Input */}
-      <form onSubmit={handleSubmit} className="flex gap-2 border-t border-white/[0.06] p-4 bg-[#161b28]">
+      <form onSubmit={handleSubmit} className="flex gap-2 border-t border-white/[0.06] p-4 bg-[var(--surface-input)]">
         <input
           type="text"
           value={command}
@@ -239,13 +239,13 @@ export function ServerConsole({ serverId, server }: ServerConsoleProps) {
           onKeyDown={handleKeyDown}
           disabled={!connected}
           placeholder="Type a command..."
-          className="flex-1 px-3 py-2 border border-white/10 rounded-md font-mono text-sm bg-[#0f1419] text-slate-200
+          className="flex-1 px-3 py-2 border border-white/10 rounded-md font-mono text-sm bg-[var(--surface)] text-slate-200
                      focus:outline-none focus:ring-2 focus:ring-[#dc2626] disabled:bg-white/[0.03] disabled:text-slate-500"
         />
         <button
           type="submit"
           disabled={!connected || !command.trim()}
-          className="px-4 py-2 bg-[#dc2626] text-white rounded-md font-medium
+          className="px-4 py-2 bg-[var(--brand)] text-white rounded-md font-medium
                      hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed
                      flex items-center gap-2"
         >

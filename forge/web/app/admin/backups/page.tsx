@@ -455,7 +455,7 @@ export default function BackupManagementPage() {
           <Input label="Name *" value={formData.name || ''} onChange={(v) => setFormData({...formData, name: v})} />
           <div>
             <label className="mb-1.5 block text-sm font-medium text-slate-300">Backup Type *</label>
-            <select className="h-10 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100" value={formData.backupType} onChange={(e) => setFormData({...formData, backupType: e.target.value as 'app' | 'volume' | 'database' | 'server'})}>
+            <select className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100" value={formData.backupType} onChange={(e) => setFormData({...formData, backupType: e.target.value as 'app' | 'volume' | 'database' | 'server'})}>
               <option value="app">App</option>
               <option value="volume">Volume</option>
               <option value="database">Database</option>
@@ -471,7 +471,7 @@ export default function BackupManagementPage() {
           )}
           <div>
             <label className="mb-1.5 block text-sm font-medium text-slate-300">Storage Provider *</label>
-            <select className="h-10 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100" value={formData.storageProvider} onChange={(e) => setFormData({...formData, storageProvider: e.target.value})}>
+            <select className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100" value={formData.storageProvider} onChange={(e) => setFormData({...formData, storageProvider: e.target.value})}>
               {Array.isArray(sp) && sp.map(p => (
                 <option key={p.id} value={p.name}>{p.name} ({p.type})</option>
               ))}
@@ -529,7 +529,7 @@ export default function BackupManagementPage() {
           <Input label="Name *" value={name} onChange={setName} />
           <div>
             <label className="mb-1.5 block text-sm font-medium text-slate-300">Backup Type *</label>
-            <select className="h-10 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100" value={jobType} onChange={(e) => setJobType(e.target.value as CreateBackupJobRequest['jobType'])}>
+            <select className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100" value={jobType} onChange={(e) => setJobType(e.target.value as CreateBackupJobRequest['jobType'])}>
               <option value="app">App</option>
               <option value="volume">Volume</option>
               <option value="database">Database</option>

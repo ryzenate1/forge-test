@@ -45,7 +45,7 @@ export function UploadProgress({ loaded, total, fileName, onCancel }: UploadProg
   }, [loaded, total]);
 
   return (
-    <div className="rounded-lg border border-white/[0.08] bg-[#151b27] p-3" role="status" aria-label={`Upload ${percent}% complete`}>
+    <div className="rounded-lg border border-white/[0.08] bg-[var(--surface-raised)] p-3" role="status" aria-label={`Upload ${percent}% complete`}>
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <Upload className="h-4 w-4 shrink-0 text-red-400" />

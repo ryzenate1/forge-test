@@ -5,8 +5,6 @@ import (
 	"os"
 	"runtime"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 type HostInfo struct {
@@ -72,28 +70,7 @@ func (s *Server) handleHostInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHostDisk(w http.ResponseWriter, r *http.Request) {
-	partitions := []DiskPartition{}
-
-	rootStat := unix.Statfs_t{}
-	if err := unix.Statfs("/", &rootStat); err == nil {
-		total := uint64(rootStat.Blocks) * uint64(rootStat.Bsize) / (1024 * 1024)
-		free := uint64(rootStat.Bavail) * uint64(rootStat.Bsize) / (1024 * 1024)
-		used := total - free
-		var usedPct float64
-		if total > 0 {
-			usedPct = float64(used) / float64(total) * 100
-		}
-		partitions = append(partitions, DiskPartition{
-			MountPoint: "/",
-			Device:     "/",
-			FSType:     "rootfs",
-			TotalMB:    total,
-			UsedMB:     used,
-			FreeMB:     free,
-			UsedPct:    usedPct,
-		})
-	}
-
+	partitions := hostDiskPartitionsPlatform()
 	writeJSON(w, http.StatusOK, partitions)
 }
 
@@ -137,18 +114,7 @@ func (s *Server) handleHostProcesses(w http.ResponseWriter, r *http.Request) {
 }
 
 func kernelVersion() string {
-	uts := unix.Utsname{}
-	if err := unix.Uname(&uts); err != nil {
-		return ""
-	}
-	b := make([]byte, 0, len(uts.Release))
-	for _, v := range uts.Release {
-		if v == 0 {
-			break
-		}
-		b = append(b, byte(v))
-	}
-	return string(b)
+	return kernelVersionPlatform()
 }
 
 func cpuModel() string {

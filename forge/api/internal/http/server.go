@@ -1104,14 +1104,12 @@ func NewServer(cfg Config) *fiber.App {
 	// Used after social auth redirects to avoid placing the token in the URL.
 	v1.Post("/auth/session/exchange", ExchangeCodeHandler(cfg))
 
-	// Liveness only confirms that this API process can serve requests; it does
-	// not probe external dependencies and therefore remains safe for restarts.
-	v1.Get("/health/live", func(c *fiber.Ctx) error {
+	// Liveness, readiness, and diagnostics handlers exposed both on /api/v1/health
+	// and directly at root /health for external health probes, load balancers, and scripts.
+	liveHandler := func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok"})
-	})
-	// Readiness reports unavailable only when a configured critical dependency
-	// fails. Warnings and non-critical diagnostic failures do not evict the API.
-	v1.Get("/health/ready", func(c *fiber.Ctx) error {
+	}
+	readyHandler := func(c *fiber.Ctx) error {
 		if cfg.HealthService == nil {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"status": "not_ready"})
 		}
@@ -1126,10 +1124,8 @@ func NewServer(cfg Config) *fiber.App {
 			return c.Status(fiber.StatusServiceUnavailable).JSON(response)
 		}
 		return c.JSON(response)
-	})
-	// Diagnostics always return their structured report with HTTP 200. Consumers
-	// should use its explicit status field; automated health checks use readiness.
-	v1.Get("/health", func(c *fiber.Ctx) error {
+	}
+	healthHandler := func(c *fiber.Ctx) error {
 		if cfg.HealthService != nil {
 			report := cfg.HealthService.RunAll(c.Context())
 			return c.JSON(report)
@@ -1144,7 +1140,15 @@ func NewServer(cfg Config) *fiber.App {
 			Checks:    []health.CheckResult{},
 			CheckedAt: time.Now(),
 		})
-	})
+	}
+
+	app.Get("/health/live", liveHandler)
+	app.Get("/health/ready", readyHandler)
+	app.Get("/health", healthHandler)
+
+	v1.Get("/health/live", liveHandler)
+	v1.Get("/health/ready", readyHandler)
+	v1.Get("/health", healthHandler)
 	if cfg.HealthService != nil {
 		v1.Get("/health/:check", func(c *fiber.Ctx) error {
 			result := cfg.HealthService.RunCheck(c.Context(), c.Params("check"))

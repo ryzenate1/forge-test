@@ -47,13 +47,11 @@ function ServerConsoleShell({ activeTab: activeTabProp, children }: ServerConsol
     setError(null);
     try {
       const [nextServer, nextUser] = await Promise.all([fetchServer(serverId), fetchCurrentUser()]);
-      if (abortRef.current) return;
-      if (!nextUser) throw new Error("Your session has expired. Sign in again to manage this server.");
       setServer(nextServer);
       setUser(nextUser);
 
-      const isAdmin = nextUser.role === "admin";
-      const isOwner = nextServer.ownerId === nextUser.id;
+      const isAdmin = nextUser?.role === "admin";
+      const isOwner = Boolean(nextUser && nextServer.ownerId === nextUser.id);
       if (isAdmin || isOwner) {
         setPermissions([]);
       } else if (nextServer.permissions?.includes("*")) {
@@ -73,11 +71,11 @@ function ServerConsoleShell({ activeTab: activeTabProp, children }: ServerConsol
   useEffect(() => { void load(); return () => { abortRef.current = true; }; }, [load]);
 
   if (loading) {
-    return <div className="grid min-h-screen place-items-center bg-[#0a0e16] text-slate-300" role="status"><div className="text-center"><div className="mx-auto h-9 w-9 animate-spin rounded-full border-2 border-slate-700 border-t-red-500" /><p className="mt-3 text-sm">Loading server…</p></div></div>;
+    return <div className="grid min-h-screen place-items-center bg-[var(--canvas)] text-slate-300" role="status"><div className="text-center"><div className="mx-auto h-9 w-9 animate-spin rounded-full border-2 border-slate-700 border-t-red-500" /><p className="mt-3 text-sm">Loading server…</p></div></div>;
   }
 
   if (error || !server) {
-    return <div className="grid min-h-screen place-items-center bg-[#0a0e16] p-6 text-slate-200"><div className="max-w-md rounded-xl border border-red-500/30 bg-red-500/10 p-6 text-center" role="alert"><AlertCircle className="mx-auto text-red-300" /><h1 className="mt-3 text-lg font-bold">Unable to load server</h1><p className="mt-2 text-sm text-red-100">{error ?? "Server not found."}</p><button className="mt-4 inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-bold text-white hover:bg-red-500" onClick={() => void load()} type="button"><RefreshCw size={15} /> Try again</button></div></div>;
+    return <div className="grid min-h-screen place-items-center bg-[var(--canvas)] p-6 text-slate-200"><div className="max-w-md rounded-xl border border-red-500/30 bg-red-500/10 p-6 text-center" role="alert"><AlertCircle className="mx-auto text-red-300" /><h1 className="mt-3 text-lg font-bold">Unable to load server</h1><p className="mt-2 text-sm text-red-100">{error ?? "Server not found."}</p><button className="mt-4 inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-bold text-white hover:bg-red-500" onClick={() => void load()} type="button"><RefreshCw size={15} /> Try again</button></div></div>;
   }
 
   const activeTab = activeTabProp ?? (pathname.split("/").at(-1) === serverId ? "console" : pathname.split("/").at(-1) as ServerTab);
@@ -92,7 +90,7 @@ function ServerConsoleShell({ activeTab: activeTabProp, children }: ServerConsol
 
   return (
     <ServerProvider value={{ server, access, refreshServer: load }}>
-      <div className="min-h-screen bg-[#0a0e16] text-slate-200 md:flex">
+      <div className="min-h-screen bg-[var(--canvas)] text-slate-200 md:flex">
         <ServerNav activeTab={activeTab} access={access} server={server} serverId={serverId} />
         <main className="min-w-0 flex-1 md:h-screen md:overflow-y-auto">
           <div className="mx-auto max-w-7xl p-4 sm:p-6 lg:p-8">{content}</div>

@@ -123,7 +123,7 @@ function SelectField({ label, value, options, onChange }: { label: string; value
   return (
     <label className="block text-sm">
       <span className="mb-1.5 block font-medium text-slate-300">{label}</span>
-      <select className="h-9 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-slate-100" onChange={(event) => onChange(event.target.value)} value={value}>
+      <select className="h-9 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-slate-100" onChange={(event) => onChange(event.target.value)} value={value}>
         {options.map((option) => <option key={option} value={option}>{option}</option>)}
       </select>
     </label>

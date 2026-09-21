@@ -621,7 +621,7 @@ function CredentialForm({
   const [description, setDescription] = useState("");
 
   return (
-    <div className="border rounded-lg p-4 bg-[#111722] space-y-3">
+    <div className="border rounded-lg p-4 bg-[var(--surface)] space-y-3">
       <h3 className="font-medium text-sm">New Credential</h3>
       <input
         placeholder="Name (e.g. GitHub Deploy Key)"
@@ -697,8 +697,8 @@ function ProviderForm({
   const [username, setUsername] = useState("");
 
   return (
-    <div className="border rounded-lg p-4 bg-[#111722] space-y-3">
-      <h3 className="font-medium text-sm">Connect Git Provider — POST /git/providers & POST /git/providers/test (inline)</h3>
+    <div className="border rounded-lg p-4 bg-[var(--surface)] space-y-3">
+      <h3 className="font-medium text-sm">Connect Git Provider — POST /git/providers &amp; POST /git/providers/test (inline)</h3>
       <select
         value={provider}
         onChange={(e) => setProvider(e.target.value)}
@@ -793,7 +793,7 @@ function SourceForm({
   const showAutoDeployWarning = autoDeploy && authMode !== "provider";
 
   return (
-    <div className="border rounded-lg p-4 bg-[#111722] space-y-3">
+    <div className="border rounded-lg p-4 bg-[var(--surface)] space-y-3">
       <h3 className="font-medium text-sm">Link Repository</h3>
       {showAutoDeployWarning && (
         <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-200 flex items-center gap-2">

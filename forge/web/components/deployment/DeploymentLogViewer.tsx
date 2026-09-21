@@ -122,8 +122,8 @@ export function DeploymentLogViewer({ deploymentId, wsUrl, initialLogs }: Deploy
   }, [deploymentId, wsUrl, nonce]);
 
   return (
-    <div className="rounded-lg border border-white/[0.06] bg-[#0f1419] overflow-hidden">
-      <div className="flex items-center justify-between border-b border-white/[0.06] bg-[#161b28] px-4 py-2">
+    <div className="rounded-lg border border-white/[0.06] bg-[var(--surface)] overflow-hidden">
+      <div className="flex items-center justify-between border-b border-white/[0.06] bg-[var(--surface-input)] px-4 py-2">
         <div className="flex items-center gap-2">
           <Terminal size={14} className="text-slate-400" />
           <span className="text-sm font-semibold text-slate-200">Deployment Logs</span>
@@ -170,7 +170,7 @@ export function DeploymentLogViewer({ deploymentId, wsUrl, initialLogs }: Deploy
           <div className="relative">
             <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
             <input
-              className="w-full rounded border border-white/10 bg-[#0d131d] py-1.5 pl-7 pr-8 text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-red-500/50"
+              className="w-full rounded border border-white/10 bg-[var(--surface-input)] py-1.5 pl-7 pr-8 text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-red-500/50"
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search logs..."
               type="text"

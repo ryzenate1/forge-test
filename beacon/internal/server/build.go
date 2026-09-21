@@ -315,7 +315,7 @@ func (s *Server) handleBuildCancel(w http.ResponseWriter, r *http.Request) {
 func (m *buildManager) startBuild(ctx context.Context, imageRef, workspaceID string, command string, credPatterns []string, args ...string) *buildJob {
 	buildCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(buildCtx, command, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = getSysProcAttr()
 	buildHome, homeErr := os.MkdirTemp("", "beacon-build-home-*")
 	if homeErr == nil {
 		_ = os.Chmod(buildHome, 0o700)
@@ -356,11 +356,11 @@ func (m *buildManager) startBuild(ctx context.Context, imageRef, workspaceID str
 		select {
 		case <-buildCtx.Done():
 			if cmd.Process != nil {
-				_ = syscall.Kill(-pid, syscall.SIGINT)
+				_ = killPIDGroup(cmd, pid, syscall.SIGINT)
 				timer := time.NewTimer(2 * time.Second)
 				select {
 				case <-timer.C:
-					_ = syscall.Kill(-pid, syscall.SIGKILL)
+					_ = killPIDGroup(cmd, pid, syscall.SIGKILL)
 				case <-processDone:
 					timer.Stop()
 				}

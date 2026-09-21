@@ -287,7 +287,7 @@ function PolicyFormModal({
             type="checkbox"
             checked={form.enabled}
             onChange={(e) => onChange({ ...form, enabled: e.target.checked })}
-            className="rounded border-white/10 bg-[#161b28]"
+            className="rounded border-white/10 bg-[var(--surface-input)]"
           />
           Enabled
         </label>

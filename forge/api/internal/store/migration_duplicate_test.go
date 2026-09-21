@@ -46,17 +46,16 @@ func TestValidateNoDuplicatePrefixes_NoDuplicates(t *testing.T) {
 func TestValidateNoDuplicatePrefixes_DetectsDuplicates(t *testing.T) {
 	files := []string{
 		"001_init.sql",
-		"015_db_hosts_constraints.sql",
-		"015_mounts.sql",
-		"083_autoscaler.sql",
-		"083_traffic_rules.sql",
+		"016_subusers.sql",
+		"016_other.sql",
+		"084_create_tables.sql",
 	}
 	err := validateNoDuplicatePrefixes(files)
 	if err == nil {
 		t.Fatal("expected error for duplicate prefixes, got nil")
 	}
-	if !contains(err.Error(), "015") {
-		t.Errorf("error should mention prefix 015, got: %v", err)
+	if !contains(err.Error(), "016") {
+		t.Errorf("error should mention prefix 016, got: %v", err)
 	}
 }
 

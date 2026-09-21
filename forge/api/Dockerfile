@@ -34,7 +34,8 @@ COPY --from=build /out/api /api
 COPY forge/api/migrations /migrations
 COPY lang /lang
 
-RUN chown -R appuser:appuser /migrations /lang
+RUN mkdir -p /batch2-migrations && \
+    chown -R appuser:appuser /migrations /batch2-migrations /lang
 
 USER appuser
 

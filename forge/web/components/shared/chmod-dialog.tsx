@@ -28,7 +28,7 @@ export function ChmodDialog({ open, onClose, onApply, fileName, busy }: ChmodDia
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-sm rounded-xl border border-white/[0.08] bg-[#151b27] p-5 shadow-2xl">
+      <div className="w-full max-w-sm rounded-xl border border-white/[0.08] bg-[var(--surface-raised)] p-5 shadow-2xl">
         <div className="mb-4 flex items-center gap-3">
           <div className="grid h-9 w-9 place-items-center rounded-lg bg-amber-500/10 text-amber-400">
             <ShieldX size={16} />

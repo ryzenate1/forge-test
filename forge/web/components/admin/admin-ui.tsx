@@ -26,7 +26,7 @@ export function Pill({ children, tone = "neutral", className }: { children: Reac
  );
 }
 
-export function SectionHeader({ title, sub, action }: { title: string; sub?: string; action?: React.ReactNode }) {
+export function SectionHeader({ title, sub, action }: { title: React.ReactNode; sub?: string; action?: React.ReactNode }) {
   return (
   <div className="relative mb-7 flex flex-col gap-4 border-b border-white/[0.08] pb-5 sm:flex-row sm:items-start sm:justify-between">
   <div>
@@ -196,7 +196,7 @@ export function AdminTr({ children, onClick, className }: { children?: React.Rea
 }
 export function AdminTd({ children, className }: { children?: React.ReactNode; className?: string }) { return <td className={cn("px-4 py-3 text-slate-200", className)}>{children}</td>; }
 
-export const selectStyle = "h-10 w-full rounded-lg border border-white/10 bg-[#161b28] px-3 text-sm text-slate-100";
+export const selectStyle = "h-10 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100";
 
 export function AdminLoadingState({ label = "Loading…" }: { label?: string }) { return <div className="grid min-h-32 place-items-center rounded-xl border border-dashed border-white/[0.1] bg-black/10 p-6 text-sm text-slate-400" role="status"><div className="flex flex-col items-center gap-2"><LoaderCircle size={20} className="animate-spin text-slate-500" /><span>{label}</span></div></div>; }
 
@@ -351,7 +351,7 @@ export function AdminStatCard({ label, value, icon: Icon, tone = "neutral", clas
     neutral: "text-slate-100",
   };
   return (
-    <div className={cn("rounded-xl border border-white/[0.09] bg-[#111722] p-4", className)}>
+    <div className={cn("rounded-xl border border-white/[0.09] bg-[var(--surface)] p-4", className)}>
       <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-500 mb-0.5">
         {Icon ? <Icon size={12} /> : null}
         {label}

@@ -77,7 +77,7 @@ export function LogViewer({ logs, loading }: { logs: AppLogEntry[]; loading?: bo
       </div>
       <div
         ref={containerRef}
-        className="h-96 overflow-y-auto rounded-lg border border-white/[0.06] bg-[#0a0e14] p-3 font-mono text-xs"
+        className="h-96 overflow-y-auto rounded-lg border border-white/[0.06] bg-[var(--canvas)] p-3 font-mono text-xs"
       >
         {loading ? (
           <div className="py-8 text-center text-slate-500">Loading logs...</div>
@@ -205,7 +205,7 @@ export function PortMapper({
       {ports.map((port, idx) => (
         <div key={idx} className="flex items-center gap-2">
           <input
-            className="h-9 w-20 rounded-lg border border-white/10 bg-[#161b28] px-2 text-xs font-mono text-slate-100 outline-none focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+            className="h-9 w-20 rounded-lg border border-white/10 bg-[var(--surface-input)] px-2 text-xs font-mono text-slate-100 outline-none focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
             type="number"
             value={port.hostPort}
             onChange={(e) => update(idx, { hostPort: parseInt(e.target.value) || 0 })}
@@ -213,14 +213,14 @@ export function PortMapper({
           />
           <span className="text-xs text-slate-500">:</span>
           <input
-            className="h-9 w-20 rounded-lg border border-white/10 bg-[#161b28] px-2 text-xs font-mono text-slate-100 outline-none focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+            className="h-9 w-20 rounded-lg border border-white/10 bg-[var(--surface-input)] px-2 text-xs font-mono text-slate-100 outline-none focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
             type="number"
             value={port.containerPort}
             onChange={(e) => update(idx, { containerPort: parseInt(e.target.value) || 0 })}
             placeholder="Container"
           />
           <select
-            className="h-9 rounded-lg border border-white/10 bg-[#161b28] px-2 text-xs text-slate-300 outline-none focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+            className="h-9 rounded-lg border border-white/10 bg-[var(--surface-input)] px-2 text-xs text-slate-300 outline-none focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
             value={port.protocol}
             onChange={(e) => update(idx, { protocol: e.target.value as "tcp" | "udp" })}
           >
@@ -279,7 +279,7 @@ export function VolumeEditor({
             <div className="flex-1">
               <input
                 className={cn(
-                  "h-9 w-full rounded-lg border bg-[#161b28] px-2 text-xs font-mono text-slate-100 outline-none focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15",
+                  "h-9 w-full rounded-lg border bg-[var(--surface-input)] px-2 text-xs font-mono text-slate-100 outline-none focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15",
                   sourceErr ? "border-red-400/70" : "border-white/10",
                 )}
                 value={vol.source}
@@ -292,7 +292,7 @@ export function VolumeEditor({
             <div className="flex-1">
               <input
                 className={cn(
-                  "h-9 w-full rounded-lg border bg-[#161b28] px-2 text-xs font-mono text-slate-100 outline-none focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15",
+                  "h-9 w-full rounded-lg border bg-[var(--surface-input)] px-2 text-xs font-mono text-slate-100 outline-none focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15",
                   targetErr ? "border-red-400/70" : "border-white/10",
                 )}
                 value={vol.target}
@@ -306,7 +306,7 @@ export function VolumeEditor({
                 type="checkbox"
                 checked={vol.readOnly}
                 onChange={(e) => update(idx, { readOnly: e.target.checked })}
-                className="h-3 w-3 rounded border-white/20 bg-[#161b28] accent-[#dc2626]"
+                className="h-3 w-3 rounded border-white/20 bg-[var(--surface-input)] accent-[#dc2626]"
               />
               RO
             </label>

@@ -85,7 +85,7 @@ export function ErrorAlert({
             </button>
           ) : null}
           {expanded ? (
-            <pre className="mt-2 max-h-48 max-w-md overflow-auto rounded-lg border border-white/10 bg-[#0f1419] p-3 text-left text-[11px] leading-relaxed text-slate-500 whitespace-pre-wrap">
+            <pre className="mt-2 max-h-48 max-w-md overflow-auto rounded-lg border border-white/10 bg-[var(--surface)] p-3 text-left text-[11px] leading-relaxed text-slate-500 whitespace-pre-wrap">
               {full}
             </pre>
           ) : null}

@@ -202,8 +202,8 @@ export function AdminOperations() {
 
     <div className="grid gap-5 xl:grid-cols-2">
       <Card><CardHeader title="Create migration record" icon={ArrowRightLeft} /><div className="grid gap-3 p-4">
-        <label className="text-sm text-slate-300">Server<select className="mt-1 h-9 w-full rounded border border-white/10 bg-[#161b28] px-3" value={serverId} onChange={(event) => setServerId(event.target.value)}><option value="">Select server…</option>{(servers.data ?? []).map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}</select></label>
-        <label className="text-sm text-slate-300">Target node (optional; planner may choose)<select className="mt-1 h-9 w-full rounded border border-white/10 bg-[#161b28] px-3" value={targetNodeId} onChange={(event) => setTargetNodeId(event.target.value)}><option value="">Automatic</option>{(nodes.data ?? []).map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}</select></label>
+        <label className="text-sm text-slate-300">Server<select className="mt-1 h-9 w-full rounded border border-white/10 bg-[var(--surface-input)] px-3" value={serverId} onChange={(event) => setServerId(event.target.value)}><option value="">Select server…</option>{(servers.data ?? []).map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}</select></label>
+        <label className="text-sm text-slate-300">Target node (optional; planner may choose)<select className="mt-1 h-9 w-full rounded border border-white/10 bg-[var(--surface-input)] px-3" value={targetNodeId} onChange={(event) => setTargetNodeId(event.target.value)}><option value="">Automatic</option>{(nodes.data ?? []).map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}</select></label>
         <Btn disabled={!serverId || migrationMut.isPending} onClick={() => migrationMut.mutate()}>{migrationMut.isPending && <Loader2 size={14} className="animate-spin" />}{migrationMut.isPending ? "Creating migration plan…" : "Create migration plan"}</Btn>
         {migrationMut.error && (
           <div className="rounded border border-red-700/30 bg-red-900/10 p-3 text-xs text-red-200">
@@ -214,7 +214,7 @@ export function AdminOperations() {
       </div></Card>
 
       <Card><CardHeader title="Evacuation / recovery planning" icon={RotateCcw} /><div className="grid gap-3 p-4">
-        <label className="text-sm text-slate-300">Affected node<select className="mt-1 h-9 w-full rounded border border-white/10 bg-[#161b28] px-3" value={nodeId} onChange={(event) => { setNodeId(event.target.value); setEvacuation(null); }}><option value="">Select node…</option>{(nodes.data ?? []).map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}</select></label>
+        <label className="text-sm text-slate-300">Affected node<select className="mt-1 h-9 w-full rounded border border-white/10 bg-[var(--surface-input)] px-3" value={nodeId} onChange={(event) => { setNodeId(event.target.value); setEvacuation(null); }}><option value="">Select node…</option>{(nodes.data ?? []).map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}</select></label>
         <Input label="Recovery reason" value={reason} onChange={setReason} placeholder="For example: node is unavailable" />
         <div className="flex flex-wrap gap-2">
           <Btn tone="ghost" disabled={!nodeId || previewMut.isPending} onClick={() => previewMut.mutate()}>{previewMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <Eye size={13} />}{previewMut.isPending ? "Loading preview…" : "Preview evacuation"}</Btn>
@@ -280,7 +280,7 @@ export function AdminOperations() {
         <CardHeader title="Recovery plan details" icon={AlertTriangle} />
         <div className="space-y-3 p-4">
           <label className="block text-sm text-slate-300">Plan
-            <select className="mt-1 h-9 w-full rounded border border-white/10 bg-[#161b28] px-3" value={selectedRecoveryPlanId ?? ""} onChange={(event) => setSelectedRecoveryPlanId(event.target.value || null)}>
+            <select className="mt-1 h-9 w-full rounded border border-white/10 bg-[var(--surface-input)] px-3" value={selectedRecoveryPlanId ?? ""} onChange={(event) => setSelectedRecoveryPlanId(event.target.value || null)}>
               <option value="">Select a recovery plan…</option>
               {(recoveries.data ?? []).map((plan) => <option key={plan.id} value={plan.id}>{plan.nodeId} — {plan.status}</option>)}
             </select>

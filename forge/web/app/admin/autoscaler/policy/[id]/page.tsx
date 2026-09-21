@@ -214,7 +214,7 @@ export default function AdminPolicyDetailPage() {
         <Card>
           <CardHeader title="Autoscaler Metric Summary" icon={Zap} />
           <div className="grid grid-cols-3 gap-4 p-4">
-            <div className="rounded-lg border border-white/[0.06] bg-[#151b27] p-3 text-center">
+            <div className="rounded-lg border border-white/[0.06] bg-[var(--surface-raised)] p-3 text-center">
               <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
                 Scale Ups
               </p>
@@ -222,7 +222,7 @@ export default function AdminPolicyDetailPage() {
                 {metrics?.scaleUpEventsTotal ?? 0}
               </p>
             </div>
-            <div className="rounded-lg border border-white/[0.06] bg-[#151b27] p-3 text-center">
+            <div className="rounded-lg border border-white/[0.06] bg-[var(--surface-raised)] p-3 text-center">
               <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
                 Scale Downs
               </p>
@@ -230,7 +230,7 @@ export default function AdminPolicyDetailPage() {
                 {metrics?.scaleDownEventsTotal ?? 0}
               </p>
             </div>
-            <div className="rounded-lg border border-white/[0.06] bg-[#151b27] p-3 text-center">
+            <div className="rounded-lg border border-white/[0.06] bg-[var(--surface-raised)] p-3 text-center">
               <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
                 Errors
               </p>
@@ -255,7 +255,7 @@ export default function AdminPolicyDetailPage() {
                 type="checkbox"
                 checked={form.enabled}
                 onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
-                className="rounded border-white/10 bg-[#161b28]"
+                className="rounded border-white/10 bg-[var(--surface-input)]"
               />
               Enabled
             </label>

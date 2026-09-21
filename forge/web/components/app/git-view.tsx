@@ -73,7 +73,7 @@ export function GitView({ appId, action }: GitViewProps) {
           </div>
         </div>
         {lastCommit ? (
-          <div className="rounded-lg border border-white/[0.06] bg-[#161b28] p-4">
+          <div className="rounded-lg border border-white/[0.06] bg-[var(--surface-input)] p-4">
             <p className="text-xs text-slate-500">Last commit</p>
             <p className="mt-1 font-mono text-sm text-slate-300">{lastCommit.sha.slice(0, 7)}</p>
             {lastCommit.message ? (

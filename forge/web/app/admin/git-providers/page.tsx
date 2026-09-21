@@ -86,13 +86,13 @@ export default function GitProvidersPage() {
       </div>
 
       {showConnect && (
-        <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-[#111722] p-4 mb-6 shadow-xl shadow-black/10">
+        <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-[var(--surface)] p-4 mb-6 shadow-xl shadow-black/10">
           <h2 className="text-lg font-semibold mb-4">Connect a Git Provider</h2>
           <div className="grid gap-4">
             <div>
               <label className="block text-sm font-medium mb-1">Provider</label>
               <select
-                className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                className="block min-h-11 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
                 value={connectForm.provider}
                 onChange={(e) => setConnectForm({ ...connectForm, provider: e.target.value })}
               >
@@ -107,7 +107,7 @@ export default function GitProvidersPage() {
               <div>
                 <label className="block text-sm font-medium mb-1">Provider Name</label>
                 <input
-                  className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                  className="block min-h-11 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
                   placeholder="My Git Server"
                   value={connectForm.name}
                   onChange={(e) => setConnectForm({ ...connectForm, name: e.target.value })}
@@ -118,7 +118,7 @@ export default function GitProvidersPage() {
               <div>
                 <label className="block text-sm font-medium mb-1">Base URL</label>
                 <input
-                  className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                  className="block min-h-11 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
                   placeholder="https://gitea.example.com"
                   value={connectForm.baseUrl}
                   onChange={(e) => setConnectForm({ ...connectForm, baseUrl: e.target.value })}
@@ -128,7 +128,7 @@ export default function GitProvidersPage() {
             <div>
               <label className="block text-sm font-medium mb-1">Access Token</label>
               <input
-                className="block min-h-11 w-full rounded-lg border border-white/10 bg-[#0d131d] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
+                className="block min-h-11 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3.5 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition placeholder:text-slate-600 hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
                 type="password"
                 autoComplete="off"
                 placeholder="Personal access token"
@@ -160,7 +160,7 @@ export default function GitProvidersPage() {
       ) : providers && providers.length > 0 ? (
         <div className="grid gap-4">
           {providers.map((p) => (
-            <div key={p.id} className="rounded-xl border border-white/[0.08] bg-[#111722] p-4 flex items-center justify-between shadow-xl shadow-black/10">
+            <div key={p.id} className="rounded-xl border border-white/[0.08] bg-[var(--surface)] p-4 flex items-center justify-between shadow-xl shadow-black/10">
               <div className="flex items-center gap-3">
                 <ProviderIcon provider={p.type} />
                 <div>
@@ -189,7 +189,7 @@ export default function GitProvidersPage() {
           ))}
         </div>
       ) : (
-        <div className="text-center py-12 rounded-xl border border-white/[0.08] bg-[#111722] shadow-xl shadow-black/10">
+        <div className="text-center py-12 rounded-xl border border-white/[0.08] bg-[var(--surface)] shadow-xl shadow-black/10">
           <Globe className="w-12 h-12 mx-auto mb-3 opacity-30" />
           <p className="opacity-60">No git providers connected yet.</p>
           <p className="text-sm opacity-40">Connect a provider to deploy from repositories.</p>

@@ -16,7 +16,7 @@ fail()  { echo -e "  ${RED}[FAIL]${NC} $1"; exit 1; }
 header(){ echo -e "\n${CYAN}=== $1 ===${NC}"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INFRA_DIR="$PROJECT_DIR/infra"
 
 DRY_RUN=false

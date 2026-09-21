@@ -6,6 +6,7 @@ import { errorMessage } from "@/lib/utils";
 import { AlertCircle, CheckCircle, Clock, Loader2, Play, RotateCcw, XCircle } from "lucide-react";
 import { EmptyState, StatusPill } from "@/components/ui/primitives";
 import { CardSkeleton } from "@/components/ui/loading-skeleton";
+import { useOptionalServerContext, hasServerPermission } from "@/components/server/server-context";
 
 interface Release {
   id: string;
@@ -79,6 +80,10 @@ interface DeploymentsViewProps {
 }
 
 export function DeploymentsView({ server }: DeploymentsViewProps) {
+  const context = useOptionalServerContext();
+  const access = context?.access ?? { user: null, permissions: null, isAdmin: false, isOwner: false };
+  const canReinstall = hasServerPermission(access, "settings.reinstall");
+
   const [releases, setReleases] = useState<Release[]>([]);
   const [activeRelease, setActiveRelease] = useState<Release | null>(null);
   const [loading, setLoading] = useState(true);
@@ -112,8 +117,8 @@ export function DeploymentsView({ server }: DeploymentsViewProps) {
   const serverId = server.id;
   const loadReleases = useCallback(async () => {
     try {
-      const res = await fetchJSON<{ data: Release[] }>(`/servers/${serverId}/deployments`);
-      const data = res.data ?? [];
+      const res = await fetchJSON<Release[] | { data: Release[] }>(`/servers/${serverId}/deployments`);
+      const data = Array.isArray(res) ? res : (res?.data ?? []);
       setReleases(data);
       const live = data.find((r) => r.status === "live");
       setActiveRelease(live ?? null);
@@ -243,7 +248,7 @@ export function DeploymentsView({ server }: DeploymentsViewProps) {
         />
         <button
           onClick={handleDeploy}
-          disabled={deploying || !imageTag.trim()}
+          disabled={!canReinstall || deploying || !imageTag.trim()}
           className="ui-button ui-button-primary"
         >
           {deploying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
@@ -365,7 +370,7 @@ export function DeploymentsView({ server }: DeploymentsViewProps) {
                   <span className="font-mono text-xs text-slate-500">
                     {new Date(release.createdAt).toLocaleString()}
                   </span>
-                  {release.status === "live" && (
+                  {canReinstall && release.status === "live" && (
                     <button
                       onClick={(e) => { e.stopPropagation(); handleRollback(release.id); }}
                       className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs font-bold text-amber-200 hover:bg-amber-500/20"

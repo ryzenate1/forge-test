@@ -325,7 +325,7 @@ API_DOMAIN=api.${PANEL_DOMAIN}
 # --- Directory Paths (mounts) ---
 # =====================================================================
 PLUGINS_DIR=
-LANGS_DIR=lang
+LANGS_DIR=/lang
 MIGRATIONS_DIR=/migrations
 BATCH2_MIGRATIONS_DIR=/batch2-migrations
 

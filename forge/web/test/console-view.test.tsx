@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { renderWithQuery } from "@/test/render";
-import { fixtureServer, makeServer, makeServerAccess } from "@/test/fixtures";
+import { makeServer, makeServerAccess } from "@/test/fixtures";
 import { ServerProvider } from "@/components/server/server-context";
 
 // ---------------------------------------------------------------------------
@@ -55,47 +55,13 @@ vi.mock("@/lib/api/ws/websocket-manager", () => {
       this.status = "disconnected";
       (this.config.onStatusChange as ((s: string) => void) | undefined)?.("disconnected");
     }
-    send(_data: string) {}
+    send() {}
   }
   return { WebSocketManager: MockWebSocketManager };
 });
 
-import { ConsoleView } from "@/components/server/console-view";
-
-// Helpers mirroring implementation in console-view.tsx for unit coverage
-function extractServerTimestamp(line: string): string | null {
-  const bracket = line.match(/^\[(\d{2}:\d{2}:\d{2}(?:\.\d+)?)\]/);
-  if (bracket) return bracket[1];
-  const iso = line.match(/^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)/);
-  if (iso) return iso[1];
-  return null;
-}
-
-function computeNetworkDelta(
-  rx: number,
-  tx: number,
-  prevRx: number | null,
-  prevTx: number | null,
-): { delta: number; nextPrevRx: number; nextPrevTx: number } {
-  let delta = 0;
-  if (prevRx !== null && prevTx !== null) {
-    const drx = rx - prevRx;
-    const dtx = tx - prevTx;
-    delta = Math.max(0, drx + dtx);
-    if (drx < 0 || dtx < 0) delta = Math.max(0, rx + tx);
-  }
-  return { delta, nextPrevRx: rx, nextPrevTx: tx };
-}
-
-function getChartMax(values: number[], limit?: number): number {
-  const observedMax = values.length ? Math.max(...values) : 0;
-  const ceiling = typeof limit === "number" && Number.isFinite(limit) && limit > 0 ? limit : 100;
-  return Math.max(observedMax, ceiling, 1);
-}
-
-function getStatsManagers() {
-  return managerInstances;
-}
+// Exercise production helpers, not copies of the intended implementation.
+import { ConsoleView, computeNetworkDelta, extractServerTimestamp, getChartMax } from "@/components/server/console-view";
 function getConsoleManager() {
   // first manager is console (factory for "console"), second is stats
   return managerInstances[0] as unknown as { config: { onMessage?: (data: unknown) => void; onStatusChange?: (s: string) => void } };
@@ -290,16 +256,9 @@ describe("console-view network delta per tick not cumulative", () => {
     expect(delta).toBe(185); // because reset branch triggers
   });
 
-  it("source implements delta per tick, not cumulative, with Pterodactyl comment", () => {
-    const src = readFileSync(resolve(__dirname, "../components/server/console-view.tsx"), "utf8");
-    expect(src).toContain("Pterodactyl StatGraphs:61");
-    expect(src).toContain("deltas, not cumulative");
-    expect(src).toContain("prevRxRef");
-    expect(src).toContain("prevTxRef");
-    expect(src).toContain("Math.max(0, drx + dtx)");
-    expect(src).toContain('if (drx < 0 || dtx < 0) delta = Math.max(0, rx + tx)');
-    // Also verify first tick pushes 0
-    expect(src).toContain("First tick has no delta — push 0 to avoid spike");
+  it("handles independently reset counters without adding the other lifetime total", () => {
+    expect(computeNetworkDelta(100, 7150, 5000, 7000).delta).toBe(250);
+    expect(computeNetworkDelta(5150, 100, 5000, 7000).delta).toBe(250);
   });
 
   it("integration: stats websocket pushes deltas not cumulative totals into history (via Chart points)", async () => {
@@ -367,6 +326,34 @@ describe("console-view network delta per tick not cumulative", () => {
       expect(points[1]).toBeCloseTo(8, 0);
     });
   });
+
+  it("resets telemetry and the network baseline when switching servers", async () => {
+    const first = makeServer({ id: "first", status: "running" });
+    const second = makeServer({ id: "second", status: "running" });
+    const view = (server: typeof first) => (
+      <ServerProvider value={{ server, access: makeServerAccess(), refreshServer: async () => {} }}>
+        <ConsoleView server={server} />
+      </ServerProvider>
+    );
+    const { rerender } = renderWithQuery(view(first));
+    await waitFor(() => expect(managerInstances.length).toBe(2));
+    const tick = getStatsManager().config.onMessage!;
+    await act(async () => {
+      tick({ cpuPercent: 10, memoryBytes: 10, memoryLimit: 100, networkRxBytes: 1000, networkTxBytes: 1000 });
+      tick({ cpuPercent: 11, memoryBytes: 10, memoryLimit: 100, networkRxBytes: 1100, networkTxBytes: 1150 });
+    });
+    expect(screen.queryByText("Waiting for next sample")).not.toBeInTheDocument();
+    rerender(view(second));
+    await waitFor(() => expect(managerInstances.length).toBe(4));
+    expect(screen.getByText("Waiting for next sample")).toBeInTheDocument();
+    const newTick = managerInstances[3].config.onMessage as (data: unknown) => void;
+    await act(async () => {
+      newTick({ cpuPercent: 5, memoryBytes: 10, memoryLimit: 100, networkRxBytes: 5000, networkTxBytes: 5000 });
+    });
+    expect(screen.getByText("Waiting for next sample")).toBeInTheDocument();
+    const network = document.querySelector('[aria-label="Network chart"] polyline');
+    expect(network?.getAttribute("points")).toBe("0,100");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -390,16 +377,13 @@ describe("console-view Chart auto-max with limit (limitOr100)", () => {
 
   it("ensures max at least 1 to avoid divide-by-zero", () => {
     expect(getChartMax([], 0)).toBe(100); // fallback still >=1
-    // Even if someone passes weird limit, max never 0
-    const src = readFileSync(resolve(__dirname, "../components/server/console-view.tsx"), "utf8");
-    expect(src).toContain("Math.max(observedMax, ceiling, 1)");
+    expect(getChartMax([], 0.1)).toBe(1);
   });
 
-  it("source implements ceiling = limitOr100 pattern (Pterodactyl StatGraphs:61)", () => {
-    const src = readFileSync(resolve(__dirname, "../components/server/console-view.tsx"), "utf8");
-    expect(src).toContain('limitOr100');
-    expect(src).toContain('const ceiling = typeof limit === "number" && Number.isFinite(limit) && limit > 0 ? limit : 100');
-    expect(src).toContain('const max = Math.max(observedMax, ceiling, 1)');
+  it("keeps observed samples unchanged while applying a ceiling", () => {
+    const samples = [1, 2];
+    expect(getChartMax(samples, 100)).toBe(100);
+    expect(samples).toEqual([1, 2]);
   });
 
   it("integration: CPU/Memory charts with limit 100 do not exaggerate tiny values", async () => {
