@@ -29,8 +29,11 @@ export function BillingManager() {
     setError(null);
     try {
       const [plansRes, settingsRes] = await Promise.all([
-        billing.fetchBillingPlans().catch(() => [] as billing.BillingPlan[]),
-        billing.fetchBillingSettings().catch(() => null),
+        // No `.catch(() => [])` / `.catch(() => null)` here: a failed request has
+        // to surface as the error below instead of rendering as "no plans"
+        // and "no settings configured".
+        billing.fetchBillingPlans(),
+        billing.fetchBillingSettings(),
       ]);
       setPlans(plansRes);
       setSettings(settingsRes);
@@ -70,7 +73,8 @@ export function BillingManager() {
   async function handleDelete(id: string) {
     if (!confirm("Delete this plan?")) return;
     try {
-      await billing.deleteBillingPlan(id);
+      const result = await billing.deleteBillingPlan(id);
+      if (!result.ok) throw new Error("The server reported the billing plan was not deleted.");
       setSuccess("Plan deleted");
       await load();
     } catch (err) {
@@ -143,7 +147,6 @@ export function BillingManager() {
     <AdminPageLayout
       title="Billing & Plans"
       description="Manage purchasable tiers, per-org quotas, usage metering, and processor webhook settings. Public catalog at GET /billing/plans; admin CRUD under /billing/plans."
-      breadcrumbs={[{ label: "Admin", href: "/admin/billing" }, { label: "Billing" }]}
     >
       {error && (
         <div role="alert" className="rounded-xl border border-red-300 bg-red-wash p-4 text-sm text-red-dark">

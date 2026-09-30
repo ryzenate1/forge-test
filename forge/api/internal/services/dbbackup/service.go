@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -460,20 +461,50 @@ func (s *Service) EngineDumpCommands(engine string) json.RawMessage {
 
 func init() {
 	if err := os.MkdirAll(backupDir, 0700); err != nil {
-		log.Printf("failed to create backup dir %s: %v", backupDir, err)
+		slog.Error("failed to create backup dir", "dir", backupDir, "error", err)
 	} else if err := os.Chmod(backupDir, 0700); err != nil {
-		log.Printf("failed to secure backup dir %s: %v", backupDir, err)
+		slog.Error("failed to secure backup dir", "dir", backupDir, "error", err)
 	}
 }
 
 type noopStorage struct{}
 
-func (n noopStorage) Upload(_ context.Context, _ string, _ []byte) error { return nil }
+func (n noopStorage) Upload(_ context.Context, _ string, _ []byte) error {
+	return errors.New("noop storage cannot upload — configure a real backup storage backend")
+}
 func (n noopStorage) Download(_ context.Context, _ string) ([]byte, error) {
 	return nil, errors.New("noop storage cannot download")
 }
 func (n noopStorage) Delete(_ context.Context, _ string) error { return nil }
 
 func NewNoopStorage() BackupStorage { return noopStorage{} }
+
+// LocalStorage persists backup dumps to the local filesystem under a base
+// directory. This is the default for single-node deployments that do not have
+// object storage configured.
+type LocalStorage struct {
+	BaseDir string
+}
+
+func NewLocalStorage(baseDir string) BackupStorage {
+	_ = os.MkdirAll(baseDir, 0700)
+	return &LocalStorage{BaseDir: baseDir}
+}
+
+func (l *LocalStorage) Upload(_ context.Context, path string, data []byte) error {
+	full := filepath.Join(l.BaseDir, path)
+	if err := os.MkdirAll(filepath.Dir(full), 0700); err != nil {
+		return fmt.Errorf("create backup dir: %w", err)
+	}
+	return os.WriteFile(full, data, 0600)
+}
+
+func (l *LocalStorage) Download(_ context.Context, path string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(l.BaseDir, path))
+}
+
+func (l *LocalStorage) Delete(_ context.Context, path string) error {
+	return os.Remove(filepath.Join(l.BaseDir, path))
+}
 
 var _ io.Reader = (*bytes.Buffer)(nil)

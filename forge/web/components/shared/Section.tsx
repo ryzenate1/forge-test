@@ -13,9 +13,8 @@ import { useState } from "react";
  *   - eyebrow: 11px uppercase tracking [0.12em] (or [0.08em] for card labels)
  *   - title: 30–32px tracking [-0.03em] leading-none, font [600–650]
  *   - card spacing: p-4 (16px = space md) + gap-4 (16px)
- *   - typography: IBM Plex Sans for body (var(--font-sans) after beautify),
- *                 Space Grotesk for numbers (var(--font-display)),
- *                 JetBrains Mono for code/mono fallback
+ *   - typography: Manrope for body (var(--font-sans) after beautify),
+ *                 JetBrains Mono for tabular numbers and code (var(--font-mono))
  *
  * Two variants:
  *   - PageHeader: eyebrow + title + description + divider (top of page)
@@ -86,7 +85,7 @@ export function Section({
     return (
       <section className={cn(card ? "rounded-xl border border-[var(--line)] bg-[var(--surface)] overflow-hidden" : "", className)}>
         {title || eyebrow ? (
-          <div className={cn("px-4 py-3", card ? "border-b border-[var(--line)] bg-white/[0.02]" : "border-b border-[var(--line)] pb-3", headerClassName)}>
+          <div className={cn("px-4 py-3", card ? "border-b border-[var(--line)] bg-overlay-subtle" : "border-b border-[var(--line)] pb-3", headerClassName)}>
             <div className="flex items-start justify-between gap-3">
               <div>
                 {eyebrow ? <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-subtle)] flex items-center gap-1.5">{Icon ? <Icon size={12} /> : null}{eyebrow}</div> : null}
@@ -94,7 +93,7 @@ export function Section({
                   <h2 className={cn("font-semibold tracking-[-0.01em]", eyebrow ? "mt-1 text-sm" : "text-sm flex items-center gap-2", headerClassName)}>
                     {Icon && !eyebrow ? <Icon size={14} className="text-[var(--text-subtle)]" /> : null}
                     {title}
-                    {count ? <span className="ml-2 rounded-full bg-white/[0.06] px-2 py-0.5 text-[11px] font-medium text-[var(--text-subtle)]">{count}</span> : null}
+                    {count ? <span className="ml-2 rounded-full bg-overlay-strong px-2 py-0.5 text-[11px] font-medium text-[var(--text-subtle)]">{count}</span> : null}
                   </h2>
                 ) : null}
                 {description ? <p className="mt-1 text-xs leading-5 text-[var(--text-subtle)] max-w-[65ch]">{description}</p> : null}
@@ -109,17 +108,18 @@ export function Section({
   }
 
   // Collapsible variant — mirrors AdminHealth Section pattern, now tokenized
+  const panelId = `section-panel-${title?.toLowerCase().replace(/[^a-z0-9]+/g, "-") ?? "content"}`;
   return (
     <div className={cn("rounded-xl border border-[var(--line)] bg-[var(--surface)] overflow-hidden", className)}>
-      <button onClick={() => setOpen(!open)} className={cn("flex w-full items-center justify-between px-5 py-4 text-left hover:bg-white/[0.02] transition", headerClassName)} type="button">
+      <button aria-controls={panelId} aria-expanded={open} onClick={() => setOpen(!open)} className={cn("flex w-full items-center justify-between px-5 py-4 text-left hover:bg-overlay-subtle transition", headerClassName)} type="button">
         <span className="flex items-center gap-2 text-sm font-semibold">
           {Icon ? <Icon size={16} className="text-[var(--text-subtle)]" /> : null}
           {title}
-          {count ? <span className="ml-2 rounded-full bg-white/[0.06] px-2 py-0.5 text-[11px] font-medium text-[var(--text-subtle)]">{count}</span> : null}
+          {count ? <span className="ml-2 rounded-full bg-overlay-strong px-2 py-0.5 text-[11px] font-medium text-[var(--text-subtle)]">{count}</span> : null}
         </span>
         {open ? <ChevronDown size={14} className="text-[var(--text-subtle)]" /> : <ChevronRight size={14} className="text-[var(--text-subtle)]" />}
       </button>
-      {open ? <div className={cn("border-t border-[var(--line)] p-4 space-y-4", contentClassName)}>{children}</div> : null}
+      {open ? <div className={cn("border-t border-[var(--line)] p-4 space-y-4", contentClassName)} id={panelId}>{children}</div> : null}
     </div>
   );
 }
@@ -133,8 +133,10 @@ export function PageContainer({ children, className }: { children: React.ReactNo
 }
 
 /**
- * Number — Space Grotesk token for tabular numbers (exemplar: 28px mono with Grotesk tracking)
- * Body text remains Plex Sans / Manrope fallback.
+ * Number — JetBrains Mono token for tabular numbers (exemplar: 28px mono
+ * tracking). Body text remains Manrope. Previously this forced
+ * var(--font-display) (Space Grotesk) via an inline style that fought the
+ * font-mono class — now the single mono token wins.
  */
 export function NumberValue({ children, className, size = "base" }: { children: React.ReactNode; className?: string; size?: "sm" | "base" | "lg" | "xl" }) {
   const sizes = {
@@ -143,5 +145,5 @@ export function NumberValue({ children, className, size = "base" }: { children: 
     lg: "text-[20px] font-[600] tracking-[-0.02em] leading-none",
     xl: "text-[28px] font-[650] tracking-[-0.02em] leading-none",
   } as const;
-  return <span className={cn("font-mono tabular-nums", sizes[size], className)} style={{ fontFamily: "var(--font-display, var(--font-mono)), ui-monospace, monospace" }}>{children}</span>;
+  return <span className={cn("font-mono tabular-nums", sizes[size], className)}>{children}</span>;
 }

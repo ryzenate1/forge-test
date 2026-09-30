@@ -95,6 +95,13 @@ func (s *LeastLoadedScorer) Score(_ context.Context, candidate Candidate, reques
 	score := availableRatio(candidate.AvailableMemory, candidate.TotalMemory) +
 		availableRatio(candidate.AvailableCPU, candidate.TotalCPU) +
 		availableRatio(candidate.AvailableDisk, candidate.TotalDisk)
+	if placementV2() {
+		// The three ratios describe one node, so their mean is the comparable
+		// score. Summing them made the result depend on how many resources a
+		// candidate happened to report and put it on a different scale from the
+		// bounded soft-constraint terms added to it.
+		score /= 3.0
+	}
 	reasons := []string{
 		fmt.Sprintf("available memory: %d MB", candidate.AvailableMemory),
 		fmt.Sprintf("available CPU: %d shares", candidate.AvailableCPU),
@@ -121,11 +128,12 @@ func (s *BinPackScorer) Score(_ context.Context, candidate Candidate, request Wo
 	if candidate.TotalDisk > 0 {
 		diskUtil = float64(candidate.AllocatedDisk) / float64(candidate.TotalDisk)
 	}
-	score := (memUtil + cpuUtil + diskUtil) / 3.0
+	score := math.Max(memUtil, math.Max(cpuUtil, diskUtil))
 	reasons := []string{
 		fmt.Sprintf("memory utilization: %.0f%%", math.Round(memUtil*100)),
 		fmt.Sprintf("CPU utilization: %.0f%%", math.Round(cpuUtil*100)),
 		fmt.Sprintf("disk utilization: %.0f%%", math.Round(diskUtil*100)),
+		fmt.Sprintf("bin-pack score takes the max: %.3f", score),
 	}
 	return score, reasons, nil
 }
@@ -176,6 +184,19 @@ func ensureCapacity(candidate Candidate, request WorkloadRequest) error {
 	if request.CPU < 0 || request.MemoryMB < 0 || request.DiskMB < 0 {
 		return fmt.Errorf("workload resources must not be negative")
 	}
+	// Unknown capacity is not empty capacity and not infinite capacity: a
+	// node that reports no total for a requested resource cannot be shown to
+	// fit, so it is excluded. This matches the scheduler's HasCapacity, which
+	// rejects unknown totals the same way — one rule in both layers.
+	if request.CPU > 0 && candidate.TotalCPU <= 0 {
+		return fmt.Errorf("candidate %s has unknown CPU capacity", candidate.NodeID)
+	}
+	if request.MemoryMB > 0 && candidate.TotalMemory <= 0 {
+		return fmt.Errorf("candidate %s has unknown memory capacity", candidate.NodeID)
+	}
+	if request.DiskMB > 0 && candidate.TotalDisk <= 0 {
+		return fmt.Errorf("candidate %s has unknown disk capacity", candidate.NodeID)
+	}
 	if request.CPU > candidate.AvailableCPU || request.MemoryMB > candidate.AvailableMemory || request.DiskMB > candidate.AvailableDisk {
 		return fmt.Errorf("candidate %s does not have enough capacity", candidate.NodeID)
 	}
@@ -184,7 +205,20 @@ func ensureCapacity(candidate Candidate, request WorkloadRequest) error {
 
 func availableRatio(available, total int) float64 {
 	if total <= 0 {
-		return float64(available)
+		if !placementV2() {
+			return float64(available)
+		}
+		if available <= 0 {
+			return 0
+		}
+		// Capacity is unknown, not infinite. A monotonic bounded proxy keeps the
+		// ordering between a node with 100 MB free and one with 5 GB free while
+		// staying inside the band the soft terms are sized against.
+		return float64(available) / float64(available+1000)
 	}
-	return float64(available) / float64(total)
+	ratio := float64(available) / float64(total)
+	if !placementV2() {
+		return ratio
+	}
+	return clampUnit(ratio)
 }

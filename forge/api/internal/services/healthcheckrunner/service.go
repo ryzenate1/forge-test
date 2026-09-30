@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"runtime"
@@ -27,6 +28,11 @@ const (
 )
 
 type CheckType string
+
+// maxHealthCheckConcurrency bounds how many target checks run at once within a
+// single pass. Each check opens a socket and a DB write, so the ceiling keeps a
+// large fleet of targets from exhausting file descriptors or the pool.
+const maxHealthCheckConcurrency = 64
 
 const (
 	CheckTypeTCP  CheckType = "tcp"
@@ -142,15 +148,18 @@ func (s *Service) Start(ctx context.Context) {
 	}
 	ctx, s.cancel = context.WithCancel(ctx)
 	go func() {
+		// Backstop for the one-off startup load; the recurring passes are guarded
+		// individually by runOnceSafe so a panic in a single tick does not kill the
+		// runner and leave health permanently stale.
 		defer func() {
 			if r := recover(); r != nil {
 				buf := make([]byte, 4096)
 				n := runtime.Stack(buf, false)
-				fmt.Printf("health check runner panic recovered: %v\nstack: %s", r, buf[:n])
+				slog.Error("health check runner panic recovered", "panic", r, "stack", string(buf[:n]))
 			}
 		}()
 		s.loadExistingStates(ctx)
-		s.runOnce(ctx)
+		s.runOnceSafe(ctx)
 		ticker := time.NewTicker(s.config.Interval)
 		defer ticker.Stop()
 		for {
@@ -158,10 +167,24 @@ func (s *Service) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				s.runOnce(ctx)
+				s.runOnceSafe(ctx)
 			}
 		}
 	}()
+}
+
+// runOnceSafe runs a single health-check pass, recovering from a panic so a
+// failure in one target's check cannot terminate the runner goroutine and
+// silently stop all subsequent checks across every target group.
+func (s *Service) runOnceSafe(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			slog.Error("health check runner panic recovered", "panic", r, "stack", string(buf[:n]))
+		}
+	}()
+	s.runOnce(ctx)
 }
 
 func (s *Service) Stop() {
@@ -187,19 +210,6 @@ func (s *Service) loadExistingStates(ctx context.Context) {
 			}
 			var status TargetStatus
 			var suspectedSince *time.Time
-			if t.Status == "unhealthy" {
-				status = TargetStatusUnhealthy
-			} else if t.Status == "draining" {
-				status = TargetStatusUnhealthy
-				now := time.Now()
-				suspectedSince = &now
-			} else if failures > 0 {
-				status = TargetStatusSuspected
-				now := time.Now().UTC()
-				suspectedSince = &now
-			} else {
-				status = TargetStatusHealthy
-			}
 			var hc HealthCheckConfig
 			if len(g.HealthCheck) > 0 {
 				if err := json.Unmarshal(g.HealthCheck, &hc); err != nil {
@@ -213,6 +223,28 @@ func (s *Service) loadExistingStates(ctx context.Context) {
 			unhealthyThreshold := hc.UnhealthyThreshold
 			if unhealthyThreshold <= 0 {
 				unhealthyThreshold = 3
+			}
+			// Fresh state must be earned, not assumed: a target with failures
+			// on record starts suspected, and one with too few successes to
+			// clear the healthy threshold starts suspected as well. Only a
+			// history of enough consecutive successes initializes as healthy.
+			switch {
+			case t.Status == "unhealthy":
+				status = TargetStatusUnhealthy
+			case t.Status == "draining":
+				status = TargetStatusUnhealthy
+				now := time.Now()
+				suspectedSince = &now
+			case failures > 0:
+				status = TargetStatusSuspected
+				now := time.Now().UTC()
+				suspectedSince = &now
+			case successes < healthyThreshold:
+				status = TargetStatusSuspected
+				now := time.Now().UTC()
+				suspectedSince = &now
+			default:
+				status = TargetStatusHealthy
 			}
 			s.mu.Lock()
 			s.states[t.ID] = &TargetHealthState{
@@ -249,7 +281,13 @@ func (s *Service) runOnce(ctx context.Context) {
 	checkCtx, cancel := context.WithTimeout(ctx, checkTimeout)
 	defer cancel()
 
+	// Bound concurrent checks: a pass fans out one goroutine per target across
+	// every group, so without a ceiling thousands of targets would each open a
+	// socket and a DB write at once and exhaust file descriptors and the
+	// connection pool. The semaphore caps in-flight checks; acquiring also
+	// respects cancellation so a shutdown mid-pass stops launching new checks.
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxHealthCheckConcurrency)
 	for _, g := range groups {
 		var cfg HealthCheckConfig
 		if len(g.HealthCheck) == 0 {
@@ -275,9 +313,16 @@ func (s *Service) runOnce(ctx context.Context) {
 			continue
 		}
 		for _, t := range targets {
+			select {
+			case sem <- struct{}{}:
+			case <-checkCtx.Done():
+				wg.Wait()
+				return
+			}
 			wg.Add(1)
 			go func(target store.TargetRow, groupID string, hc HealthCheckConfig, protocol string) {
 				defer wg.Done()
+				defer func() { <-sem }()
 				s.checkTarget(checkCtx, target, groupID, hc, protocol)
 			}(t, g.ID, cfg, g.Protocol)
 		}
@@ -301,11 +346,17 @@ func (s *Service) checkTarget(ctx context.Context, target store.TargetRow, group
 	state, exists := s.states[stateKey]
 	s.mu.RUnlock()
 	if !exists {
+		// A target seen for the first time starts suspected, not healthy:
+		// one good check must not certify a workload the runner has never
+		// observed. It becomes healthy only after healthyThreshold
+		// consecutive successes, via the transition below.
+		now := time.Now().UTC()
 		state = &TargetHealthState{
 			ID:                 target.ID,
 			GroupID:            groupID,
 			ServerID:           target.ServerID,
-			Status:             TargetStatusHealthy,
+			Status:             TargetStatusSuspected,
+			SuspectedSince:     &now,
 			HealthyThreshold:   hc.HealthyThreshold,
 			UnhealthyThreshold: hc.UnhealthyThreshold,
 		}
@@ -353,7 +404,6 @@ func (s *Service) checkTarget(ctx context.Context, target store.TargetRow, group
 	}
 
 	state.mu.Lock()
-	defer state.mu.Unlock()
 
 	state.LastCheckAt = result.CheckedAt
 
@@ -393,7 +443,7 @@ func (s *Service) checkTarget(ctx context.Context, target store.TargetRow, group
 					go func(serverID, targetID string, failures int) {
 						defer func() {
 							if r := recover(); r != nil {
-								fmt.Printf("health check onUnhealthy callback panic: %v", r)
+								slog.Error("health check onUnhealthy callback panic", "panic", r)
 							}
 						}()
 						callbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
@@ -410,7 +460,7 @@ func (s *Service) checkTarget(ctx context.Context, target store.TargetRow, group
 					go func(serverID, targetID string, failures int) {
 						defer func() {
 							if r := recover(); r != nil {
-								fmt.Printf("health check onUnhealthy callback panic: %v", r)
+								slog.Error("health check onUnhealthy callback panic", "panic", r)
 							}
 						}()
 						callbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
@@ -423,9 +473,17 @@ func (s *Service) checkTarget(ctx context.Context, target store.TargetRow, group
 	}
 
 	if !exists {
+		// Publish the new state under s.mu only. The lock order is strictly
+		// s.mu -> state.mu: s.mu must never be acquired while holding
+		// state.mu, so the mutation above is released first.
+		state.mu.Unlock()
 		s.mu.Lock()
-		s.states[stateKey] = state
+		if _, dup := s.states[stateKey]; !dup {
+			s.states[stateKey] = state
+		}
 		s.mu.Unlock()
+	} else {
+		state.mu.Unlock()
 	}
 }
 
@@ -561,10 +619,18 @@ func (s *Service) GetTargetState(targetID string) *TargetHealthState {
 }
 
 func (s *Service) ListUnhealthyTargets(ctx context.Context) []*TargetHealthState {
+	// Snapshot the state pointers under s.mu, then inspect each target under
+	// its own lock after releasing s.mu. Holding s.mu while taking state.mu
+	// would nest the two locks; the order is s.mu -> state.mu and they are
+	// never held together here.
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	results := make([]*TargetHealthState, 0)
+	states := make([]*TargetHealthState, 0, len(s.states))
 	for _, state := range s.states {
+		states = append(states, state)
+	}
+	s.mu.RUnlock()
+	results := make([]*TargetHealthState, 0)
+	for _, state := range states {
 		state.mu.Lock()
 		if state.Status != TargetStatusHealthy {
 			results = append(results, state)
@@ -579,13 +645,19 @@ func (s *Service) CorrelationID() string {
 }
 
 func (s *Service) Metrics() map[string]any {
+	// Same snapshot discipline as ListUnhealthyTargets: copy the pointers
+	// under s.mu, release it, then read each target under its own lock.
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	total := len(s.states)
+	states := make([]*TargetHealthState, 0, len(s.states))
+	for _, state := range s.states {
+		states = append(states, state)
+	}
+	s.mu.RUnlock()
+	total := len(states)
 	healthy := 0
 	suspected := 0
 	unhealthy := 0
-	for _, state := range s.states {
+	for _, state := range states {
 		state.mu.Lock()
 		switch state.Status {
 		case TargetStatusHealthy:

@@ -3,13 +3,16 @@ package store
 import (
 	"context"
 	crand "crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gamepanel/forge/internal/secrets"
@@ -21,6 +24,46 @@ import (
 type Store struct {
 	db      *pgxpool.Pool
 	secrets *secrets.Keyring
+
+	// migrationIntegrityMu guards the results of the last migration run's
+	// drift check (migrationDrift, migrationsUnverified, migrationsSkippedDDL).
+	migrationIntegrityMu sync.Mutex
+	migrationDrift       []MigrationDrift
+	migrationsUnverified int
+	migrationsSkippedDDL []string
+
+	// webhookHookMu guards webhookHook, the observer notified after each
+	// webhook event is persisted to the outbox.
+	webhookHookMu sync.RWMutex
+	webhookHook   func(context.Context, string, map[string]any)
+}
+
+// SetWebhookEventHook registers a callback invoked after every event is
+// enqueued into the durable webhook outbox (DispatchWebhookEvent and
+// EnqueueWebhookEvent share that choke point). This is how the notifications
+// engine consumes the same control-plane events as outbound webhooks without
+// importing the notifications package into the store layer (which would be a
+// cycle) or touching every producer call site. The hook receives a deep copy
+// of the event payload and is invoked asynchronously.
+func (s *Store) SetWebhookEventHook(fn func(ctx context.Context, event string, payload map[string]any)) {
+	s.webhookHookMu.Lock()
+	s.webhookHook = fn
+	s.webhookHookMu.Unlock()
+}
+
+// notifyWebhookEventHook fires the registered webhook event observer, if any.
+func (s *Store) notifyWebhookEventHook(ctx context.Context, event string, payloadRaw []byte) {
+	s.webhookHookMu.RLock()
+	hook := s.webhookHook
+	s.webhookHookMu.RUnlock()
+	if hook == nil {
+		return
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(payloadRaw, &payload); err != nil || payload == nil {
+		return
+	}
+	go hook(context.WithoutCancel(ctx), event, payload)
 }
 
 type ScheduleTaskAction string
@@ -41,6 +84,14 @@ const migrationAdvisoryLockID int64 = 0x466F7267656D6967 // "ForgeMig"
 // pool connection. The returned release func releases the lock and returns the
 // connection to the pool. The lock is automatically dropped if the session
 // dies, so a crashed process cannot permanently wedge migrations.
+//
+// PostgreSQL-only by design: Store is PostgreSQL-only (see ConnectWithKeyring
+// fail-fast). Queries throughout the store use PostgreSQL syntax — DISTINCT
+// ON, FOR UPDATE / FOR SHARE / SKIP LOCKED, ::casts, pg_advisory_lock,
+// ON CONFLICT, RETURNING — and have no MySQL/SQLite spelling. The
+// DatabaseDriver MySQL/SQLite implementations exist only for MigrationRunner
+// use in tests and local dev (migration translation + dialect overrides),
+// never for Store queries.
 func (s *Store) acquireMigrationLock(ctx context.Context) (func(), error) {
 	conn, err := s.db.Acquire(ctx)
 	if err != nil {
@@ -207,6 +258,8 @@ type Node struct {
 	SchedulerType          string           `json:"schedulerType"`
 	SchedulerConfig        *json.RawMessage `json:"schedulerConfig,omitempty"`
 	Tags                   []string         `json:"tags,omitempty"`
+	LoadAverage            *float64         `json:"loadAverage,omitempty"`
+	UptimeSeconds          *int64           `json:"uptimeSeconds,omitempty"`
 }
 
 type CreateNodeRequest struct {
@@ -373,8 +426,8 @@ type NodePatch struct {
 	DaemonConnect      *int
 	CPUOverallocate    *int
 	Tags               *[]string
-	SchedulerType      *string           `json:"schedulerType,omitempty"`
-	SchedulerConfig    *json.RawMessage  `json:"schedulerConfig,omitempty"`
+	SchedulerType      *string          `json:"schedulerType,omitempty"`
+	SchedulerConfig    *json.RawMessage `json:"schedulerConfig,omitempty"`
 }
 
 type NodeHeartbeatRequest struct {
@@ -388,6 +441,8 @@ type NodeHeartbeatRequest struct {
 	RuntimeStatus   string
 	RuntimeProvider string
 	Error           string
+	LoadAverage     float64
+	Uptime          int64
 }
 
 type Template struct {
@@ -455,7 +510,7 @@ type Server struct {
 	TransferTargetNodeID *string            `json:"transferTargetNodeId,omitempty"`
 	TransferState        string             `json:"transferState"`
 	TransferError        *string            `json:"transferError,omitempty"`
-	TransferRunToken     *string            `json:"transferRunToken,omitempty"`
+	TransferRunToken     *string            `json:"-"`
 	MemoryMB             int                `json:"memoryMb"`
 	CPUShares            int                `json:"cpuShares"`
 	CPULimit             int                `json:"cpuLimit"`
@@ -468,21 +523,26 @@ type Server struct {
 	Threads              string             `json:"threads"`
 	OOMDisabled          bool               `json:"oomDisabled"`
 	DockerImage          string             `json:"dockerImage"`
-	StartupCommand       string             `json:"startupCommand"`
-	PrimaryAllocationID  *string            `json:"primaryAllocationId,omitempty"`
-	ConfigSyncPending    bool               `json:"configSyncPending"`
-	ConfigSyncError      *string            `json:"configSyncError,omitempty"`
-	Node                 string             `json:"node"`
-	NodeID               string             `json:"nodeId,omitempty"`
-	SFTPHost             string             `json:"sftpHost,omitempty"`
-	SFTPPort             int                `json:"sftpPort,omitempty"`
-	Owner                string             `json:"owner"`
-	OwnerID              string             `json:"ownerId,omitempty"`
-	Template             string             `json:"template"`
-	InstalledAt          *time.Time         `json:"installedAt,omitempty"`
-	SkipScripts          bool               `json:"skipScripts"`
-	DockerLabels         map[string]string  `json:"dockerLabels,omitempty"`
-	Permissions         []string           `json:"permissions,omitempty"`
+	// RuntimeProvider is the engine this workload is dispatched to. It is stored
+	// per server so placement can refuse an engine the chosen node does not run
+	// rather than quietly building a container on whatever the node happens to
+	// have; it is also reported so the UI can show the truth about a workload.
+	RuntimeProvider     string            `json:"runtimeProvider"`
+	StartupCommand      string            `json:"startupCommand"`
+	PrimaryAllocationID *string           `json:"primaryAllocationId,omitempty"`
+	ConfigSyncPending   bool              `json:"configSyncPending"`
+	ConfigSyncError     *string           `json:"configSyncError,omitempty"`
+	Node                string            `json:"node"`
+	NodeID              string            `json:"nodeId,omitempty"`
+	SFTPHost            string            `json:"sftpHost,omitempty"`
+	SFTPPort            int               `json:"sftpPort,omitempty"`
+	Owner               string            `json:"owner"`
+	OwnerID             string            `json:"ownerId,omitempty"`
+	Template            string            `json:"template"`
+	InstalledAt         *time.Time        `json:"installedAt,omitempty"`
+	SkipScripts         bool              `json:"skipScripts"`
+	DockerLabels        map[string]string `json:"dockerLabels,omitempty"`
+	Permissions         []string          `json:"permissions,omitempty"`
 
 	// Generation is a monotonically increasing counter incremented on each
 	// recovery/evacuation. A server with a lower generation is stale and must
@@ -572,6 +632,7 @@ type CreateServerRequest struct {
 	DockerImage             string
 	StartupCommand          string
 	StartupVariables        map[string]string
+	RuntimeProvider         string
 	SkipScripts             bool
 	DockerLabels            map[string]string
 }
@@ -604,9 +665,10 @@ type UpdateAllocationRequest struct {
 }
 
 type ServerControlTarget struct {
-	ServerID  string
-	NodeURL   string
-	NodeToken string
+	ServerID        string
+	NodeURL         string
+	NodeToken       string
+	RuntimeProvider string
 }
 
 // ServerControlTargetDTO is a safe DTO for API responses (excludes NodeToken)
@@ -637,6 +699,7 @@ type ServerProvisionTarget struct {
 	Name              string
 	NodeURL           string
 	NodeToken         string
+	RuntimeProvider   string
 	Image             string
 	StartupCommand    string
 	InstallScript     string
@@ -664,6 +727,10 @@ type ServerProvisionTarget struct {
 	Status            string
 	SkipScripts       bool
 	DockerLabels      map[string]string
+	// RegistryAuth carries the resolved private-registry credentials for Image.
+	// It is populated by the store on a best-effort basis so provision and
+	// reconcile can pull non-Docker-Hub images.
+	RegistryAuth *RegistryCredential
 }
 
 // ServerProvisionTargetDTO is a safe DTO for API responses (excludes NodeToken)
@@ -699,6 +766,20 @@ type ServerProvisionTargetDTO struct {
 	Status            string
 	SkipScripts       bool
 	DockerLabels      map[string]string
+	// RegistryAuth carries decrypted credentials for a private registry whose
+	// address prefixes Image. Resolved at provision time from docker_registries
+	// so Beacon can pull non-Docker-Hub images.
+	RegistryAuth *RegistryCredential
+}
+
+// RegistryCredential is a store-level representation of private-registry login
+// material, kept here so ServerProvisionTarget can carry it without importing
+// the runtime package (which imports store).
+type RegistryCredential struct {
+	Username      string
+	Password      string
+	IdentityToken string
+	ServerAddress string
 }
 
 // ToDTO converts ServerProvisionTarget to safe DTO
@@ -1069,14 +1150,81 @@ func Connect(ctx context.Context, databaseURL string) (*Store, error) {
 	return ConnectWithKeyring(ctx, databaseURL, nil)
 }
 
+// applyPoolEnvOverrides lets operators size the connection pool using the
+// variables infra/gen-env.sh already writes into every generated production
+// .env. They used to be inert: the pool was fixed at MaxConns = 8, so raising
+// DB_MAX_OPEN_CONNS to relieve saturation changed nothing and warned about
+// nothing.
+//
+// Precedence is DSN > environment > the defaults in ConnectWithKeyring. A pool_*
+// parameter carried in DATABASE_URL is more specific than a process-wide
+// variable, so it wins. Unset, zero, negative and unparseable values keep the
+// default, so an existing deployment's pool behaviour does not change on
+// upgrade.
+//
+// DB_MAX_IDLE_CONNS is deliberately not mapped. pgxpool has no idle ceiling: it
+// keeps up to MaxConns idle and reaps them by age (MaxConnIdleTime). The closest
+// field, MinConns, is an idle *floor*, so honouring the variable there would
+// invert its meaning. It has been dropped from the generated env rather than
+// approximated here.
+func applyPoolEnvOverrides(cfg *pgxpool.Config, databaseURL string) {
+	if n, ok := envPositiveInt32("DB_MAX_OPEN_CONNS"); ok && !strings.Contains(databaseURL, "pool_max_conns") {
+		cfg.MaxConns = n
+	}
+	if n, ok := envPositiveInt32("DB_CONN_MAX_LIFETIME"); ok && !strings.Contains(databaseURL, "pool_max_conn_lifetime") {
+		cfg.MaxConnLifetime = time.Duration(n) * time.Second
+	}
+	if n, ok := envPositiveInt32("DB_CONN_MAX_IDLE_TIME"); ok && !strings.Contains(databaseURL, "pool_max_conn_idle_time") {
+		cfg.MaxConnIdleTime = time.Duration(n) * time.Second
+	}
+}
+
+// envPositiveInt32 reads a strictly positive environment variable that must fit
+// in an int32. Zero, negative and out-of-range values are rejected rather than
+// applied: pgxpool rejects MaxConns <= 0 outright, and a typo in an operator's
+// .env should fall back to the working default instead of taking the control
+// plane's pool below it.
+func envPositiveInt32(key string) (int32, bool) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return int32(n), true
+}
+
 func ConnectWithKeyring(ctx context.Context, databaseURL string, keyring *secrets.Keyring) (*Store, error) {
+	// Fail fast on non-Postgres DSNs: Store queries are PostgreSQL-only
+	// (DISTINCT ON, FOR UPDATE/SHARE + SKIP LOCKED, ::casts, ON CONFLICT,
+	// RETURNING, pg_advisory_lock) with no MySQL/SQLite spelling. The
+	// MySQL/SQLite DatabaseDriver implementations are scoped to
+	// MigrationRunner use in tests and local dev (migration translation +
+	// dialect overrides), never for Store queries. A MySQL DSN
+	// (user:pass@tcp(...)/db, mysql://...) or SQLite path (file:...,
+	// :memory:, *.db) here is a configuration error, not a dialect to
+	// negotiate — reject it loudly instead of failing obscurely on the
+	// first Postgres-only query.
+	trimmed := strings.TrimSpace(databaseURL)
+	lower := strings.ToLower(trimmed)
+	if strings.Contains(lower, "@tcp(") || strings.Contains(lower, "@unix(") ||
+		strings.HasPrefix(lower, "mysql://") || strings.HasPrefix(lower, "mariadb://") ||
+		strings.HasPrefix(lower, "mysql:") || strings.HasPrefix(lower, "sqlite:") ||
+		strings.HasPrefix(lower, "sqlite3:") || strings.HasPrefix(lower, "file:") ||
+		strings.HasPrefix(lower, ":memory:") || strings.HasSuffix(lower, ".db") ||
+		strings.HasSuffix(lower, ".sqlite") || strings.HasSuffix(lower, ".sqlite3") {
+		return nil, fmt.Errorf("store requires PostgreSQL: got a MySQL/SQLite DSN %q; MySQL/SQLite drivers are test/migration-only (MigrationRunner), Store queries are PostgreSQL-only", databaseURL)
+	}
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("store requires PostgreSQL (pgxpool parse): %w", err)
 	}
 	cfg.MaxConns = 8
 	cfg.MinConns = 1
 	cfg.MaxConnLifetime = time.Hour
+	applyPoolEnvOverrides(cfg, databaseURL)
 
 	var lastErr error
 	for attempt := 0; attempt < 20; attempt++ {
@@ -1136,7 +1284,91 @@ func (s *Store) RunSelectedMigrations(ctx context.Context, dir string, names []s
 	return s.runMigrations(ctx, dir, names)
 }
 
+// MigrationDrift records an applied migration whose file content no longer
+// matches the content that was applied. Because the filename is the primary key
+// in schema_migrations, editing an already-applied migration is otherwise
+// invisible forever: the row exists, the file is skipped, and the deployed
+// schema diverges from the repository with nothing to show it.
+type MigrationDrift struct {
+	Version string `json:"version"`
+	Applied string `json:"applied"`
+	OnDisk  string `json:"onDisk"`
+}
+
+// MigrationIntegrity summarises what the most recent migration run could and
+// could not establish about already-applied migrations.
+type MigrationIntegrity struct {
+	// Drift lists applied migrations whose file changed after it ran.
+	Drift []MigrationDrift
+	// Unverified counts applied migrations carrying no checksum, about which
+	// nothing was proven in either direction: rows recorded before the
+	// checksum column existed, guard skips, alias backfills, and names passed
+	// to RunSelectedMigrations that do not live in the migrations directory.
+	// An empty Drift with a non-zero Unverified means "no drift found among
+	// the rows that could be checked" — not "no drift".
+	Unverified int
+	// SkippedDDL lists PostgreSQL-only statements skipped on non-Postgres
+	// dialects (SQLite via MigrationRunner, see sqliteSkippedDDL). Each entry
+	// is "file: one-line statement". The Postgres runner never populates it;
+	// the MigrationRunner populates it alongside its stderr warning so the
+	// accepted drift is queryable instead of stderr-only.
+	SkippedDDL []string
+}
+
+// MigrationIntegrity reports the drift check from the last migration run. The
+// store deliberately does no logging of its own; the caller that runs
+// migrations is responsible for surfacing this — see cmd/api/main.go run(),
+// immediately after RunMigrations.
+func (s *Store) MigrationIntegrity() MigrationIntegrity {
+	s.migrationIntegrityMu.Lock()
+	defer s.migrationIntegrityMu.Unlock()
+	out := MigrationIntegrity{Unverified: s.migrationsUnverified}
+	if len(s.migrationDrift) > 0 {
+		out.Drift = append([]MigrationDrift(nil), s.migrationDrift...)
+	}
+	if len(s.migrationsSkippedDDL) > 0 {
+		out.SkippedDDL = append([]string(nil), s.migrationsSkippedDDL...)
+	}
+	return out
+}
+
+// migrationChecksum is the one content hash for migration files, shared with
+// validateMigrationHashes via migrationContentHash (normalize + sha256 in
+// migration.go). A trailing-whitespace-only edit is not drift in either
+// check. Legacy rows recorded with the pre-normalization exact-bytes hash
+// are still accepted by the drift comparison (see runMigrations), so
+// upgrading does not manufacture drift.
+func migrationChecksum(body []byte) string {
+	return migrationContentHash(body)
+}
+
+// migrationChecksumExact hashes the exact file bytes (pre-normalization
+// legacy). Only used as a backwards-compat fallback when comparing a
+// recorded checksum that may predate normalization.
+func migrationChecksumExact(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *Store) recordMigrationDrift(d MigrationDrift) {
+	s.migrationIntegrityMu.Lock()
+	s.migrationDrift = append(s.migrationDrift, d)
+	s.migrationIntegrityMu.Unlock()
+}
+
+func (s *Store) recordUnverifiedMigration() {
+	s.migrationIntegrityMu.Lock()
+	s.migrationsUnverified++
+	s.migrationIntegrityMu.Unlock()
+}
+
 func (s *Store) runMigrations(ctx context.Context, dir string, names []string) error {
+	s.migrationIntegrityMu.Lock()
+	s.migrationDrift = nil
+	s.migrationsUnverified = 0
+	s.migrationsSkippedDDL = nil
+	s.migrationIntegrityMu.Unlock()
+
 	releaseLock, err := s.acquireMigrationLock(ctx)
 	if err != nil {
 		return err
@@ -1152,18 +1384,116 @@ func (s *Store) runMigrations(ctx context.Context, dir string, names []string) e
 		return fmt.Errorf("ensure schema_migrations: %w", err)
 	}
 
-	sort.Strings(names)
+	// checksum is added by ALTER, not included in the CREATE above, because
+	// schema_migrations already exists on every deployed host. It is nullable
+	// on purpose: rows recorded before this column existed, and rows recorded
+	// without executing a file (guard skips and alias backfills), have no
+	// content that was applied, so they stay NULL and are reported as
+	// unverifiable rather than as drift. schema_migrations is owned by this
+	// runner rather than by a migration file, so this bootstrap is where the
+	// column belongs.
+	if _, err := s.db.Exec(ctx, `ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT`); err != nil {
+		return fmt.Errorf("ensure schema_migrations.checksum: %w", err)
+	}
+
+	// Numeric-then-suffix order: bare "082" applies before "082_a", so the
+	// base table always exists before its suffixed companion alters it.
+	sortMigrationFiles(names)
 
 	if err := validateNoDuplicatePrefixes(names); err != nil {
 		return err
 	}
 
+	// Same byte-identical-copy guard the MigrationRunner enforces: two
+	// different filenames with identical content (outside a registered rename
+	// alias) mean someone duplicated a migration instead of referencing it.
+	paths := make(map[string]string, len(names))
 	for _, name := range names {
-		var applied bool
-		if err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, name).Scan(&applied); err != nil {
-			return fmt.Errorf("check migration %s: %w", name, err)
+		paths[name] = filepath.Join(dir, name)
+	}
+	if err := validateMigrationHashes(paths); err != nil {
+		return err
+	}
+
+	// Load the full applied set once so no-op guard files (migrationAliases)
+	// whose canonical already applied can be recorded without executing.
+	// Canonicals themselves always execute when unrecorded: a guard row
+	// cannot prove the DDL ran, and every canonical is idempotent.
+	applied := make(map[string]struct{}, len(names))
+	appliedChecksums := make(map[string]string, len(names))
+	rows, err := s.db.Query(ctx, `SELECT version, checksum FROM schema_migrations`)
+	if err != nil {
+		return fmt.Errorf("list applied migrations: %w", err)
+	}
+	for rows.Next() {
+		var v string
+		var sum *string
+		if err := rows.Scan(&v, &sum); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan applied migration: %w", err)
 		}
-		if applied {
+		applied[v] = struct{}{}
+		if sum != nil && *sum != "" {
+			appliedChecksums[v] = *sum
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("list applied migrations: %w", err)
+	}
+
+	// Backfill guard rows for canonicals that already applied. Directional:
+	// a guard row proves nothing (guards are no-ops), so a missing canonical
+	// is always executed, never backfilled. INSERT ... ON CONFLICT DO NOTHING
+	// keeps this safe to re-run.
+	for _, pair := range migrationAliases {
+		guard, canonical := pair[0], pair[1]
+		if _, ok := applied[canonical]; ok {
+			if _, ok := applied[guard]; !ok {
+				if _, err := s.db.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`, guard); err != nil {
+					return fmt.Errorf("backfill renamed migration %s: %w", guard, err)
+				}
+				applied[guard] = struct{}{}
+			}
+		}
+	}
+
+	for _, name := range names {
+		if _, ok := applied[name]; ok {
+			// Already applied: nothing to run, but this is the only moment the
+			// runner can compare what is deployed against what is in the
+			// repository.
+			recorded, verifiable := appliedChecksums[name]
+			if !verifiable {
+				s.recordUnverifiedMigration()
+				continue
+			}
+			body, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				if os.IsNotExist(err) {
+					// RunSelectedMigrations is called with names that may not
+					// live in this directory. Absent is unverifiable, not drift.
+					s.recordUnverifiedMigration()
+					continue
+				}
+				return fmt.Errorf("read applied migration %s for drift check: %w", name, err)
+			}
+			onDisk := migrationChecksum(body)
+			if onDisk != recorded && migrationChecksumExact(body) != recorded {
+				s.recordMigrationDrift(MigrationDrift{Version: name, Applied: recorded, OnDisk: onDisk})
+			}
+			continue
+		}
+		// Guard skip: this file is a no-op whose canonical already applied,
+		// so record it without executing. Canonicals never skip via alias
+		// (see MigrationRunner.Run): every canonical is idempotent, so an
+		// old host re-applies harmlessly while a host that only recorded the
+		// guard still gets the DDL.
+		if isGuardFile(name) && canonicalApplied(name, applied) {
+			if _, err := s.db.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`, name); err != nil {
+				return fmt.Errorf("record migration %s: %w", name, err)
+			}
+			applied[name] = struct{}{}
 			continue
 		}
 
@@ -1175,25 +1505,41 @@ func (s *Store) runMigrations(ctx context.Context, dir string, names []string) e
 		if err != nil {
 			return fmt.Errorf("begin migration %s: %w", name, err)
 		}
+		// Deferred Rollback is the safety net for early returns and panics;
+		// every error path below also rolls back explicitly. Rollback after
+		// a successful Commit returns an error that is ignored here.
+		defer func() { _ = tx.Rollback(ctx) }()
 		for _, statement := range splitSQLStatements(string(body)) {
 			if _, err := tx.Exec(ctx, statement); err != nil {
 				_ = tx.Rollback(ctx)
 				return fmt.Errorf("run migration %s: %w", name, err)
 			}
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, name); err != nil {
+		// Recorded in the same transaction as the DDL, so a checksum can never
+		// describe content that did not commit.
+		if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)`, name, migrationChecksum(body)); err != nil {
 			_ = tx.Rollback(ctx)
 			return fmt.Errorf("record migration %s: %w", name, err)
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return fmt.Errorf("commit migration %s: %w", name, err)
 		}
+		applied[name] = struct{}{}
 	}
 	return nil
 }
 
 // Rollback reverts applied migrations to a target version by applying
-// .down.sql files from the rollbacks directory in reverse order.
+// .down.sql files from the rollbacks directory in reverse order of
+// application (applied_at DESC, migration sort-key DESC as a tiebreak), not
+// filename order: filename order is not application order once renames, letter
+// suffixes, and backfills exist. The target boundary and the tiebreak both use
+// migrationSortKey (numeric-then-suffix): a lexicographic SQL comparison would
+// misorder suffixed files (e.g. "082_deployments.sql" sorts AFTER "082" but
+// BEFORE "082_a_failover.sql" in apply order, while plain string ">=" cannot
+// express that). A migration with no .down.sql file — or one
+// whose .down.sql carries the "-- non-reversible" marker — is refused loudly;
+// history is never deleted for something that was not actually undone.
 func (s *Store) Rollback(ctx context.Context, rollbacksDir string, targetVersion string) error {
 	releaseLock, err := s.acquireMigrationLock(ctx)
 	if err != nil {
@@ -1210,38 +1556,69 @@ func (s *Store) Rollback(ctx context.Context, rollbacksDir string, targetVersion
 		return fmt.Errorf("ensure schema_migrations: %w", err)
 	}
 
-	rows, err := s.db.Query(ctx, `SELECT version FROM schema_migrations WHERE version >= $1 ORDER BY version DESC`, targetVersion)
+	targetNum, targetSuffix := migrationSortKey(targetVersion)
+	type appliedMigration struct {
+		version   string
+		appliedAt time.Time
+	}
+	rows, err := s.db.Query(ctx, `SELECT version, applied_at FROM schema_migrations`)
 	if err != nil {
 		return fmt.Errorf("list applied migrations: %w", err)
 	}
 	defer rows.Close()
 
-	var versions []string
+	var versions []appliedMigration
 	for rows.Next() {
 		var v string
-		if err := rows.Scan(&v); err != nil {
+		var ts time.Time
+		if err := rows.Scan(&v, &ts); err != nil {
 			return err
 		}
-		versions = append(versions, v)
+		// Boundary in sort-key space, not lexicographic string space (see
+		// doc comment): only versions applied at-or-after the target roll back.
+		if n, sfx := migrationSortKey(v); n < targetNum || (n == targetNum && sfx < targetSuffix) {
+			continue
+		}
+		versions = append(versions, appliedMigration{version: v, appliedAt: ts})
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	// Reverse application order: newest applied_at first, migration sort-key
+	// DESC breaking timestamp ties.
+	sort.Slice(versions, func(i, j int) bool {
+		if !versions[i].appliedAt.Equal(versions[j].appliedAt) {
+			return versions[i].appliedAt.After(versions[j].appliedAt)
+		}
+		ni, si := migrationSortKey(versions[i].version)
+		nj, sj := migrationSortKey(versions[j].version)
+		if ni != nj {
+			return ni > nj
+		}
+		return si > sj
+	})
 
-	for _, v := range versions {
+	for _, m := range versions {
+		v := m.version
 		downFile := filepath.Join(rollbacksDir, strings.TrimSuffix(v, ".sql")+".down.sql")
 		body, err := os.ReadFile(downFile)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return fmt.Errorf("rollback file not found for %s: %w", v, err)
+				return fmt.Errorf("rollback file not found for %s: migration is non-reversible (no .down.sql); refusing to delete history for work that cannot be undone", v)
 			}
 			return fmt.Errorf("read rollback %s: %w", v, err)
+		}
+		if isNonReversibleRollback(body) {
+			return fmt.Errorf("rollback refused for %s: migration is explicitly marked non-reversible", v)
 		}
 
 		tx, err := s.db.Begin(ctx)
 		if err != nil {
 			return fmt.Errorf("begin rollback %s: %w", v, err)
 		}
+		// Deferred Rollback covers early returns and panics; explicit
+		// rollbacks below remain for clarity. Ignored after Commit.
+		defer func() { _ = tx.Rollback(ctx) }()
 		for _, statement := range splitSQLStatements(string(body)) {
 			if _, err := tx.Exec(ctx, statement); err != nil {
 				_ = tx.Rollback(ctx)
@@ -1257,6 +1634,26 @@ func (s *Store) Rollback(ctx context.Context, rollbacksDir string, targetVersion
 		}
 	}
 	return nil
+}
+
+// isNonReversibleRollback reports whether a .down.sql file explicitly marks
+// its migration as non-reversible. Convention: a leading "-- non-reversible"
+// comment line. Rollback refuses these loudly instead of deleting
+// schema_migrations history for work it did not undo.
+func isNonReversibleRollback(body []byte) bool {
+	for _, line := range strings.Split(string(body), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "--") {
+			return false
+		}
+		if strings.Contains(strings.ToLower(trimmed), "non-reversible") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) Seed(ctx context.Context) error {
@@ -1345,10 +1742,12 @@ func (s *Store) Seed(ctx context.Context) error {
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO nodes (
 			id, uuid, name, region, base_url, fqdn, scheme, status, token_hash,
-			daemon_token_id, daemon_token, daemon_token_encrypted, daemon_listen, daemon_sftp, daemon_base, last_seen_at
+			daemon_token_id, daemon_token, daemon_token_encrypted, daemon_listen, daemon_sftp, daemon_base, last_seen_at,
+			memory_mb, disk_mb
 		)
 		VALUES ($1, $1, 'Ubuntu Demo Node', 'local-lab', $5, 'daemon', 'http', 'online',
-		        $2, $4, '', $3, 9090, 2022, '/srv/game-panel/servers', now())
+		        $2, $4, '', $3, 9090, 2022, '/srv/game-panel/servers', now(),
+		        16384, 102400)
 		ON CONFLICT (id) DO UPDATE SET
 			status = EXCLUDED.status,
 			base_url = EXCLUDED.base_url,
@@ -1356,7 +1755,9 @@ func (s *Store) Seed(ctx context.Context) error {
 			daemon_token_id = EXCLUDED.daemon_token_id,
 			daemon_token = '',
 			daemon_token_encrypted = EXCLUDED.daemon_token_encrypted,
-			last_seen_at = EXCLUDED.last_seen_at
+			last_seen_at = EXCLUDED.last_seen_at,
+			memory_mb = CASE WHEN COALESCE(nodes.memory_mb, 0) <= 0 THEN EXCLUDED.memory_mb ELSE nodes.memory_mb END,
+			disk_mb = CASE WHEN COALESCE(nodes.disk_mb, 0) <= 0 THEN EXCLUDED.disk_mb ELSE nodes.disk_mb END
 	`, nodeID, string(nodeTokenHash), nodeTokenEncrypted, nodeTokenID, nodeBaseURL); err != nil {
 		return err
 	}
@@ -1455,7 +1856,7 @@ const (
 	NodeHeartbeatStateSuspected   NodeHeartbeatState = "suspected"
 	NodeHeartbeatStateUnreachable NodeHeartbeatState = "unreachable"
 	NodeHeartbeatStateOffline     NodeHeartbeatState = "offline"
-	NodeHeartbeatStateRecovering   NodeHeartbeatState = "recovering"
+	NodeHeartbeatStateRecovering  NodeHeartbeatState = "recovering"
 	NodeHeartbeatStateReconciling NodeHeartbeatState = "reconciling"
 )
 
@@ -1688,12 +2089,12 @@ const (
 	RecoveryItemStatusExecuting RecoveryItemStatus = "executing"
 	RecoveryItemStatusCompleted RecoveryItemStatus = "completed"
 	// Restored means backup data was restored, but no live migration was run.
-	RecoveryItemStatusRestored  RecoveryItemStatus = "restored"
-	RecoveryItemStatusCancelled RecoveryItemStatus = "cancelled"
-	RecoveryItemStatusFailed    RecoveryItemStatus = "failed"
-	RecoveryItemStatusSkipped         RecoveryItemStatus = "skipped"
+	RecoveryItemStatusRestored       RecoveryItemStatus = "restored"
+	RecoveryItemStatusCancelled      RecoveryItemStatus = "cancelled"
+	RecoveryItemStatusFailed         RecoveryItemStatus = "failed"
+	RecoveryItemStatusSkipped        RecoveryItemStatus = "skipped"
 	RecoveryItemStatusAwaitingBeacon RecoveryItemStatus = "awaiting_beacon"
-	RecoveryItemStatusHealthGating  RecoveryItemStatus = "health_gating"
+	RecoveryItemStatusHealthGating   RecoveryItemStatus = "health_gating"
 )
 
 type RecoveryItem struct {
@@ -1781,29 +2182,29 @@ type ReservedCapacity struct {
 type PlacementIntentStatus string
 
 const (
-	PlacementIntentStatusPending   PlacementIntentStatus = "pending"
+	PlacementIntentStatusPending    PlacementIntentStatus = "pending"
 	PlacementIntentStatusCompleting PlacementIntentStatus = "completing"
-	PlacementIntentStatusCompleted PlacementIntentStatus = "completed"
-	PlacementIntentStatusFailed    PlacementIntentStatus = "failed"
-	PlacementIntentStatusExpired   PlacementIntentStatus = "expired"
+	PlacementIntentStatusCompleted  PlacementIntentStatus = "completed"
+	PlacementIntentStatusFailed     PlacementIntentStatus = "failed"
+	PlacementIntentStatusExpired    PlacementIntentStatus = "expired"
 	PlacementIntentStatusRolledBack PlacementIntentStatus = "rolled_back"
 )
 
 type PlacementIntent struct {
-	ID            string                 `json:"id"`
-	ServerID      string                 `json:"serverId,omitempty"`
-	NodeID        string                 `json:"nodeId"`
-	AllocationID  string                 `json:"allocationId,omitempty"`
-	ReservationID string                 `json:"reservationId,omitempty"`
-	CPU           int                    `json:"cpu"`
-	MemoryMB      int                    `json:"memoryMb"`
-	DiskMB        int                    `json:"diskMb"`
-	Status        PlacementIntentStatus  `json:"status"`
-	Error         string                 `json:"error,omitempty"`
-	CreatedAt     time.Time              `json:"createdAt"`
-	UpdatedAt     time.Time              `json:"updatedAt"`
-	ConfirmedAt   *time.Time             `json:"confirmedAt,omitempty"`
-	ExpiredAt     *time.Time             `json:"expiredAt,omitempty"`
+	ID            string                `json:"id"`
+	ServerID      string                `json:"serverId,omitempty"`
+	NodeID        string                `json:"nodeId"`
+	AllocationID  string                `json:"allocationId,omitempty"`
+	ReservationID string                `json:"reservationId,omitempty"`
+	CPU           int                   `json:"cpu"`
+	MemoryMB      int                   `json:"memoryMb"`
+	DiskMB        int                   `json:"diskMb"`
+	Status        PlacementIntentStatus `json:"status"`
+	Error         string                `json:"error,omitempty"`
+	CreatedAt     time.Time             `json:"createdAt"`
+	UpdatedAt     time.Time             `json:"updatedAt"`
+	ConfirmedAt   *time.Time            `json:"confirmedAt,omitempty"`
+	ExpiredAt     *time.Time            `json:"expiredAt,omitempty"`
 }
 
 // Desired State types

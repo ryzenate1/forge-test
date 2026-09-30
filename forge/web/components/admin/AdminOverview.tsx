@@ -1,102 +1,87 @@
 "use client";
+import { queryKeys } from "@/lib/api/query-keys";
 
 import { useMemo, useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Activity,
   AlertTriangle,
   ArrowUpRight,
-  CheckCircle2,
-  Cpu,
-  Database,
-  HardDrive,
-  Layers,
-  Network,
+  Clock,
+  Plus,
   RefreshCw,
-  Server,
   Shield,
-  ShieldAlert,
   ShieldCheck,
+  TrendingDown,
+  TrendingUp,
+  User,
   Zap,
 } from "lucide-react";
+import {
+  CpuKpiChipIcon,
+  MemoryRamStickIcon,
+  StoragePlattersIcon,
+  SystemHealthOperationalIcon,
+  SystemHealthAlertIcon,
+  SystemHealthUnknownIcon,
+  NodeHostIcon,
+  BeaconRadioTowerIcon,
+  ApplicationsCubeIcon,
+  DatabaseCylinderIcon,
+  ActivityWaveIcon,
+  ServerRackIcon,
+  HealthECGIcon,
+} from "@/components/ui/forge-icons";
 import { useRouter } from "next/navigation";
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  Tooltip,
+} from "recharts";
 import {
   fetchAdminAudit,
   fetchAllNodes,
   fetchAllServers,
-  fetchHealthStatus,
   fetchUsers,
   type ApiAdminAuditEvent,
   type ApiHealthCheck,
   type ApiNode,
-  type ApiServer,
 } from "@/lib/api";
-import { fetchApps, type ApiApp } from "@/lib/api/apps";
+import { fetchApps } from "@/lib/api/apps";
+import type { MetricPeriod, NodeMetrics } from "@/lib/api/monitoring";
+import {
+  checkVerdict,
+  findCheck,
+  isAvailable,
+  relativeTime,
+  // The canonical accessor-based sum. This page carried its own copy keyed on
+  // a field name, and that copy returned 0 for "nothing reported" where the
+  // canonical one returns undefined — the zero-for-unknown the telemetry
+  // layer exists to prevent.
+  REFRESH,
+  reportedTotal,
+  sourceState,
+  useHealthQuery,
+  useLatestNodeMetricsQuery,
+  useNodeMetricsHistoryQuery,
+} from "@/lib/admin/telemetry";
 import { ApiError } from "@/lib/api/http";
-import { PageInfoDisclosure } from "@/components/ui/page-info-disclosure";
+import { chart } from "@/lib/design-tokens";
+import { AdminPageToolbar } from "./admin-page-toolbar";
 import {
   AdminPageLayout,
-  AdminSection,
   SectionHeader,
+  Btn,
+  AdminSection,
   Card,
   CardHeader,
-  EmptyState,
   Pill,
-  StatsRow,
-  Btn,
+  MiniSparkline,
+  SubsystemHealthMeter,
+  cn,
 } from "./admin-ui";
-
-function StatusBreakdown({
-  data,
-  total,
-}: {
-  data: { label: string; value: number; color: string }[];
-  total: number;
-}) {
-  const safeTotal = total > 0 ? total : 1;
-  return (
-    <div className="space-y-3">
-      <div
-        className="flex h-3 w-full overflow-hidden rounded-full bg-white/[0.05]"
-        role="progressbar"
-        aria-label="Workload status distribution"
-        aria-valuenow={Math.round(
-          ((data.find((d) => d.label === "Running")?.value ?? 0) / safeTotal) * 100
-        )}
-        aria-valuemin={0}
-        aria-valuemax={100}
-      >
-        {data.map((item) => {
-          const width = (item.value / safeTotal) * 100;
-          if (width <= 0) return null;
-          return (
-            <div
-              key={item.label}
-              className="h-full transition-all"
-              style={{ width: `${width}%`, backgroundColor: item.color }}
-              title={`${item.label}: ${item.value} (${(
-                (item.value / safeTotal) *
-                100
-              ).toFixed(1)}%)`}
-            />
-          );
-        })}
-      </div>
-      <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-        {data.map((item) => (
-          <div key={item.label} className="flex items-center gap-1.5 text-xs text-slate-400">
-            <div
-              className="h-2 w-2 shrink-0 rounded-full"
-              style={{ backgroundColor: item.color }}
-            />
-            <span className="font-mono text-slate-200 tabular-nums">{item.value}</span>
-            <span className="text-slate-500">{item.label}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 function SimpleBarChart({
   data,
@@ -108,7 +93,7 @@ function SimpleBarChart({
   const maxValue = Math.max(0, ...data.map((item) => item.max));
   return (
     <div>
-      <h4 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
+      <h4 className="mb-3 text-xs font-semibold uppercase tracking-wider text-text-subtle">
         {title}
       </h4>
       <div className="space-y-2.5">
@@ -123,20 +108,26 @@ function SimpleBarChart({
             <div key={item.id} className="min-w-0 space-y-1">
               <div className="flex items-center justify-between text-xs">
                 <span
-                  className="truncate font-medium text-slate-300"
+                  className="truncate font-medium text-text"
                   title={item.label}
                 >
                   {`host · ${item.label}`}
                 </span>
-                <span className="font-mono text-slate-400 tabular-nums">
-                  {item.value.toLocaleString()} MiB
+                <span className="font-mono text-text-subtle tabular-nums">
+                  {item.value > 0 ? `${item.value.toLocaleString()} MiB` : "Unmetered / Dynamic"}
                 </span>
               </div>
-              <div className="flex h-2 w-full overflow-hidden rounded-full bg-white/[0.05]">
-                <div
-                  className="h-full rounded-full bg-sky-500/80 transition-all"
-                  style={{ width: `${pct}%` }}
-                />
+              <div className="flex h-2 w-full overflow-hidden rounded-full bg-overlay">
+                {item.value > 0 ? (
+                  <div
+                    className="h-full rounded-full bg-sky-500/80 transition-all"
+                    style={{ width: `${pct}%` }}
+                  />
+                ) : (
+                  <div
+                    className="h-full w-full rounded-full bg-sky-500/20 opacity-50"
+                  />
+                )}
               </div>
             </div>
           );
@@ -161,16 +152,18 @@ function QueryError({
 }) {
   const isPermission = isPermissionError(error);
   return (
-    <div className={`flex items-center justify-between gap-3 rounded-lg border p-3.5 text-xs ${
-      isPermission
-        ? "border-amber-500/30 bg-amber-950/20 text-amber-300"
-        : "border-red-500/30 bg-red-950/20 text-red-300"
-    }`}>
+    <div
+      className={`flex items-center justify-between gap-3 rounded-lg border p-3.5 text-xs ${
+        isPermission
+          ? "border-warn-line bg-warn-subtle text-warn"
+          : "border-danger-line bg-danger-subtle text-danger"
+      }`}
+    >
       <div className="flex items-center gap-2 min-w-0">
         {isPermission ? (
-          <Shield size={14} className="shrink-0 text-amber-400" />
+          <Shield size={14} className="shrink-0 text-warn" />
         ) : (
-          <AlertTriangle size={14} className="shrink-0 text-red-400" />
+          <AlertTriangle size={14} className="shrink-0 text-danger" />
         )}
         <span className="truncate">
           {isPermission ? "Permission restricted" : message}
@@ -180,7 +173,7 @@ function QueryError({
         <button
           type="button"
           onClick={onRetry}
-          className="shrink-0 font-semibold underline hover:text-red-100"
+          className="shrink-0 font-semibold underline hover:text-danger"
         >
           Retry
         </button>
@@ -189,40 +182,172 @@ function QueryError({
   );
 }
 
-function QueryLoading({ message }: { message: string }) {
+function hasHealthyPersistedHeartbeat(node: ApiNode) {
+  return node.heartbeatState === "healthy";
+}
+
+/* ------------------------------------------------------------------ *
+ * Subsystem meter readings
+ *
+ * Each of these returns `null` rather than `0` when there is no ratio to
+ * report. A meter that has not been read draws an empty dashed track; a meter
+ * showing a measured 0% is a different fact and looks different.
+ * ------------------------------------------------------------------ */
+
+/** Percentage of `total` that is `part`, or `null` when there is no ratio. */
+function ratioPct(part: number, total: number, available: boolean): number | null {
+  if (!available || total <= 0) return null;
+  return (part / total) * 100;
+}
+
+/**
+ * Tone for an inventory ratio: a failed query is an error, an unread or empty
+ * inventory is unknown, and a full complement is the only healthy reading.
+ */
+function inventoryTone(
+  query: { isError: boolean },
+  total: number,
+  healthy: number
+): "danger" | "unknown" | "ok" | "warn" {
+  if (query.isError) return "danger";
+  if (total === 0) return "unknown";
+  return healthy === total ? "ok" : "warn";
+}
+
+/**
+ * A control-plane check has no percentage of its own — it either passed or it
+ * did not. Report a full bar for a pass and an empty one for a failure; report
+ * no bar at all when the check was never read.
+ */
+function verdictPct(verdict: { tone: string; known: boolean }): number | null {
+  if (!verdict.known) return null;
+  return verdict.tone === "ok" ? 100 : 0;
+}
+
+/**
+ * Mean of a reported metric field across rows, or `undefined` when no row
+ * reports it. Deliberately not `0`: an unreported reading is not a zero one.
+ */
+function fleetMean(rows: NodeMetrics[], read: (row: NodeMetrics) => number | undefined): number | undefined {
+  let sum = 0;
+  let count = 0;
+  for (const row of rows) {
+    const value = read(row);
+    if (typeof value === "number" && Number.isFinite(value)) {
+      sum += value;
+      count += 1;
+    }
+  }
+  return count > 0 ? sum / count : undefined;
+}
+
+/** Sum of a reported field, plus how many rows actually reported it. */
+function fleetSum(
+  rows: NodeMetrics[],
+  read: (row: NodeMetrics) => number | undefined
+): { value: number; reported: number } {
+  let value = 0;
+  let reported = 0;
+  for (const row of rows) {
+    const raw = read(row);
+    if (typeof raw === "number" && Number.isFinite(raw)) {
+      value += raw;
+      reported += 1;
+    }
+  }
+  return { value, reported };
+}
+
+type TrendPoint = { time: string; cpu?: number; memory?: number; storage?: number };
+
+/**
+ * Fleet trend series built from real metric history.
+ *
+ * Rows arrive per node, so they are bucketed by observation time and averaged
+ * across whichever nodes reported inside each bucket. Buckets with no reading
+ * are not emitted — a gap in the series is left as a gap.
+ */
+function buildTrendSeries(rows: NodeMetrics[], buckets: number): TrendPoint[] {
+  const stamped = rows
+    .map((row) => ({ row, at: Date.parse(row.observedAt) }))
+    .filter((entry) => Number.isFinite(entry.at))
+    .sort((a, b) => a.at - b.at);
+  if (stamped.length === 0) return [];
+
+  const first = stamped[0].at;
+  const last = stamped[stamped.length - 1].at;
+  const span = Math.max(1, last - first);
+  const width = span / Math.max(1, buckets);
+  const grouped = new Map<number, NodeMetrics[]>();
+
+  for (const entry of stamped) {
+    const index = Math.min(buckets - 1, Math.floor((entry.at - first) / width));
+    const existing = grouped.get(index);
+    if (existing) existing.push(entry.row);
+    else grouped.set(index, [entry.row]);
+  }
+
+  return [...grouped.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([index, group]) => ({
+      time: new Date(first + index * width).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      cpu: fleetMean(group, (row) => row.cpuPercent),
+      memory: fleetMean(group, (row) => row.memoryPercent),
+      storage: fleetMean(group, (row) => row.diskPercent),
+    }));
+}
+
+function roundPercent(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? Math.round(value) : undefined;
+}
+
+/** Sparkline input: the series values that exist, or `null` when too short to draw. */
+function sparkSeries(series: TrendPoint[], read: (point: TrendPoint) => number | undefined): number[] | null {
+  const values = series
+    .map(read)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  return values.length >= 2 ? values : null;
+}
+
+/** First-to-last change over a series, or `undefined` when it cannot be computed. */
+function seriesDelta(values: number[] | null): number | undefined {
+  if (!values || values.length < 2) return undefined;
+  return values[values.length - 1] - values[0];
+}
+
+function DeltaPill({ delta }: { delta: number | undefined }) {
+  if (delta === undefined) return null;
+  const rounded = Math.round(delta);
+  if (rounded === 0) {
+    return <span className="font-mono text-[11px] font-semibold text-text-muted">no change</span>;
+  }
+  const rising = rounded > 0;
   return (
-    <div
-      role="status"
-      aria-label={message}
-      className="flex items-center justify-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] p-4 text-xs text-slate-400"
+    <span
+      className={cn(
+        "inline-flex items-center gap-0.5 font-mono text-[11px] font-semibold",
+        rising ? "text-warn" : "text-ok"
+      )}
     >
-      <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-brand border-t-transparent" />
-      <span>{message}</span>
-    </div>
+      {rising ? <TrendingUp size={11} /> : <TrendingDown size={11} />} {Math.abs(rounded)}%
+    </span>
   );
 }
 
-function reportedTotal(
-  records: Array<ApiNode | ApiServer>,
-  field: "memoryMb" | "diskMb"
-) {
-  const values = records
-    .map((record) => record[field])
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  return {
-    value: values.reduce((sum, value) => sum + value, 0),
-    reported: values.length,
-    total: records.length,
-  };
-}
-
-function hasHealthyPersistedHeartbeat(node: ApiNode) {
-  return node.heartbeatState === "healthy";
+/** Shared placeholder for a KPI number we have no reading for. */
+function NoReading({ className }: { className?: string }) {
+  return (
+    <span className={cn("font-mono text-sm font-semibold text-text-muted", className)} title="No reading reported">
+      Not reported
+    </span>
+  );
 }
 
 export function AdminOverview() {
   const router = useRouter();
   const [attentionCollapsed, setAttentionCollapsed] = useState(false);
+  const [timeRange, setTimeRange] = useState<MetricPeriod>("24h");
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const nodesQuery = useQuery({
     queryKey: ["nodes", "all"],
@@ -241,7 +366,7 @@ export function AdminOverview() {
   });
 
   const appsQuery = useQuery({
-    queryKey: ["apps"],
+    queryKey: queryKeys.apps.lists(),
     queryFn: fetchApps,
     refetchInterval: 30_000,
     refetchIntervalInBackground: false,
@@ -256,13 +381,11 @@ export function AdminOverview() {
     retry: 2,
   });
 
-  const healthQuery = useQuery({
-    queryKey: ["health"],
-    queryFn: fetchHealthStatus,
-    retry: 2,
-    refetchInterval: 30_000,
-    refetchIntervalInBackground: false,
-  });
+  // Canonical control-plane health report. Must not be re-declared with a bare
+  // ["health"] key: that cached separately from queryKeys.health.report(), so
+  // Overview, Monitoring and Health each held their own copy of the same
+  // endpoint on different refetch clocks and could disagree about live state.
+  const healthQuery = useHealthQuery();
 
   const activityQuery = useQuery<ApiAdminAuditEvent[]>({
     queryKey: ["admin-audit"],
@@ -273,11 +396,46 @@ export function AdminOverview() {
   });
 
   const nodes = useMemo(() => nodesQuery.data ?? [], [nodesQuery.data]);
-  const servers = useMemo(() => serversQuery.data ?? [], [serversQuery.data]);
-  const apps = useMemo(() => appsQuery.data ?? [], [appsQuery.data]);
-  const users = useMemo(() => usersQuery.data ?? [], [usersQuery.data]);
 
-  const checks: ApiHealthCheck[] = healthQuery.data?.checks ?? [];
+  // The node_metrics series. Its cpu/memory/disk percentages are derived by the
+  // control plane from NodeCapacitySnapshot (see
+  // forge/api/internal/services/observability/service.go collectNodeMetrics),
+  // so they are ALLOCATION over time, not measured host load — they are labelled
+  // that way throughout this page. The same source hardcodes network bytes to 0
+  // and sets containerRunning == containerTotal, so neither is surfaced here.
+  // `latestMetricsQuery` is the newest row per node; `trendQuery` is the real
+  // per-node history fanned out across the fleet. Neither is substituted for
+  // when it reports nothing.
+  const latestMetricsQuery = useLatestNodeMetricsQuery();
+  const trendQuery = useNodeMetricsHistoryQuery(timeRange, null, nodes, nodes.length > 0);
+
+  const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    await Promise.allSettled([
+      nodesQuery.refetch(),
+      serversQuery.refetch(),
+      appsQuery.refetch(),
+      usersQuery.refetch(),
+      healthQuery.refetch(),
+      activityQuery.refetch(),
+      latestMetricsQuery.refetch(),
+      trendQuery.refetch(),
+    ]);
+    setTimeout(() => setIsRefreshing(false), 500);
+  }, [
+    nodesQuery,
+    serversQuery,
+    appsQuery,
+    usersQuery,
+    healthQuery,
+    activityQuery,
+    latestMetricsQuery,
+    trendQuery,
+  ]);
+
+  const servers = useMemo(() => serversQuery.data ?? [], [serversQuery.data]);
+
+  const checks: ApiHealthCheck[] = useMemo(() => healthQuery.data?.checks ?? [], [healthQuery.data?.checks]);
   const failedChecks = useMemo(
     () => checks.filter((c: ApiHealthCheck) => c.status !== "ok" && c.status !== "warning"),
     [checks]
@@ -336,20 +494,6 @@ export function AdminOverview() {
     [servers]
   );
 
-  // Applications health
-  const runningApps = useMemo(
-    () => (Array.isArray(apps) ? apps.filter((app) => app.status === "running").length : 0),
-    [apps]
-  );
-  const failedApps = useMemo(
-    () => (Array.isArray(apps) ? apps.filter((app) => app.status === "failed").length : 0),
-    [apps]
-  );
-
-  // Unified Workload Totals
-  const totalWorkloads = servers.length + apps.length;
-  const totalRunningWorkloads = runningServers + runningApps;
-
   // Actionable Failures & Attention Lane
   const failures = useMemo(() => {
     const list: Array<{ id: string; label: string; detail: string; href?: string }> = [];
@@ -393,20 +537,6 @@ export function AdminOverview() {
       }
     }
 
-    // Failed Apps
-    if (!appsQuery.isError && Array.isArray(apps)) {
-      for (const app of apps) {
-        if (app.status === "failed") {
-          list.push({
-            id: `app-${app.id}`,
-            label: app.name,
-            detail: `Application container is failed`,
-            href: `/admin/apps`,
-          });
-        }
-      }
-    }
-
     // Diagnostic Health Checks
     if (!healthQuery.isError && Array.isArray(failedChecks)) {
       for (const check of failedChecks) {
@@ -423,10 +553,8 @@ export function AdminOverview() {
   }, [
     nodes,
     servers,
-    apps,
     nodesQuery.isError,
     serversQuery.isError,
-    appsQuery.isError,
     healthQuery.isError,
     failedChecks,
   ]);
@@ -434,26 +562,56 @@ export function AdminOverview() {
   const pendingAttention = failures.length;
 
   // Overall Status Truth Engine
+  // Every source this verdict reads, and why each one cannot be read when it
+  // cannot. A 403 is "restricted" rather than "unavailable": the platform is
+  // fine, this account just may not look at it.
+  const verdictSources = useMemo(
+    () => [
+      { label: "Control-plane diagnostics", state: sourceState(healthQuery, REFRESH.health) },
+      { label: "Node inventory", state: sourceState(nodesQuery, REFRESH.inventory) },
+      { label: "Server inventory", state: sourceState(serversQuery, REFRESH.inventory) },
+    ],
+    [healthQuery, nodesQuery, serversQuery],
+  );
+
+  const blindSpots = useMemo(
+    () =>
+      verdictSources
+        .filter((source) => source.state.status !== "ready")
+        .map((source) =>
+          source.state.status === "restricted"
+            ? `${source.label} are not visible to your account`
+            : source.state.status === "error"
+              ? `${source.label} unavailable: ${source.state.message ?? "request failed"}`
+              : `${source.label} still loading`,
+        ),
+    [verdictSources],
+  );
+
   const { overallStatus, overallTitle, overallTone } = useMemo(() => {
-    if (healthQuery.isError || nodesQuery.isError || serversQuery.isError) {
-      return {
-        overallStatus: "unavailable",
-        overallTitle: "Control plane partially unreachable",
-        overallTone: "red" as const,
-      };
-    }
+    // Order matters, and it is not the obvious one.
+    //
+    // A failure this page HAS read must outrank a source it has not. The
+    // earlier version returned "Checking control-plane state…" the moment any
+    // one query was pending, which meant a critical check already reported as
+    // failed was hidden behind a spinner for a node list that had nothing to
+    // do with it. Suppressing a known problem is as untruthful as inventing a
+    // healthy one, so what is known is reported first.
+    //
+    // Only once nothing bad is known does an unread source decide the verdict:
+    // an empty failure list is evidence of health exactly as far as the
+    // sources behind it were readable, and no further. `unknown`, never `ok`.
     if (
       failedChecks.length > 0 ||
       offlineNodes.length > 0 ||
       crashedServers.length > 0 ||
-      failedApps > 0 ||
       healthQuery.data?.status === "failed"
     ) {
       return {
         overallStatus: "failed",
         overallTitle:
           offlineNodes.length > 0
-            ? `${offlineNodes.length} nodes offline`
+            ? `${offlineNodes.length} ${offlineNodes.length === 1 ? "node" : "nodes"} offline`
             : "Attention required",
         overallTone: "red" as const,
       };
@@ -470,50 +628,122 @@ export function AdminOverview() {
         overallTone: "yellow" as const,
       };
     }
+    if (blindSpots.length > 0) {
+      // "Still loading" and "could not be read" are both unknown, but they ask
+      // different things of the operator: one is wait, the other is act.
+      const loadingOnly = verdictSources.every(
+        (source) => source.state.status === "ready" || source.state.status === "loading",
+      );
+      return {
+        overallStatus: loadingOnly ? "unknown" : "unavailable",
+        overallTitle: loadingOnly
+          ? "Checking control-plane state…"
+          : "Platform status incomplete",
+        overallTone: "unknown" as const,
+      };
+    }
     return {
       overallStatus: "ok",
       overallTitle: "All systems operational",
       overallTone: "green" as const,
     };
   }, [
-    healthQuery.isError,
-    nodesQuery.isError,
-    serversQuery.isError,
+    blindSpots.length,
+    verdictSources,
     failedChecks.length,
     warningChecks.length,
     offlineNodes.length,
     degradedNodes.length,
     crashedServers.length,
-    failedApps,
     healthQuery.data?.status,
   ]);
 
   // Capacity calculations
-  const nodeMemoryCapacity = useMemo(() => reportedTotal(nodes, "memoryMb"), [nodes]);
-  const nodeDiskCapacity = useMemo(() => reportedTotal(nodes, "diskMb"), [nodes]);
-  const serverMemoryConfiguration = useMemo(() => reportedTotal(servers, "memoryMb"), [servers]);
-  const serverDiskConfiguration = useMemo(() => reportedTotal(servers, "diskMb"), [servers]);
+  const nodeMemoryCapacity = useMemo(() => reportedTotal(nodes, (node) => node.memoryMb), [nodes]);
+  const nodeDiskCapacity = useMemo(() => reportedTotal(nodes, (node) => node.diskMb), [nodes]);
+  const serverMemoryConfiguration = useMemo(() => reportedTotal(servers, (server) => server.memoryMb), [servers]);
+  const serverDiskConfiguration = useMemo(() => reportedTotal(servers, (server) => server.diskMb), [servers]);
 
-  // Status breakdown data for servers
-  const serverStatusData = useMemo(() => {
-    const srv = Array.isArray(servers) ? servers : [];
-    const running = srv.filter((s) => s.status === "running").length;
-    const stopped = srv.filter((s) => s.status === "stopped" && !s.suspended).length;
-    const failed = srv.filter(
-      (s) => s.status === "crashed" || (s.desiredState === "running" && s.status === "offline")
-    ).length;
-    const suspended = srv.filter((s) => s.suspended).length;
-    const installing = srv.filter((s) => s.status === "installing").length;
-    const other = Math.max(0, srv.length - running - stopped - failed - suspended - installing);
-    return [
-      { label: "Running", value: running, color: "var(--success)" },
-      { label: "Stopped", value: stopped, color: "var(--concrete)" },
-      ...(failed > 0 ? [{ label: "Failed", value: failed, color: "var(--danger)" }] : []),
-      ...(suspended > 0 ? [{ label: "Suspended", value: suspended, color: "var(--warning)" }] : []),
-      ...(installing > 0 ? [{ label: "Installing", value: installing, color: "var(--info)" }] : []),
-      ...(other > 0 ? [{ label: "Other", value: other, color: "var(--accent-violet)" }] : []),
-    ];
-  }, [servers]);
+  // Cores across nodes. Only nodes that report a core count are summed, and
+  // the reporting coverage travels with the number so the UI can say so.
+  const cores = useMemo(() => {
+    const values = nodes
+      .map((node) => node.cpuCores)
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    return {
+      value: values.reduce((sum, value) => sum + value, 0),
+      reported: values.length,
+      total: nodes.length,
+    };
+  }, [nodes]);
+
+  /* ----------------------------------------------------------------- *
+   * Live utilization — from /monitoring/nodes/metrics, never invented.
+   * ----------------------------------------------------------------- */
+
+  const latestMetrics = useMemo(() => latestMetricsQuery.data ?? [], [latestMetricsQuery.data]);
+  const metricsAvailable = isAvailable(latestMetricsQuery);
+
+  const cpuPercent = useMemo(
+    () => roundPercent(fleetMean(latestMetrics, (row) => row.cpuPercent)),
+    [latestMetrics]
+  );
+  const memoryPercent = useMemo(
+    () => roundPercent(fleetMean(latestMetrics, (row) => row.memoryPercent)),
+    [latestMetrics]
+  );
+  const storagePercent = useMemo(
+    () => roundPercent(fleetMean(latestMetrics, (row) => row.diskPercent)),
+    [latestMetrics]
+  );
+
+  const memoryUsed = useMemo(() => fleetSum(latestMetrics, (row) => row.memoryUsedMb), [latestMetrics]);
+  const memoryTotal = useMemo(() => fleetSum(latestMetrics, (row) => row.memoryTotalMb), [latestMetrics]);
+  const diskUsed = useMemo(() => fleetSum(latestMetrics, (row) => row.diskUsedMb), [latestMetrics]);
+  const diskTotal = useMemo(() => fleetSum(latestMetrics, (row) => row.diskTotalMb), [latestMetrics]);
+
+  /** Latest reported row for one node, or `undefined` when that node has none. */
+  const metricsByNode = useMemo(() => {
+    const map = new Map<string, NodeMetrics>();
+    for (const row of latestMetrics) {
+      const existing = map.get(row.nodeId);
+      if (!existing || Date.parse(row.observedAt) > Date.parse(existing.observedAt)) {
+        map.set(row.nodeId, row);
+      }
+    }
+    return map;
+  }, [latestMetrics]);
+
+  /* ----------------------------------------------------------------- *
+   * Trend series — real history, with gaps left as gaps.
+   * ----------------------------------------------------------------- */
+
+  const trendSeries = useMemo(() => buildTrendSeries(trendQuery.data?.rows ?? [], 12), [trendQuery.data]);
+  const cpuSpark = useMemo(() => sparkSeries(trendSeries, (point) => point.cpu), [trendSeries]);
+  const memorySpark = useMemo(() => sparkSeries(trendSeries, (point) => point.memory), [trendSeries]);
+  const storageSpark = useMemo(() => sparkSeries(trendSeries, (point) => point.storage), [trendSeries]);
+  const trendHasData = trendSeries.some(
+    (point) => point.cpu !== undefined || point.memory !== undefined || point.storage !== undefined
+  );
+
+  const timeRangeLabel =
+    timeRange === "1h"
+      ? "Last 1 hour"
+      : timeRange === "6h"
+        ? "Last 6 hours"
+        : timeRange === "7d"
+          ? "Last 7 days"
+          : "Last 24 hours";
+
+  /* ----------------------------------------------------------------- *
+   * Control-plane checks. `checkVerdict` keeps "Unavailable",
+   * "Not reported" and a real status from collapsing into "Healthy".
+   * ----------------------------------------------------------------- */
+
+  const healthAvailable = isAvailable(healthQuery);
+  const databaseVerdict = checkVerdict(healthAvailable, findCheck(healthQuery.data, "database"));
+  const queueVerdict = checkVerdict(healthAvailable, findCheck(healthQuery.data, "queue"));
+
 
   // Per-node memory allocation chart data
   const nodeResourceData = useMemo(
@@ -550,296 +780,1159 @@ export function AdminOverview() {
     isDataStale(healthQuery, 30_000) ||
     isDataStale(activityQuery, 15_000);
 
+  const auditEvents = activityQuery.data ?? [];
+
+  // Freshness badge: the newest successful read across every source on the
+  // page. Zero means nothing has landed yet, which is not "just now".
+  const newestUpdate = Math.max(
+    nodesQuery.isSuccess ? nodesQuery.dataUpdatedAt : 0,
+    serversQuery.isSuccess ? serversQuery.dataUpdatedAt : 0,
+    healthQuery.isSuccess ? healthQuery.dataUpdatedAt : 0,
+    latestMetricsQuery.isSuccess ? latestMetricsQuery.dataUpdatedAt : 0,
+    activityQuery.isSuccess ? activityQuery.dataUpdatedAt : 0
+  );
+
   return (
     <AdminPageLayout>
+      {/* ========================================================================= */}
+      {/* ZONE 1: BREADCRUMB, HEADER & GLOBAL ACTIONS                                */}
+      {/* ========================================================================= */}
+      <div className="flex items-center justify-end text-xs text-text-subtle">
+
+        <div className="flex items-center gap-1.5 font-mono text-[11px] text-text-muted">
+          <span className="relative flex h-1.5 w-1.5">
+            {newestUpdate > 0 && !anyStale ? (
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-ok opacity-60" />
+            ) : null}
+            <span
+              className={cn(
+                "relative inline-flex h-1.5 w-1.5 rounded-full",
+                newestUpdate === 0 ? "bg-text-muted" : anyStale ? "bg-warn" : "bg-ok"
+              )}
+            />
+          </span>
+          <span title={newestUpdate > 0 ? new Date(newestUpdate).toLocaleString() : undefined}>
+            {newestUpdate === 0
+              ? "Waiting for first read"
+              : anyStale
+                ? `Stale · last read ${relativeTime(newestUpdate)}`
+                : `Live · updated ${relativeTime(newestUpdate)}`}
+          </span>
+        </div>
+      </div>
+
       <SectionHeader
-        title={
-          <span className="flex items-center gap-2.5">
-            <span>Overview</span>
-            <PageInfoDisclosure
-              title="Forge Mission Control"
-              eyebrow="Architecture & Semantics"
-              description="Overview provides a live, verified snapshot of your infrastructure fleet, workload instances, control-plane health, and active operations."
-              sections={[
+        title="Overview"
+        info={{
+          title: "Forge Mission Control",
+          triggerLabel: "About Overview",
+          eyebrow: "Architecture & Semantics",
+          description: "Overview provides a live, verified snapshot of your infrastructure fleet, workload instances, control-plane health, and active operations.",
+          sections: [
                 {
                   title: "Desired vs. Actual State",
-                  icon: Layers,
+                  icon: ApplicationsCubeIcon,
                   content:
                     "Forge explicitly separates user intent (Desired State) from per-host runtime observation (Observed Actual State). Workloads and Beacons are only considered healthy when active verification succeeds.",
                 },
                 {
                   title: "Beacon Fleet Telemetry",
-                  icon: Network,
+                  icon: NodeHostIcon,
                   content:
                     "Host daemons transmit periodic heartbeats. A healthy beacon reports within its scheduled window; expired heartbeats transition into suspected, unreachable, or offline states.",
                 },
                 {
                   title: "Capacity vs. Live Observability",
-                  icon: Activity,
+                  icon: ActivityWaveIcon,
                   content:
-                    "Overview displays configured resource allocations (memory/disk limits). For live CPU, load, and network time-series graphs, navigate to the dedicated Monitoring section.",
+                    "Overview displays configured resource allocations and fleet state. Monitoring shows allocation trends over time; these are not measurements of host CPU load or network traffic.",
                 },
                 {
                   title: "Governance & Auditing",
                   icon: ShieldCheck,
                   content:
-                    "Every mutation in the control plane is immutably logged with actor identity, target resource, and timestamps.",
+                    "Activity records control-plane actions with their actors, targets, and timestamps. Audit writes are best-effort; gaps can occur during outages.",
                 },
-              ]}
-            />
-          </span>
-        }
-        sub="Forge state, attention, fleet, workloads, capacity and recent activity — what to know right now."
-        action={
-          <div className="flex gap-2">
-            <Btn tone="ghost" onClick={() => router.push("/admin/monitoring")}>
-              Monitoring <ArrowUpRight size={12} />
-            </Btn>
-            <Btn tone="ghost" onClick={() => router.push("/admin/health")}>
-              Health <ArrowUpRight size={12} />
-            </Btn>
-          </div>
-        }
+              ],
+        }}
+        sub="Your infrastructure at a glance. Live state, workloads, capacity and recent activity."
+        action={<AdminPageToolbar range={{ value: timeRange, onChange: (value) => setTimeRange(value as MetricPeriod), options: [
+            { value: "1h", label: "Last 1 hour" }, { value: "6h", label: "Last 6 hours" },
+            { value: "24h", label: "Last 24 hours" }, { value: "7d", label: "Last 7 days" },
+          ] }} onRefresh={handleRefresh} refreshing={isRefreshing}>
+            <Btn size="sm" onClick={() => router.push("/admin/servers")}><Plus size={14} /> Deploy</Btn>
+          </AdminPageToolbar>}
       />
 
-      {/* 1. Control-Plane Truth Banner & Attention Lane */}
-      <div className="grid gap-4 xl:grid-cols-3">
-        <Card
-          className={`flex flex-col justify-between border xl:col-span-2 ${
-            overallTone === "green"
-              ? "border-emerald-500/20 bg-emerald-500/[0.04]"
-              : overallTone === "yellow"
-              ? "border-amber-500/20 bg-amber-500/[0.04]"
-              : "border-red-500/20 bg-red-500/[0.06]"
-          }`}
+      {/* ========================================================================= */}
+      {/* ZONE 2: TOP SUMMARY KPI CARDS (CPU, Memory, Storage)                      */}
+      {/* ========================================================================= */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* CPU Card */}
+        <div
+          onClick={() => router.push("/admin/monitoring")}
+          className="relative overflow-hidden rounded-xl border border-line bg-[var(--surface)] p-4 shadow-sm transition-all hover:border-sky-500/50 hover:bg-overlay-subtle cursor-pointer"
         >
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div
-                className={`grid h-10 w-10 place-items-center rounded-xl border ${
-                  overallTone === "green"
-                    ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
-                    : overallTone === "yellow"
-                    ? "border-amber-500/20 bg-amber-500/10 text-amber-400"
-                    : "border-red-500/20 bg-red-500/10 text-red-400"
-                }`}
-              >
-                {overallTone === "green" ? (
-                  <CheckCircle2 size={20} />
-                ) : (
-                  <AlertTriangle size={20} />
-                )}
-              </div>
+          <div className="flex items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wider text-text-subtle">
+            <span className="flex items-center gap-1.5 text-sky-400">
+              <CpuKpiChipIcon size={16} />
+              <span className="font-bold">CPU Allocated</span>
+            </span>
+            <DeltaPill delta={seriesDelta(cpuSpark)} />
+          </div>
+
+          <div className="mt-2.5 flex items-baseline justify-between">
+            <div>
+              {latestMetricsQuery.isError ? (
+                <NoReading className="text-base" />
+              ) : cpuPercent === undefined ? (
+                <span className="font-mono text-3xl font-bold tracking-tight text-text-muted">
+                  {metricsAvailable ? "—" : "…"}
+                </span>
+              ) : (
+                <span className="font-mono text-3xl font-bold tracking-tight text-sky-400">{cpuPercent}%</span>
+              )}
+              <p className="mt-1 font-mono text-xs text-text-subtle">
+                {latestMetricsQuery.isError
+                  ? "Allocation series unavailable"
+                  : cpuPercent === undefined
+                    ? metricsAvailable
+                      ? "No node reported CPU allocation"
+                      : "Reading allocation series…"
+                    : `Mean across ${latestMetrics.length} node${latestMetrics.length === 1 ? "" : "s"}${
+                        cores.reported > 0
+                          ? ` · ${cores.value} core${cores.value === 1 ? "" : "s"}${
+                              cores.reported < cores.total ? ` (${cores.reported}/${cores.total} reported)` : ""
+                            }`
+                          : " · cores not reported"
+                      }`}
+              </p>
+            </div>
+            <div className="w-28 h-9 shrink-0">
+              {cpuSpark ? <MiniSparkline data={cpuSpark} color={chart.sky} /> : null}
+            </div>
+          </div>
+          <div className="absolute inset-x-0 bottom-0 h-0.5 bg-gradient-to-r from-sky-500/40 via-sky-400/80 to-transparent" />
+        </div>
+
+        {/* Memory Card */}
+        <div
+          onClick={() => router.push("/admin/monitoring")}
+          className="relative overflow-hidden rounded-xl border border-line bg-[var(--surface)] p-4 shadow-sm transition-all hover:border-purple-500/50 hover:bg-overlay-subtle cursor-pointer"
+        >
+          <div className="flex items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wider text-text-subtle">
+            <span className="flex items-center gap-1.5 text-purple-400">
+              <MemoryRamStickIcon size={16} />
+              <span className="font-bold">Memory Allocated</span>
+            </span>
+            <DeltaPill delta={seriesDelta(memorySpark)} />
+          </div>
+
+          <div className="mt-2.5 flex items-baseline justify-between">
+            <div>
+              {latestMetricsQuery.isError ? (
+                <NoReading className="text-base" />
+              ) : memoryPercent === undefined ? (
+                <span className="font-mono text-3xl font-bold tracking-tight text-text-muted">
+                  {metricsAvailable ? "—" : "…"}
+                </span>
+              ) : (
+                <span className="font-mono text-3xl font-bold tracking-tight text-purple-400">{memoryPercent}%</span>
+              )}
+              <p className="mt-1 font-mono text-xs text-text-subtle">
+                {latestMetricsQuery.isError
+                  ? "Allocation series unavailable"
+                  : memoryTotal.reported > 0
+                    ? `${(memoryUsed.value / 1024).toFixed(1)} / ${(memoryTotal.value / 1024).toFixed(0)} GB allocated`
+                    : metricsAvailable
+                      ? "No node reported memory allocation"
+                      : "Reading allocation series…"}
+              </p>
+            </div>
+            <div className="w-28 h-9 shrink-0">
+              {memorySpark ? <MiniSparkline data={memorySpark} color={chart.lightViolet} /> : null}
+            </div>
+          </div>
+          <div className="absolute inset-x-0 bottom-0 h-0.5 bg-gradient-to-r from-purple-500/40 via-purple-400/80 to-transparent" />
+        </div>
+
+        {/* Storage Card */}
+        <div
+          onClick={() => router.push("/admin/nodes")}
+          className="relative overflow-hidden rounded-xl border border-line bg-[var(--surface)] p-4 shadow-sm transition-all hover:border-orange-500/50 hover:bg-overlay-subtle cursor-pointer"
+        >
+          <div className="flex items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wider text-text-subtle">
+            <span className="flex items-center gap-1.5 text-orange-400">
+              <StoragePlattersIcon size={16} />
+              <span className="font-bold">Storage Allocated</span>
+            </span>
+            <DeltaPill delta={seriesDelta(storageSpark)} />
+          </div>
+
+          <div className="mt-2.5 flex items-baseline justify-between">
+            <div>
+              {latestMetricsQuery.isError ? (
+                <NoReading className="text-base" />
+              ) : storagePercent === undefined ? (
+                <span className="font-mono text-3xl font-bold tracking-tight text-text-muted">
+                  {metricsAvailable ? "—" : "…"}
+                </span>
+              ) : (
+                <span className="font-mono text-3xl font-bold tracking-tight text-orange-400">{storagePercent}%</span>
+              )}
+              <p className="mt-1 font-mono text-xs text-text-subtle">
+                {latestMetricsQuery.isError
+                  ? "Allocation series unavailable"
+                  : diskTotal.reported > 0
+                    ? `${(diskUsed.value / 1024).toFixed(0)} / ${(diskTotal.value / 1024).toFixed(0)} GB allocated`
+                    : metricsAvailable
+                      ? "No node reported disk allocation"
+                      : "Reading allocation series…"}
+              </p>
+            </div>
+            <div className="w-28 h-9 shrink-0">
+              {storageSpark ? <MiniSparkline data={storageSpark} color={chart.lightOrange} /> : null}
+            </div>
+          </div>
+          <div className="absolute inset-x-0 bottom-0 h-0.5 bg-gradient-to-r from-orange-500/40 via-orange-400/80 to-transparent" />
+        </div>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* ZONE 3: DUAL MISSION CORE (Left 2-Cols) & RIGHT COLUMN (Alerts & Activity) */}
+      {/* ========================================================================= */}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
+        {/* Left Column (Span 2) */}
+        <div className="xl:col-span-2 space-y-5">
+          {/* Sub-grid: System Health & Capacity Trend */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            {/* System Health Card */}
+            <div className="rounded-xl border border-line bg-[var(--surface)] p-5 shadow-sm flex flex-col justify-between">
               <div>
-                <h2 className="text-base font-bold text-slate-100">
-                  {healthQuery.isLoading
-                    ? "Loading control-plane state…"
-                    : overallTitle}
-                </h2>
-                <p className="text-xs text-slate-400">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div
+                      onClick={() => router.push("/admin/health")}
+                      className="shrink-0 cursor-pointer transition-transform hover:scale-105"
+                      title="View System Health"
+                    >
+                      {overallTone === "unknown" ? (
+                        <SystemHealthUnknownIcon size={38} />
+                      ) : overallTone === "green" ? (
+                        <SystemHealthOperationalIcon size={38} />
+                      ) : (
+                        <SystemHealthAlertIcon size={38} />
+                      )}
+                    </div>
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-text-subtle">
+                        System Health
+                      </div>
+                      {/*
+                        The headline used to carry its own `isLoading` string
+                        while the icon and colour beside it still rendered the
+                        green operational badge. All three now read the one
+                        verdict, so the card cannot say "checking" in emerald
+                        under a tick.
+                      */}
+                      <h2
+                        className={cn(
+                          "text-base font-bold tracking-tight",
+                          overallTone === "unknown"
+                            ? "text-text"
+                            : overallTone === "green"
+                            ? "text-ok"
+                            : overallTone === "yellow"
+                            ? "text-warn"
+                            : "text-danger"
+                        )}
+                      >
+                        {overallTitle}
+                      </h2>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => router.push("/admin/health")}
+                    className="flex items-center gap-1 text-xs font-semibold text-text-subtle hover:text-text transition-colors"
+                  >
+                    <span>View details</span>
+                    <ArrowUpRight size={13} />
+                  </button>
+                </div>
+
+                <p className="mt-2 text-xs text-text-subtle">
                   {healthQuery.isLoading
                     ? "Checking health, nodes and workloads…"
                     : healthQuery.isError
                     ? String(healthQuery.error?.message ?? "Health API unavailable")
-                    : `${onlineNodes}/${nodes.length} beacons healthy · ${runningServers}/${servers.length} workloads running · ${users.length} users`}
+                    : `${onlineNodes}/${nodes.length} beacons healthy · ${runningServers}/${servers.length} workloads running · ${checks.length - failedChecks.length}/${checks.length} checks passing`}
                 </p>
+
+                {/* Subsystem Health Progress Meters */}
+                <div className="mt-5 space-y-2.5 pt-3 border-t border-line">
+                  {/* An empty or unreachable inventory is not a full meter:
+                      with no beacons there is no ratio to report. */}
+                  <SubsystemHealthMeter
+                    icon={NodeHostIcon}
+                    label="Nodes"
+                    valueText={
+                      nodesQuery.isError
+                        ? "Unavailable"
+                        : !isAvailable(nodesQuery)
+                          ? "Loading…"
+                          : nodes.length === 0
+                            ? "No nodes registered"
+                            : `${onlineNodes}/${nodes.length} online`
+                    }
+                    percentage={ratioPct(onlineNodes, nodes.length, isAvailable(nodesQuery))}
+                    tone={inventoryTone(nodesQuery, nodes.length, onlineNodes)}
+                    onClick={() => router.push("/admin/nodes")}
+                  />
+                  <SubsystemHealthMeter
+                    icon={BeaconRadioTowerIcon}
+                    label="Beacons"
+                    valueText={
+                      nodesQuery.isError
+                        ? "Unavailable"
+                        : !isAvailable(nodesQuery)
+                          ? "Loading…"
+                          : nodes.length === 0
+                            ? "No beacons enrolled"
+                            : `${onlineNodes} healthy${
+                                degradedNodes.length > 0 ? ` (${degradedNodes.length} degraded)` : ""
+                              } of ${nodes.length}`
+                    }
+                    percentage={ratioPct(onlineNodes, nodes.length, isAvailable(nodesQuery))}
+                    tone={inventoryTone(nodesQuery, nodes.length, onlineNodes)}
+                    onClick={() => router.push("/admin/nodes")}
+                  />
+                  <SubsystemHealthMeter
+                    icon={ApplicationsCubeIcon}
+                    label="Workloads"
+                    valueText={
+                      serversQuery.isError
+                        ? "Unavailable"
+                        : !isAvailable(serversQuery)
+                          ? "Loading…"
+                          : servers.length === 0
+                            ? "No workloads"
+                            : `${runningServers}/${servers.length} running`
+                    }
+                    percentage={ratioPct(runningServers, servers.length, isAvailable(serversQuery))}
+                    tone={inventoryTone(serversQuery, servers.length, runningServers)}
+                    onClick={() => router.push("/admin/servers")}
+                  />
+                  <SubsystemHealthMeter
+                    icon={HealthECGIcon}
+                    label="Control Plane"
+                    valueText={
+                      healthQuery.isError ? "Unavailable" : !healthAvailable ? "Checking…" : "Reachable"
+                    }
+                    percentage={healthQuery.isError ? null : healthAvailable ? 100 : null}
+                    tone={healthQuery.isError ? "danger" : healthAvailable ? "ok" : "unknown"}
+                    onClick={() => router.push("/admin/health")}
+                  />
+                  {/* Both of these report their own absence: an unreachable
+                      /health and a /health that omits the check are distinct
+                      from a passing check, and neither may read as healthy. */}
+                  <SubsystemHealthMeter
+                    icon={DatabaseCylinderIcon}
+                    label="Database Engine"
+                    valueText={databaseVerdict.label}
+                    percentage={verdictPct(databaseVerdict)}
+                    tone={databaseVerdict.tone}
+                    onClick={() => router.push("/admin/databases")}
+                  />
+                  <SubsystemHealthMeter
+                    icon={ActivityWaveIcon}
+                    label="Queue / Workers"
+                    valueText={queueVerdict.label}
+                    percentage={verdictPct(queueVerdict)}
+                    tone={queueVerdict.tone}
+                    onClick={() => router.push("/admin/activity")}
+                  />
+                </div>
               </div>
             </div>
-            <Pill
-              tone={
-                overallTone === "green"
-                  ? "green"
-                  : overallTone === "yellow"
-                  ? "yellow"
-                  : "red"
-              }
-            >
-              {healthQuery.isLoading
-                ? "checking…"
-                : healthQuery.isError
-                ? "unavailable"
-                : overallStatus}
-            </Pill>
+
+            {/* Capacity Trend Card */}
+            <div className="rounded-xl border border-line bg-[var(--surface)] p-5 shadow-sm flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <TrendingUp size={16} className="text-text-subtle" />
+                    <div>
+                      <h3 className="text-sm font-bold text-text">Allocation Trend</h3>
+                      <p className="text-[11px] text-text-subtle">
+                        Allocated share of node capacity, averaged across nodes — not measured host load
+                      </p>
+                    </div>
+                  </div>
+                  <span className="rounded border border-line bg-overlay px-2 py-0.5 font-mono text-[10px] text-text-subtle">
+                    {timeRangeLabel}
+                  </span>
+                </div>
+
+                {/* Multi-line Recharts curve over real metric history */}
+                <div className="mt-4 h-44 w-full">
+                  {trendQuery.isError ? (
+                    <div className="flex h-full flex-col items-center justify-center gap-1 rounded-lg border border-danger-line bg-danger/[0.04] px-4 text-center">
+                      <p className="text-xs font-semibold text-danger">Metric history unavailable</p>
+                      <p className="text-[11px] text-text-subtle">
+                        {trendQuery.error instanceof Error ? trendQuery.error.message : "The series could not be read."}
+                      </p>
+                    </div>
+                  ) : nodes.length === 0 ? (
+                    <div className="flex h-full items-center justify-center rounded-lg border border-line bg-overlay-subtle px-4 text-center text-[11px] text-text-muted">
+                      No nodes are registered, so there is no allocation history to plot.
+                    </div>
+                  ) : trendQuery.isPending ? (
+                    <div className="flex h-full items-center justify-center rounded-lg border border-line bg-overlay-subtle px-4 text-center text-[11px] text-text-muted">
+                      Reading metric history…
+                    </div>
+                  ) : !trendHasData ? (
+                    <div className="flex h-full flex-col items-center justify-center gap-1 rounded-lg border border-line bg-overlay-subtle px-4 text-center">
+                      <p className="text-xs font-semibold text-text">No readings in this window</p>
+                      <p className="text-[11px] text-text-muted">
+                        The control plane recorded no allocation samples for {timeRangeLabel.toLowerCase()}. This is
+                        missing history, not idle hosts.
+                      </p>
+                    </div>
+                  ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={trendSeries} margin={{ top: 10, right: 5, left: -20, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="cpuGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={chart.blue} stopOpacity={0.3} />
+                          <stop offset="95%" stopColor={chart.blue} stopOpacity={0} />
+                        </linearGradient>
+                        <linearGradient id="memGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={chart.violet} stopOpacity={0.3} />
+                          <stop offset="95%" stopColor={chart.violet} stopOpacity={0} />
+                        </linearGradient>
+                        <linearGradient id="storageGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={chart.orange} stopOpacity={0.3} />
+                          <stop offset="95%" stopColor={chart.orange} stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <XAxis dataKey="time" stroke={chart.axisStrong} fontSize={10} tickLine={false} />
+                      <YAxis stroke={chart.axisStrong} fontSize={10} tickLine={false} domain={[0, 100]} unit="%" />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: chart.panel,
+                          borderColor: chart.panelBorder,
+                          borderRadius: "8px",
+                          fontSize: "11px",
+                        }}
+                      />
+                      <Area type="monotone" dataKey="cpu" stroke={chart.blue} strokeWidth={2} fill="url(#cpuGrad)" />
+                      <Area type="monotone" dataKey="memory" stroke={chart.violet} strokeWidth={2} fill="url(#memGrad)" />
+                      <Area type="monotone" dataKey="storage" stroke={chart.orange} strokeWidth={2} fill="url(#storageGrad)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                  )}
+                </div>
+
+                {/* Legend carries the latest recorded allocation, or a dash when
+                    no node reported that metric. */}
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-line pt-2.5 text-[11px] font-mono">
+                  <span className="flex items-center gap-1.5 text-text">
+                    <span className="h-2 w-2 rounded-full bg-sky-400" /> CPU{" "}
+                    {cpuPercent === undefined ? <span className="text-text-muted">—</span> : `${cpuPercent}%`}
+                  </span>
+                  <span className="flex items-center gap-1.5 text-text">
+                    <span className="h-2 w-2 rounded-full bg-purple-400" /> Memory{" "}
+                    {memoryPercent === undefined ? <span className="text-text-muted">—</span> : `${memoryPercent}%`}
+                  </span>
+                  <span className="flex items-center gap-1.5 text-text">
+                    <span className="h-2 w-2 rounded-full bg-orange-400" /> Storage{" "}
+                    {storagePercent === undefined ? <span className="text-text-muted">—</span> : `${storagePercent}%`}
+                  </span>
+                </div>
+
+                {/* The fleet series is a client fan-out; incomplete coverage is
+                    stated rather than silently averaged away. */}
+                {trendQuery.data &&
+                (trendQuery.data.failedNodeIds.length > 0 || trendQuery.data.skippedNodeIds.length > 0) ? (
+                  <p className="mt-2 text-[11px] leading-5 text-warn">
+                    Partial series:{" "}
+                    {trendQuery.data.failedNodeIds.length > 0
+                      ? `${trendQuery.data.failedNodeIds.length} node${
+                          trendQuery.data.failedNodeIds.length === 1 ? "" : "s"
+                        } failed to return history`
+                      : null}
+                    {trendQuery.data.failedNodeIds.length > 0 && trendQuery.data.skippedNodeIds.length > 0
+                      ? "; "
+                      : null}
+                    {trendQuery.data.skippedNodeIds.length > 0
+                      ? `${trendQuery.data.skippedNodeIds.length} node${
+                          trendQuery.data.skippedNodeIds.length === 1 ? "" : "s"
+                        } beyond the fan-out cap were not queried`
+                      : null}
+                    .
+                  </p>
+                ) : null}
+              </div>
+            </div>
           </div>
 
-          <div className="mt-4 flex flex-wrap gap-2 text-xs">
-            <Pill
-              tone={
-                nodesQuery.isError
-                  ? "red"
-                  : nodesQuery.isLoading
-                  ? "yellow"
-                  : onlineNodes === nodes.length && nodes.length > 0
-                  ? "green"
-                  : "yellow"
-              }
-            >
-              Beacons:{" "}
+          {/* Sub-grid: Workloads & Nodes Floor */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            {/* Workloads Card */}
+            <div className="rounded-xl border border-line bg-[var(--surface)] p-5 shadow-sm flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <ApplicationsCubeIcon size={16} className="text-text-subtle" />
+                    <div>
+                      <h3 className="text-sm font-bold text-text">Workloads</h3>
+                      <p className="text-[11px] text-text-subtle">
+                        {serversQuery.isError
+                          ? "Inventory unavailable"
+                          : `${servers.length} total · ${
+                              servers.filter((s) => s.status !== "running").length
+                            } not running`}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => router.push("/admin/servers")}
+                    className="flex items-center gap-1 text-xs font-semibold text-text-subtle hover:text-text transition-colors"
+                  >
+                    <span>View workloads</span>
+                    <ArrowUpRight size={13} />
+                  </button>
+                </div>
+
+                {/* Workloads Content */}
+                {servers.length === 0 ? (
+                  <div className="mt-8 mb-4 flex flex-col items-center justify-center text-center">
+                    <div className="grid h-12 w-12 place-items-center rounded-2xl border border-line bg-overlay text-text-subtle shadow-inner mb-3">
+                      <ApplicationsCubeIcon size={24} />
+                    </div>
+                    <h4 className="text-sm font-semibold text-text">No workloads yet</h4>
+                    <p className="mt-1 max-w-xs text-xs text-text-subtle">
+                      Deploy applications, game servers, databases and more.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => router.push("/admin/servers")}
+                      className="mt-4 flex items-center gap-1.5 rounded-lg bg-[var(--brand)] px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-[var(--brand-hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]"
+                    >
+                      <Plus size={14} />
+                      <span>Deploy your first workload</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-4 divide-y divide-line">
+                    {servers.slice(0, 3).map((server) => (
+                      <div
+                        key={server.id}
+                        onClick={() => router.push(`/server/${server.id}`)}
+                        className="flex items-center justify-between py-2.5 hover:bg-overlay-subtle cursor-pointer rounded px-2 -mx-2 transition"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-xs font-semibold text-text">{server.name}</p>
+                          <p className="truncate text-[10px] font-mono text-text-muted">
+                            {server.node || "node not reported"} ·{" "}
+                            {typeof server.memoryMb === "number" && Number.isFinite(server.memoryMb)
+                              ? `${server.memoryMb} MiB`
+                              : "memory not set"}
+                          </p>
+                        </div>
+                        <Pill
+                          tone={
+                            server.status === "running"
+                              ? "green"
+                              : server.status === "crashed"
+                              ? "red"
+                              : "neutral"
+                          }
+                        >
+                          {server.status}
+                        </Pill>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Nodes Card */}
+            <div className="rounded-xl border border-line bg-[var(--surface)] p-5 shadow-sm flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <ServerRackIcon size={16} className="text-text-subtle" />
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <h3 className="text-sm font-bold text-text">Nodes</h3>
+                        <span className="text-[10px] font-mono text-text-muted uppercase tracking-wider">Infrastructure</span>
+                      </div>
+                      <p className="text-[11px] text-text-subtle">
+                        {nodesQuery.isError
+                          ? "Inventory unavailable"
+                          : !isAvailable(nodesQuery)
+                            ? "Loading…"
+                            : `${nodes.length} node${nodes.length === 1 ? "" : "s"}`}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => router.push("/admin/nodes")}
+                    className="flex items-center gap-1 text-xs font-semibold text-text-subtle hover:text-text transition-colors"
+                  >
+                    <span>View nodes</span>
+                    <ArrowUpRight size={13} />
+                  </button>
+                </div>
+
+                {/* Nodes Content */}
+                <div className="mt-4 space-y-3">
+                  {nodesQuery.isError ? (
+                    <p className="text-xs text-danger">
+                      Beacon inventory unavailable — node state cannot be shown.
+                    </p>
+                  ) : !isAvailable(nodesQuery) ? (
+                    <p className="text-xs text-text-muted">Reading beacon inventory…</p>
+                  ) : nodes.length === 0 ? (
+                    <p className="text-xs text-text-muted">No beacons are enrolled yet.</p>
+                  ) : null}
+                  {nodes.slice(0, 1).map((node) => (
+                    <div
+                      key={node.id}
+                      onClick={() => router.push("/admin/nodes")}
+                      className="rounded-xl border border-line bg-well p-3.5 hover:border-line-strong cursor-pointer transition"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className={cn(
+                              "h-2 w-2 rounded-full shrink-0",
+                              hasHealthyPersistedHeartbeat(node) ? "bg-ok" : "bg-warn"
+                            )}
+                          />
+                          <span className="truncate text-xs font-bold text-text">{node.name}</span>
+                          {node.fqdn ? (
+                            <span className="truncate font-mono text-[10px] text-text-subtle">{node.fqdn}</span>
+                          ) : null}
+                        </div>
+                        <span
+                          className={cn(
+                            "rounded border px-2 py-0.5 font-mono text-[10px] font-semibold",
+                            hasHealthyPersistedHeartbeat(node)
+                              ? "border-ok-line bg-ok-subtle text-ok"
+                              : "border-warn-line bg-warn-subtle text-warn"
+                          )}
+                        >
+                          {hasHealthyPersistedHeartbeat(node) ? "Online" : node.heartbeatState || "Unknown"}
+                        </span>
+                      </div>
+
+                      {/* Gauges — this node's own latest metric row, which the
+                          control plane derives from its capacity snapshot. These
+                          are allocated shares, not measured load. A node that has
+                          not reported shows a dash, not a number. */}
+                      {(() => {
+                        const row = metricsByNode.get(node.id);
+                        const gauges = [
+                          { label: "CPU", value: roundPercent(row?.cpuPercent), tint: "text-sky-400" },
+                          { label: "Mem", value: roundPercent(row?.memoryPercent), tint: "text-purple-400" },
+                          { label: "Disk", value: roundPercent(row?.diskPercent), tint: "text-orange-400" },
+                        ];
+                        return (
+                          <>
+                            <p className="mt-3 font-mono text-[10px] uppercase tracking-wider text-text-muted">
+                              Allocated
+                            </p>
+                            <div className="mt-1.5 grid grid-cols-3 gap-2 text-center font-mono text-[10px]">
+                              {gauges.map((gauge) => (
+                                <div
+                                  className="rounded border border-line bg-overlay-subtle p-1.5"
+                                  key={gauge.label}
+                                >
+                                  <span className="block text-text-muted">{gauge.label}</span>
+                                  <span className={cn("font-bold", gauge.value === undefined ? "text-text-muted" : gauge.tint)}>
+                                    {gauge.value === undefined ? "—" : `${gauge.value}%`}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+
+                            {/* Footer carries only what the control plane
+                                reports for this node. */}
+                            <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-line pt-2 text-[10px] font-mono text-text-subtle">
+                              <span>
+                                Workloads: {servers.filter((server) => server.nodeId === node.id).length}
+                              </span>
+                              <span>Region: {node.region || "not set"}</span>
+                              <span className="text-text-muted">
+                                {row
+                                  ? `Metrics ${relativeTime(row.observedAt)}`
+                                  : latestMetricsQuery.isError
+                                    ? "Metrics unavailable"
+                                    : "No metrics reported"}
+                              </span>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Right Column (Span 1) — Network/Alerts & Recent Activity Stack */}
+        <div className="xl:col-span-1 space-y-5">
+          {/* Active Alerts / Needs Attention Card */}
+          <div
+            className={cn(
+              "rounded-xl border p-5 shadow-sm transition-all",
+              pendingAttention > 0
+                ? "border-warn-line bg-warn/[0.04]"
+                : "border-line bg-[var(--surface)]"
+            )}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setAttentionCollapsed((v) => !v)}
+                className="flex items-center gap-2 text-left text-sm font-semibold text-text hover:text-text transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand/50 rounded"
+                aria-label="Needs attention"
+                aria-expanded={!attentionCollapsed}
+              >
+                <AlertTriangle
+                  size={15}
+                  className={pendingAttention > 0 ? "text-warn" : "text-ok"}
+                />
+                <span>Needs attention</span>
+                <span className="text-xs font-normal text-text-subtle">
+                  ({attentionCollapsed ? "Show" : "Hide"})
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => router.push("/admin/health")}
+                className="flex items-center gap-1 text-xs font-semibold text-text-subtle hover:text-text transition-colors"
+              >
+                <span>View all</span>
+                <ArrowUpRight size={13} />
+              </button>
+            </div>
+
+            {!attentionCollapsed ? (
+              pendingAttention === 0 ? (
+                <div className="mt-4 space-y-3">
+                  {/* An empty failure list only means "nothing operational" when
+                      every source that could report a failure was readable. It
+                      is equally not evidence while those sources are still
+                      being read, so both cases stay out of the green panel —
+                      with copy that distinguishes "not yet" from "could not". */}
+                  {overallStatus === "unknown" ? (
+                    <div className="rounded-xl border border-line bg-overlay-subtle p-3 text-xs leading-5 text-text">
+                      <p className="mb-0.5 font-semibold text-text">Nothing to report yet</p>
+                      <p>Still reading nodes, servers and health checks. This list is not complete until they answer.</p>
+                    </div>
+                  ) : overallStatus === "unavailable" ? (
+                    <div className="rounded-xl border border-warn-line bg-warn-subtle p-3 text-xs leading-5 text-warn">
+                      <p className="mb-0.5 font-semibold text-warn">Nothing to report — and nothing verified</p>
+                      <p>
+                        These sources could not be read, so this list is not evidence of a healthy fleet:
+                      </p>
+                      {/* Named, not summarised as "one or more sources". The
+                          operator's next step differs entirely depending on
+                          whether a source is failing or simply not theirs to
+                          see, and only the reason tells them which. */}
+                      <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                        {blindSpots.map((spot) => (
+                          <li key={spot}>{spot}</li>
+                        ))}
+                      </ul>
+                      <p className="mt-1">
+                        See{" "}
+                        <button
+                          className="font-semibold underline hover:text-warn"
+                          onClick={() => router.push("/admin/health")}
+                          type="button"
+                        >
+                          Health
+                        </button>{" "}
+                        for which checks are missing.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-ok-line bg-ok-subtle p-3 text-xs leading-5 text-ok">
+                      <p className="mb-0.5 font-semibold text-ok">No open issues</p>
+                      <p>
+                        Fleet heartbeat, workloads and the control-plane checks that reported are all passing. See{" "}
+                        <button
+                          className="font-semibold underline hover:text-ok"
+                          onClick={() => router.push("/admin/health")}
+                          type="button"
+                        >
+                          Health
+                        </button>{" "}
+                        for deep diagnostics.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Warnings are not failures, but they are real and belong
+                      here. Nothing is listed when nothing is reported. */}
+                  {warningChecks.length > 0 ? (
+                    <div className="space-y-2 border-t border-line pt-2">
+                      {warningChecks.slice(0, 4).map((check) => (
+                        <div
+                          className="-mx-1.5 flex items-start justify-between gap-2 rounded p-1.5 text-xs transition hover:bg-overlay cursor-pointer"
+                          key={check.name}
+                          onClick={() => router.push("/admin/health")}
+                        >
+                          <div className="flex min-w-0 items-start gap-2">
+                            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-warn" />
+                            <div className="min-w-0">
+                              <p className="truncate text-[11px] font-semibold text-text capitalize">
+                                {check.name.replace(/_/g, " ")}
+                              </p>
+                              <p className="truncate text-[10px] text-text-subtle">
+                                {check.notificationMessage || check.label || "Reported a warning without a message."}
+                              </p>
+                            </div>
+                          </div>
+                          <span className="shrink-0 font-mono text-[10px] text-warn">warning</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <ul className="mt-4 max-h-[220px] divide-y divide-line overflow-auto rounded-xl border border-line bg-well">
+                  {failures.slice(0, 5).map((f) => (
+                    <li
+                      key={f.id}
+                      onClick={() => f.href && router.push(f.href)}
+                      className={`p-3 transition ${
+                        f.href ? "cursor-pointer hover:bg-overlay" : ""
+                      }`}
+                    >
+                      <p className="truncate text-xs font-semibold text-warn">{f.label}</p>
+                      <p className="truncate text-xs text-text-subtle">{f.detail}</p>
+                    </li>
+                  ))}
+                </ul>
+              )
+            ) : null}
+
+            {!attentionCollapsed && pendingAttention > 5 ? (
+              <button
+                type="button"
+                onClick={() => router.push("/admin/health")}
+                className="mt-3 text-xs font-medium text-warn hover:text-warn transition"
+              >
+                View all {pendingAttention} issues →
+              </button>
+            ) : null}
+          </div>
+
+          {/* Recent Activity Card */}
+          <div className="rounded-xl border border-line bg-[var(--surface)] p-5 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Clock size={15} className="text-text-subtle" />
+                <h3 className="text-sm font-bold text-text">Recent Activity</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => router.push("/admin/operations")}
+                className="flex items-center gap-1 text-xs font-semibold text-text-subtle hover:text-text transition-colors"
+              >
+                <span>View all</span>
+                <ArrowUpRight size={13} />
+              </button>
+            </div>
+
+            {activityQuery.isError ? (
+              <p className="mt-4 text-xs text-warn">
+                The audit feed could not be read, so recent changes are unknown.
+              </p>
+            ) : activityQuery.isPending ? (
+              <p className="mt-4 text-xs text-text-muted">Reading audit feed…</p>
+            ) : auditEvents.length === 0 ? (
+              <p className="mt-4 text-xs text-text-muted">No audit events recorded.</p>
+            ) : (
+              <div className="mt-4 divide-y divide-line">
+                {auditEvents.slice(0, 4).map((event) => (
+                  <div
+                    key={event.id}
+                    onClick={() => router.push("/admin/operations")}
+                    className="flex items-start justify-between gap-2 py-2.5 px-2 -mx-2 rounded hover:bg-overlay cursor-pointer transition"
+                  >
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <div className="grid h-6 w-6 place-items-center rounded-full bg-overlay text-text-subtle shrink-0 mt-0.5">
+                        <User size={12} />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-semibold text-text">{event.action.replace(/_/g, " ")}</p>
+                        <p className="truncate text-[10px] font-mono text-text-muted">
+                          {event.actorEmail || "system"}
+                        </p>
+                      </div>
+                    </div>
+                    <span className="font-mono text-[10px] text-text-muted shrink-0">
+                      {event.createdAt
+                        ? new Date(event.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                        : "—"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* ZONE 4: CAPACITY QUOTAS SECTION (Deduplicated, Clean, Truthful)           */}
+      {/* ========================================================================= */}
+      <AdminSection
+        title="Capacity"
+        description="Configured compute allocations across workloads and host pools."
+      >
+        <div className="grid gap-6 md:grid-cols-2">
+          <Card className="min-h-[160px]">
+            <CardHeader title="Memory Allocation" icon={MemoryRamStickIcon} />
+            <p className="text-xs font-medium uppercase tracking-wider text-text-muted">
+              Configured server memory — sum of Workload resources.memory
+            </p>
+            <p className="mt-1 font-mono text-2xl font-bold text-text tabular-nums">
+              {serversQuery.isError
+                ? "Unavailable"
+                : serversQuery.isLoading
+                ? "…"
+                : serverMemoryConfiguration.value !== undefined
+                ? `${serverMemoryConfiguration.value.toLocaleString()} MiB`
+                : "Not reported"}
+            </p>
+            <p className="mt-1 text-xs text-text-subtle">
+              {serversQuery.isError
+                ? "Workload inventory is unavailable."
+                : serversQuery.isLoading
+                ? "Waiting for workload inventory."
+                : `Allocated across ${serverMemoryConfiguration.reported} of ${serverMemoryConfiguration.total} workloads.`}
+            </p>
+            <div className="mt-3 border-t border-line pt-2.5 text-xs text-text-subtle">
+              <span className="text-text-muted">Beacon host allocatable pool:</span>{" "}
               {nodesQuery.isError
                 ? "unavailable"
                 : nodesQuery.isLoading
                 ? "…"
-                : `${onlineNodes} healthy${
-                    degradedNodes.length > 0 ? ` (${degradedNodes.length} degraded)` : ""
-                  } of ${nodes.length}`}
-            </Pill>
-            <Pill
-              tone={
-                serversQuery.isError
-                  ? "red"
-                  : serversQuery.isLoading
-                  ? "yellow"
-                  : runningServers > 0
-                  ? "green"
-                  : "neutral"
-              }
-            >
-              Workloads:{" "}
+                : nodeMemoryCapacity.value !== undefined
+                ? `${nodeMemoryCapacity.value.toLocaleString()} MiB across ${nodeMemoryCapacity.reported}/${nodeMemoryCapacity.total} beacons`
+                : "not reported"}
+            </div>
+            <p className="mt-2 text-[11px] leading-relaxed text-text-muted">
+              Capacity is configured quota allocation, not live memory utilization. See Monitoring for real-time telemetry over time.
+            </p>
+          </Card>
+
+          <Card className="min-h-[160px]">
+            <CardHeader title="Storage Allocation" icon={StoragePlattersIcon} />
+            <p className="text-xs font-medium uppercase tracking-wider text-text-muted">
+              Configured server disk — sum of Workload resources.disk
+            </p>
+            <p className="mt-1 font-mono text-2xl font-bold text-text tabular-nums">
               {serversQuery.isError
-                ? "unavailable"
+                ? "Unavailable"
                 : serversQuery.isLoading
                 ? "…"
-                : `${runningServers} running`}
+                : serverDiskConfiguration.value !== undefined
+                ? `${serverDiskConfiguration.value.toLocaleString()} MiB`
+                : "Not reported"}
+            </p>
+            <p className="mt-1 text-xs text-text-subtle">
+              {serversQuery.isError
+                ? "Workload inventory is unavailable."
+                : serversQuery.isLoading
+                ? "Waiting for workload inventory."
+                : `Allocated across ${serverDiskConfiguration.reported} of ${serverDiskConfiguration.total} workloads.`}
+            </p>
+            <div className="mt-3 border-t border-line pt-2.5 text-xs text-text-subtle">
+              <span className="text-text-muted">Beacon storage pool:</span>{" "}
+              {nodesQuery.isError
+                ? "unavailable"
+                : nodesQuery.isLoading
+                ? "…"
+                : nodeDiskCapacity.value !== undefined
+                ? `${nodeDiskCapacity.value.toLocaleString()} MiB across ${nodeDiskCapacity.reported}/${nodeDiskCapacity.total} beacons`
+                : "not reported"}
+            </div>
+            <p className="mt-2 text-[11px] leading-relaxed text-text-muted">
+              Disk capacity represents maximum allocation bounds. Live disk usage is monitored per container via Beacon.
+            </p>
+          </Card>
+        </div>
+
+        {/* Per-Node Memory Capacity Bar Chart */}
+        {nodeResourceData.length > 0 && (
+          <div className="mt-4 rounded-xl border border-line bg-[var(--surface)] p-5">
+            <SimpleBarChart
+              data={nodeResourceData}
+              title="Configured memory capacity per beacon (MiB)"
+            />
+          </div>
+        )}
+      </AdminSection>
+
+      {/* ========================================================================= */}
+      {/* ZONE 5: BOTTOM INFRASTRUCTURE EVENTS TABLE                                */}
+      {/* ========================================================================= */}
+      <div className="rounded-xl border border-line bg-[var(--surface)] p-5 shadow-sm">
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <div>
+            <h3 className="text-sm font-bold text-text flex items-center gap-2">
+              <Zap size={14} className="text-warn" />
+              <span>Infrastructure Events</span>
+            </h3>
+            <p className="text-xs text-text-subtle mt-0.5">
+              Recent operational events across your Forge installation.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => router.push("/admin/operations")}
+            className="flex items-center gap-1 text-xs font-semibold text-text-subtle hover:text-text transition-colors"
+          >
+            <span>View all</span>
+            <ArrowUpRight size={13} />
+          </button>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="border-b border-line text-[10px] font-bold uppercase tracking-wider text-text-muted">
+                <th className="pb-2.5 font-semibold">Time</th>
+                <th className="pb-2.5 font-semibold">Type</th>
+                <th className="pb-2.5 font-semibold">Resource</th>
+                <th className="pb-2.5 font-semibold">Message</th>
+                <th className="pb-2.5 font-semibold text-right">Age</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {auditEvents.length > 0 ? (
+                auditEvents.slice(0, 6).map((evt, idx) => (
+                  <tr
+                    key={evt.id || idx}
+                    onClick={() => router.push("/admin/operations")}
+                    className="hover:bg-overlay cursor-pointer transition"
+                  >
+                    <td className="py-2.5 font-mono text-text-subtle">
+                      {evt.createdAt
+                        ? new Date(evt.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                        : "—"}
+                    </td>
+                    <td className="py-2.5">
+                      {/* Category comes from the action, not from a fixed label. */}
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-overlay px-2 py-0.5 font-mono text-[10px] font-semibold text-text">
+                        <span className="h-1.5 w-1.5 rounded-full bg-text-muted" />
+                        <span>{evt.action.split(/[._]/)[0] || "audit"}</span>
+                      </span>
+                    </td>
+                    <td className="py-2.5 font-semibold text-text capitalize">
+                      {evt.targetType || evt.resource || "—"}
+                    </td>
+                    <td className="py-2.5 text-text-subtle">
+                      <span className="text-text font-medium">{evt.action.replace(/_/g, " ")}</span>
+                      {evt.actorEmail ? ` by ${evt.actorEmail}` : ""}
+                    </td>
+                    <td className="py-2.5 text-right font-mono text-text-muted">
+                      {relativeTime(evt.createdAt) ?? "—"}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                /* One row, stating which of the three it is. Never sample events. */
+                <tr>
+                  <td className="py-4 text-xs text-text-muted" colSpan={5}>
+                    {activityQuery.isError
+                      ? "The audit feed could not be read. Recent infrastructure events are unknown — this is not an idle fleet."
+                      : activityQuery.isPending
+                      ? "Reading audit feed…"
+                      : "No audit events have been recorded."}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* ZONE 6: TELEMETRY FRESHNESS RIBBON ("SOURCES")                            */}
+      {/* ========================================================================= */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-overlay-subtle px-3.5 py-2">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-text-muted">
+            Sources:
+          </span>
+          {anyStale ? (
+            <Pill tone="yellow" className="gap-1">
+              <RefreshCw size={10} className="animate-spin" /> Data may be stale
             </Pill>
+          ) : null}
+          {([
+            { label: "Nodes", query: nodesQuery },
+            { label: "Servers", query: serversQuery },
+            { label: "Users", query: usersQuery },
+            { label: "Health", query: healthQuery },
+            { label: "Activity", query: activityQuery },
+          ] as const).map(({ label, query }) => (
             <Pill
+              key={label}
               tone={
-                healthQuery.isError
-                  ? "red"
-                  : healthQuery.isLoading
+                query.isError
+                  ? isPermissionError(query.error)
+                    ? "yellow"
+                    : "red"
+                  : query.isLoading
                   ? "yellow"
-                  : failedChecks.length > 0
-                  ? "red"
                   : "green"
               }
             >
-              Checks:{" "}
-              {healthQuery.isError
-                ? "unavailable"
-                : healthQuery.isLoading
-                ? "…"
-                : `${checks.length - failedChecks.length}/${checks.length} ok`}
-            </Pill>
-          </div>
-        </Card>
-
-        {/* Needs Attention Accordion Card */}
-        <Card
-          className={
-            pendingAttention > 0
-              ? "border-amber-500/20 bg-amber-500/[0.04]"
-              : "border-white/[0.07] bg-white/[0.015]"
-          }
-        >
-          <div className="flex items-center justify-between">
-            <button
-              type="button"
-              onClick={() => setAttentionCollapsed((v) => !v)}
-              className="flex items-center gap-2 text-left text-sm font-semibold text-slate-200 hover:text-white transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand/50 rounded"
-              aria-label="Needs attention"
-              aria-expanded={!attentionCollapsed}
-            >
-              <AlertTriangle
-                size={15}
-                className={pendingAttention > 0 ? "text-amber-400" : "text-emerald-400"}
-              />
-              <span>Needs attention</span>
-              <span className="text-xs font-normal text-slate-400">
-                ({attentionCollapsed ? "Show" : "Hide"})
-              </span>
-            </button>
-            <span className="font-mono text-xs text-slate-500">
-              {pendingAttention} item{pendingAttention === 1 ? "" : "s"}
-            </span>
-          </div>
-
-          {!attentionCollapsed ? (
-            pendingAttention === 0 ? (
-              <div className="mt-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2.5 text-xs leading-5 text-emerald-200">
-                No open issues — fleet heartbeat, workloads and control-plane checks are healthy. See{" "}
-                <button
-                  type="button"
-                  className="underline hover:text-emerald-100"
-                  onClick={() => router.push("/admin/health")}
-                >
-                  Health
-                </button>{" "}
-                for deep diagnostics.
-              </div>
-            ) : (
-              <ul className="mt-3 max-h-[220px] divide-y divide-white/[0.06] overflow-auto rounded-lg border border-white/[0.06] bg-black/20">
-                {failures.slice(0, 5).map((f) => (
-                  <li
-                    key={f.id}
-                    onClick={() => f.href && router.push(f.href)}
-                    className={`px-3 py-2.5 transition ${
-                      f.href ? "cursor-pointer hover:bg-white/[0.04]" : ""
-                    }`}
-                  >
-                    <p className="truncate text-xs font-semibold text-amber-200">{f.label}</p>
-                    <p className="truncate text-xs text-slate-400">{f.detail}</p>
-                  </li>
-                ))}
-              </ul>
-            )
-          ) : null}
-
-          {!attentionCollapsed && pendingAttention > 5 ? (
-            <button
-              type="button"
-              onClick={() => router.push("/admin/health")}
-              className="mt-2.5 text-xs font-medium text-amber-300 hover:text-amber-200 transition"
-            >
-              View all {pendingAttention} issues →
-            </button>
-          ) : null}
-        </Card>
-      </div>
-
-      {/* Sources Availability Row */}
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="text-xs font-medium text-slate-500">Sources:</span>
-        {anyStale ? (
-          <Pill tone="yellow" className="gap-1">
-            <RefreshCw size={10} className="animate-spin" /> Data may be stale
-          </Pill>
-        ) : null}
-        {([
-          { label: "Nodes", query: nodesQuery },
-          { label: "Servers", query: serversQuery },
-          { label: "Users", query: usersQuery },
-          { label: "Health", query: healthQuery },
-          { label: "Activity", query: activityQuery },
-        ] as const).map(({ label, query }) => (
-          <Pill
-            key={label}
-            tone={
-              query.isError
-                ? isPermissionError(query.error) ? "yellow" : "red"
+              {label}:{" "}
+              {query.isError
+                ? isPermissionError(query.error)
+                  ? "restricted"
+                  : "unavailable"
                 : query.isLoading
-                ? "yellow"
-                : "green"
-            }
-          >
-            {label}:{" "}
-            {query.isError
-              ? isPermissionError(query.error) ? "restricted" : "unavailable"
-              : query.isLoading
-              ? "loading"
-              : "available"}
-            {query.isSuccess && query.dataUpdatedAt > 0 ? (
-              <span className="ml-1 font-mono text-[10px] text-slate-600 tabular-nums">
-                {new Date(query.dataUpdatedAt).toLocaleTimeString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  second: "2-digit",
-                })}
-              </span>
-            ) : null}
-          </Pill>
-        ))}
+                ? "loading"
+                : "available"}
+              {query.isSuccess && query.dataUpdatedAt > 0 ? (
+                <span className="ml-1 font-mono text-[10px] text-text-muted tabular-nums">
+                  {new Date(query.dataUpdatedAt).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                  })}
+                </span>
+              ) : null}
+            </Pill>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-2 text-[10px] text-text-muted font-mono">
+          <span className="h-1.5 w-1.5 rounded-full bg-ok animate-pulse" />
+          <span>Live Telemetry Polling 30s</span>
+        </div>
       </div>
 
-      {/* Error Banners */}
+      {/* Error Banners if queries fail */}
       {(nodesQuery.isError ||
         serversQuery.isError ||
         usersQuery.isError ||
@@ -893,517 +1986,7 @@ export function AdminOverview() {
           )}
         </div>
       )}
-
-      {/* Stats Row */}
-      <StatsRow
-        items={[
-          {
-            label: "Infrastructure",
-            value: nodesQuery.isError
-              ? "Unavailable"
-              : nodesQuery.isLoading
-              ? "…"
-              : `${onlineNodes} healthy`,
-            icon: Network,
-            tone:
-              nodesQuery.isError || nodesQuery.isLoading || nodes.length === 0
-                ? "neutral"
-                : onlineNodes === nodes.length
-                ? "green"
-                : "yellow",
-          },
-          {
-            label: "Workloads",
-            value: serversQuery.isError
-              ? "Unavailable"
-              : serversQuery.isLoading
-              ? "…"
-              : `${runningServers} running`,
-            icon: Layers,
-            tone:
-              serversQuery.isError || serversQuery.isLoading
-                ? "neutral"
-                : runningServers > 0
-                ? "green"
-                : "blue",
-          },
-          {
-            label: "Beacons",
-            value: nodesQuery.isError
-              ? "Unavailable"
-              : nodesQuery.isLoading
-              ? "…"
-              : nodes.length,
-            icon: Server,
-            tone:
-              nodesQuery.isError || nodesQuery.isLoading || nodes.length === 0
-                ? "neutral"
-                : "neutral",
-          },
-          {
-            label: "Users",
-            value: usersQuery.isError
-              ? "Unavailable"
-              : usersQuery.isLoading
-              ? "…"
-              : users.length,
-            icon: Shield,
-            tone: "neutral",
-          },
-        ]}
-      />
-
-      {/* Fleet & Workload Distribution Section */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        {serversQuery.isError ? (
-          <Card>
-            <CardHeader title="Workload status distribution" icon={Activity} />
-            <QueryError
-              message="Workload inventory is unavailable."
-              onRetry={() => serversQuery.refetch()}
-            />
-          </Card>
-        ) : serversQuery.isLoading ? (
-          <Card>
-            <CardHeader title="Workload status distribution" icon={Activity} />
-            <QueryLoading message="Loading workload inventory…" />
-          </Card>
-        ) : (
-          <Card>
-            <CardHeader
-              title="Workload status distribution"
-              icon={Activity}
-              action={
-                <Btn
-                  size="sm"
-                  tone="ghost"
-                  onClick={() => router.push("/admin/servers")}
-                >
-                  View workloads <ArrowUpRight size={12} />
-                </Btn>
-              }
-            />
-            {servers.length === 0 ? (
-              <EmptyState
-                icon={Activity}
-                message="No workloads yet — create one from Catalog."
-              />
-            ) : (
-              <StatusBreakdown data={serverStatusData} total={servers.length} />
-            )}
-            <p className="mt-4 border-t border-white/[0.04] pt-3 text-xs text-slate-500">
-              Displays actual observed workload status across all nodes. Desired state vs actual state discrepancies are highlighted above.
-            </p>
-          </Card>
-        )}
-
-        {nodesQuery.isError ? (
-          <Card>
-            <CardHeader
-              title="Infrastructure — Beacon memory"
-              icon={HardDrive}
-            />
-            <QueryError
-              message="Beacons are unavailable."
-              onRetry={() => nodesQuery.refetch()}
-            />
-          </Card>
-        ) : nodesQuery.isLoading ? (
-          <Card>
-            <CardHeader
-              title="Infrastructure — Beacon memory"
-              icon={HardDrive}
-            />
-            <QueryLoading message="Loading beacon capacity…" />
-          </Card>
-        ) : (
-          <Card>
-            <CardHeader
-              title="Infrastructure — Beacon memory"
-              icon={HardDrive}
-              action={
-                <Btn
-                  size="sm"
-                  tone="ghost"
-                  onClick={() => router.push("/admin/nodes")}
-                >
-                  Manage beacons <ArrowUpRight size={12} />
-                </Btn>
-              }
-            />
-            {nodes.length === 0 ? (
-              <EmptyState
-                icon={HardDrive}
-                message="No beacons — add a beacon to host workloads."
-              />
-            ) : nodeResourceData.length === 0 ? (
-              <EmptyState
-                icon={HardDrive}
-                message="Memory capacity not reported by beacons."
-              />
-            ) : (
-              <>
-                <SimpleBarChart
-                  data={nodeResourceData}
-                  title="Configured memory capacity per beacon (MiB)"
-                />
-                <p className="mt-4 border-t border-white/[0.04] pt-3 text-xs text-slate-500">
-                  Coverage: {nodeResourceData.length} of {nodes.length} beacons reported configured memory limits.
-                </p>
-              </>
-            )}
-          </Card>
-        )}
-      </div>
-
-      {/* Capacity & Quotas (Single, Truthful, Deduplicated) */}
-      <AdminSection
-        title="Capacity"
-        description="Configured compute allocations across workloads and host pools."
-      >
-        <div className="grid gap-6 md:grid-cols-2">
-          <Card className="min-h-[160px]">
-            <CardHeader title="Memory Allocation" icon={Cpu} />
-            <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
-              Configured server memory — sum of Workload resources.memory
-            </p>
-            <p className="mt-1 font-mono text-2xl font-bold text-slate-100 tabular-nums">
-              {serversQuery.isError
-                ? "Unavailable"
-                : serversQuery.isLoading
-                ? "…"
-                : serverMemoryConfiguration.reported > 0
-                ? `${serverMemoryConfiguration.value.toLocaleString()} MiB`
-                : "Not reported"}
-            </p>
-            <p className="mt-1 text-xs text-slate-400">
-              {serversQuery.isError
-                ? "Workload inventory is unavailable."
-                : serversQuery.isLoading
-                ? "Waiting for workload inventory."
-                : `Allocated across ${serverMemoryConfiguration.reported} of ${serverMemoryConfiguration.total} workloads.`}
-            </p>
-            <div className="mt-3 border-t border-white/[0.06] pt-2.5 text-xs text-slate-400">
-              <span className="text-slate-500">Beacon host allocatable pool:</span>{" "}
-              {nodesQuery.isError
-                ? "unavailable"
-                : nodesQuery.isLoading
-                ? "…"
-                : nodeMemoryCapacity.reported > 0
-                ? `${nodeMemoryCapacity.value.toLocaleString()} MiB across ${nodeMemoryCapacity.reported}/${nodeMemoryCapacity.total} beacons`
-                : "not reported"}
-            </div>
-            <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
-              Capacity is configured quota allocation, not live memory utilization. See Monitoring for real-time telemetry over time.
-            </p>
-          </Card>
-
-          <Card className="min-h-[160px]">
-            <CardHeader title="Storage Allocation" icon={HardDrive} />
-            <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
-              Configured server disk — sum of Workload resources.disk
-            </p>
-            <p className="mt-1 font-mono text-2xl font-bold text-slate-100 tabular-nums">
-              {serversQuery.isError
-                ? "Unavailable"
-                : serversQuery.isLoading
-                ? "…"
-                : serverDiskConfiguration.reported > 0
-                ? `${serverDiskConfiguration.value.toLocaleString()} MiB`
-                : "Not reported"}
-            </p>
-            <p className="mt-1 text-xs text-slate-400">
-              {serversQuery.isError
-                ? "Workload inventory is unavailable."
-                : serversQuery.isLoading
-                ? "Waiting for workload inventory."
-                : `Allocated across ${serverDiskConfiguration.reported} of ${serverDiskConfiguration.total} workloads.`}
-            </p>
-            <div className="mt-3 border-t border-white/[0.06] pt-2.5 text-xs text-slate-400">
-              <span className="text-slate-500">Beacon storage pool:</span>{" "}
-              {nodesQuery.isError
-                ? "unavailable"
-                : nodesQuery.isLoading
-                ? "…"
-                : nodeDiskCapacity.reported > 0
-                ? `${nodeDiskCapacity.value.toLocaleString()} MiB across ${nodeDiskCapacity.reported}/${nodeDiskCapacity.total} beacons`
-                : "not reported"}
-            </div>
-            <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
-              Disk capacity represents maximum allocation bounds. Live disk usage is monitored per container via Beacon.
-            </p>
-          </Card>
-        </div>
-      </AdminSection>
-
-      {/* Navigable Beacon Fleet & Workload Inventory Stream */}
-      <div className="grid gap-6 md:grid-cols-2">
-        {nodesQuery.isError ? (
-          <Card>
-            <CardHeader title="Persisted beacon heartbeat" icon={Network} />
-            <QueryError
-              message="Beacons are unavailable."
-              onRetry={() => nodesQuery.refetch()}
-            />
-          </Card>
-        ) : nodesQuery.isLoading ? (
-          <Card>
-            <CardHeader title="Persisted beacon heartbeat" icon={Network} />
-            <QueryLoading message="Loading persisted heartbeat…" />
-          </Card>
-        ) : (
-          <Card>
-            <CardHeader
-              title="Persisted beacon heartbeat"
-              icon={Network}
-              action={
-                <Btn
-                  size="sm"
-                  tone="ghost"
-                  onClick={() => router.push("/admin/nodes")}
-                >
-                  All Beacons →
-                </Btn>
-              }
-            />
-            {nodes.length === 0 ? (
-              <EmptyState
-                icon={Network}
-                message="No beacons configured — register a beacon to start hosting workloads."
-              />
-            ) : (
-              <>
-                <div className="-mx-4 sm:-mx-5 border-b border-white/[0.04] px-4 py-2.5 text-xs text-slate-400 sm:px-5">
-                  {onlineNodes} healthy · {nodes.length} registered beacons
-                </div>
-                <ul className="-mx-4 sm:-mx-5 max-h-[320px] divide-y divide-white/[0.04] overflow-auto">
-                  {nodes.slice(0, 8).map((node) => (
-                    <li
-                      key={node.id}
-                      onClick={() => router.push("/admin/nodes")}
-                      className="flex cursor-pointer items-center justify-between px-4 py-3 hover:bg-white/[0.03] transition sm:px-5"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium text-slate-200">
-                          {`beacon · ${node.name}`}
-                        </p>
-                        <p className="truncate text-xs font-mono text-slate-500">
-                          {node.fqdn || node.region || "local"}
-                        </p>
-                      </div>
-                      <Pill
-                        tone={
-                          hasHealthyPersistedHeartbeat(node)
-                            ? "green"
-                            : node.heartbeatState === "degraded"
-                            ? "yellow"
-                            : node.heartbeatState
-                            ? "red"
-                            : "neutral"
-                        }
-                      >
-                        {hasHealthyPersistedHeartbeat(node)
-                          ? "healthy"
-                          : node.heartbeatState ?? "unreported"}
-                      </Pill>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-          </Card>
-        )}
-
-        {serversQuery.isError ? (
-          <Card>
-            <CardHeader title="Workload inventory" icon={Layers} />
-            <QueryError
-              message="Workload inventory is unavailable."
-              onRetry={() => serversQuery.refetch()}
-            />
-          </Card>
-        ) : serversQuery.isLoading ? (
-          <Card>
-            <CardHeader title="Workload inventory" icon={Layers} />
-            <QueryLoading message="Loading workload inventory…" />
-          </Card>
-        ) : (
-          <Card>
-            <CardHeader
-              title="Workload inventory"
-              icon={Layers}
-              action={
-                <Btn
-                  size="sm"
-                  tone="ghost"
-                  onClick={() => router.push("/admin/servers")}
-                >
-                  All workloads →
-                </Btn>
-              }
-            />
-            {servers.length === 0 ? (
-              <EmptyState icon={Layers} message="No workloads yet." />
-            ) : (
-              <>
-                <div className="-mx-4 sm:-mx-5 border-b border-white/[0.04] px-4 py-2.5 text-xs text-slate-400 sm:px-5">
-                  Displaying {Math.min(8, servers.length)} of {servers.length} workloads
-                </div>
-                <ul className="-mx-4 sm:-mx-5 max-h-[320px] divide-y divide-white/[0.04] overflow-auto">
-                  {servers.slice(0, 8).map((server) => (
-                    <li
-                      key={server.id}
-                      onClick={() => router.push(`/admin/servers`)}
-                      className="flex cursor-pointer items-center justify-between px-4 py-3 hover:bg-white/[0.03] transition sm:px-5"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium text-slate-200">
-                          {server.name}
-                        </p>
-                        <p className="truncate text-xs font-mono text-slate-500">
-                          {server.node || "unassigned"}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {server.desiredState && server.actualState && server.desiredState !== server.actualState ? (
-                          <span className="text-[10px] font-mono text-amber-400" title={`Desired: ${server.desiredState}, Actual: ${server.actualState}`}>
-                            divergent
-                          </span>
-                        ) : null}
-                        <Pill
-                          tone={
-                            server.status === "running"
-                              ? "green"
-                              : server.status === "stopped"
-                              ? "neutral"
-                              : server.status === "crashed"
-                              ? "red"
-                              : "yellow"
-                          }
-                        >
-                          {server.suspended ? "suspended" : server.status}
-                        </Pill>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-          </Card>
-        )}
-      </div>
-
-      {/* Recent Admin Activity & Navigation Shortcuts */}
-      <div className="grid gap-6 md:grid-cols-2">
-        {activityQuery.isError ? (
-          <Card>
-            <CardHeader title="Recent admin activity" icon={Shield} />
-            <QueryError
-              message="Activity API unavailable."
-              onRetry={() => activityQuery.refetch()}
-            />
-          </Card>
-        ) : activityQuery.isLoading ? (
-          <Card>
-            <CardHeader title="Recent admin activity" icon={Shield} />
-            <QueryLoading message="Loading administrative activity…" />
-          </Card>
-        ) : (
-          <Card>
-            <CardHeader
-              title="Recent admin activity"
-              icon={Shield}
-              action={
-                <Btn
-                  size="sm"
-                  tone="ghost"
-                  onClick={() => router.push("/admin/activity")}
-                >
-                  All activity →
-                </Btn>
-              }
-            />
-            {(activityQuery.data ?? []).length === 0 ? (
-              <EmptyState icon={Shield} message="No recent changes." />
-            ) : (
-              <ul className="-mx-4 sm:-mx-5 max-h-[320px] divide-y divide-white/[0.04] overflow-auto">
-                {(activityQuery.data ?? []).slice(0, 8).map((event) => {
-                  const formattedAction = event.action.replace(/_/g, " ");
-                  return (
-                    <li
-                      className="px-4 py-3 sm:px-5 hover:bg-white/[0.02] transition"
-                      key={event.id}
-                    >
-                      <div className="flex justify-between gap-3">
-                        <p className="truncate text-sm font-medium text-slate-200">
-                          {formattedAction}
-                        </p>
-                        <time className="shrink-0 font-mono text-xs text-slate-500 tabular-nums">
-                          {new Date(event.createdAt).toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </time>
-                      </div>
-                      <p className="truncate text-xs text-slate-400">
-                        {event.actorEmail ?? "system"} ·{" "}
-                        <span className="font-mono text-slate-500">
-                          {event.targetType}
-                          {event.targetId ? `:${event.targetId}` : ""}
-                        </span>
-                      </p>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </Card>
-        )}
-
-        {/* Quick Operational Navigation */}
-        <Card>
-          <CardHeader title="Command Centers" icon={Database} />
-          <div className="grid gap-2.5">
-            {[
-              {
-                label: "Monitoring — What happens over time",
-                desc: "Live CPU, memory, disk & network time-series charts",
-                href: "/admin/monitoring",
-              },
-              {
-                label: "Health — Detailed system diagnostics",
-                desc: "Service checks, latency, database & cache health",
-                href: "/admin/health",
-              },
-              {
-                label: "Activity — Immutable audit log",
-                desc: "Track administrative operations with export to CSV/JSON",
-                href: "/admin/activity",
-              },
-              {
-                label: "Beacons — Host management",
-                desc: "Manage daemon nodes, tokens, and host capabilities",
-                href: "/admin/nodes",
-              },
-            ].map((link) => (
-              <button
-                key={link.href}
-                type="button"
-                onClick={() => router.push(link.href)}
-                className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-left transition hover:border-white/10 hover:bg-white/[0.04]"
-              >
-                <div>
-                  <p className="text-sm font-medium text-slate-200">
-                    {link.label}
-                  </p>
-                  <p className="text-xs text-slate-500">{link.desc}</p>
-                </div>
-                <ArrowUpRight size={14} className="text-slate-500" />
-              </button>
-            ))}
-          </div>
-        </Card>
-      </div>
     </AdminPageLayout>
   );
 }
+

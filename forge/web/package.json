@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "scripts": {
     "dev": "next dev --port 3000 --hostname 0.0.0.0",
+    "prebuild": "npm --prefix ../.. run build:packages",
     "build": "next build",
+    "start": "next start --port 3000",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "sync:locales": "node scripts/sync-locales.mjs",
@@ -21,7 +23,6 @@
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
     "clsx": "^2.1.1",
-    "cmdk": "^1.1.1",
     "lucide-react": "^0.468.0",
     "next": "^15.5.22",
     "react": "^19.0.0",

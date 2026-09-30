@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,6 +14,23 @@ import (
 	"github.com/google/uuid"
 	_ "github.com/mattn/go-sqlite3"
 )
+
+// journalTimeout bounds every command-journal statement. The journal is opened
+// with a single connection, and most writes happen while the queue mutex is
+// held, so an unbounded statement is not just a slow call: it parks every other
+// queue operation behind the mutex, including Shutdown, and a stalled disk or a
+// second process holding the file turns it into a daemon-wide hang. Failing
+// fast with an error is survivable; hanging forever is not.
+const journalTimeout = 15 * time.Second
+
+// shutdownGrace is how long Shutdown waits for running workers to notice
+// cancellation before journaling state anyway. A handler stuck in a runtime
+// call with no deadline must not prevent the daemon from exiting.
+const shutdownGrace = 30 * time.Second
+
+func journalContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), journalTimeout)
+}
 
 type OperationType string
 
@@ -124,13 +142,16 @@ func newOperationQueue(concurrency int, handler OperationHandler, db *sql.DB) *O
 }
 
 func (q *OperationQueue) loadJournal() error {
-	rows, err := q.db.Query(`SELECT id,COALESCE(command_id,''),server_id,type,status,error,created_at,started_at,completed_at,
+	ctx, cancel := journalContext()
+	defer cancel()
+	rows, err := q.db.QueryContext(ctx, `SELECT id,COALESCE(command_id,''),server_id,type,status,error,created_at,started_at,completed_at,
 		COALESCE(ttl,0),COALESCE(progress,''),COALESCE(progress_pct,0),COALESCE(result_data,''),COALESCE(acknowledged,0)
 		FROM beacon_operations ORDER BY created_at`)
 	if err != nil {
 		return fmt.Errorf("load command journal: %w", err)
 	}
 	defer rows.Close()
+	var resumed []*Operation
 	for rows.Next() {
 		var op Operation
 		var typ, status string
@@ -154,19 +175,38 @@ func (q *OperationQueue) loadJournal() error {
 		if ack.Valid {
 			op.Acknowledged = ack.Bool
 		}
-		if op.Status == StatusRunning {
+		wasRunning := op.Status == StatusRunning
+		if wasRunning {
 			op.Status = StatusPending
 			op.StartedAt = time.Time{}
 			op.Error = ""
 			// Preserve progress and result data for resumption after restart
 			// op.Progress, op.ProgressPct, and op.ResultData remain unchanged
-			_ = q.persist(&op)
 		}
 		copyOp := op
 		q.operations[op.ID] = &copyOp
 		q.serverOps[op.ServerID] = append(q.serverOps[op.ServerID], op.ID)
+		if wasRunning {
+			resumed = append(resumed, &copyOp)
+		}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// Release the read cursor/connection BEFORE writing the reset rows back.
+	// Calling q.persist while `rows` is open deadlocks the single-connection
+	// SQLite pool used by the beacon journal (the write waits for a connection
+	// the unfinished read still holds). Close is idempotent; the deferred call
+	// above is a no-op afterward.
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, op := range resumed {
+		if err := q.persist(op); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (q *OperationQueue) Start(ctx context.Context) {
@@ -225,13 +265,13 @@ func (q *OperationQueue) processOp(ctx context.Context, op *Operation) {
 		op.Status = StatusFailed
 		op.Error = "command expired"
 		op.CompletedAt = time.Now().UTC()
-		_ = q.persist(op)
+		journalWarning("expiry", op.ID, q.persist(op))
 		q.mu.Unlock()
 		return
 	}
 	op.Status = StatusRunning
 	op.StartedAt = time.Now().UTC()
-	_ = q.persist(op)
+	journalWarning("running status", op.ID, q.persist(op))
 	handlerOp := *op
 	q.mu.Unlock()
 	var opErr string
@@ -242,22 +282,54 @@ func (q *OperationQueue) processOp(ctx context.Context, op *Operation) {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.db != nil && ctx.Err() != nil {
-		op.Status = StatusPending
-		op.Error = ""
-		op.StartedAt = time.Time{}
-		op.CompletedAt = time.Time{}
-		_ = q.persist(op)
+	if ctx.Err() != nil {
+		// Cancellation cut this operation short, so it has no verdict. It must
+		// never be recorded as completed: a journaled queue resets it to pending
+		// so it replays after restart, and a memory-only queue - where nothing
+		// can replay it - records it as cancelled, the same way Shutdown reports
+		// work that was queued but never ran.
+		if q.db != nil {
+			op.Status = StatusPending
+			op.Error = ""
+			op.StartedAt = time.Time{}
+			op.CompletedAt = time.Time{}
+			journalWarning("reset status", op.ID, q.persist(op))
+			return
+		}
+		op.Status = StatusCancelled
+		if opErr == "" {
+			opErr = ctx.Err().Error()
+		}
+		op.Error = opErr
+		op.CompletedAt = time.Now().UTC()
+		journalWarning("cancelled status", op.ID, q.persist(op))
 		return
 	}
 	op.CompletedAt = time.Now().UTC()
-	op.Error = opErr
-	if opErr != "" {
+	switch {
+	case opErr != "":
 		op.Status = StatusFailed
-	} else {
+		op.Error = opErr
+	case op.Status == StatusFailed:
+		// The panel recorded a failure through POST /api/commands/{id}/result
+		// while the handler was still running. The handler returning cleanly
+		// afterwards is not evidence that the reported failure did not happen,
+		// so the recorded failure stands instead of being retired to completed.
+	default:
 		op.Status = StatusCompleted
+		op.Error = ""
 	}
-	_ = q.persist(op)
+	journalWarning("final status", op.ID, q.persist(op))
+}
+
+// journalWarning reports a command-journal write that failed. The in-memory
+// status has already moved by then, so the row a restart replays can disagree
+// with what this process actually did; that gap is surfaced rather than
+// discarded, because the queue cannot answer the client any more at this point.
+func journalWarning(what, id string, err error) {
+	if err != nil {
+		log.Printf("beacon: could not journal %s for operation %s: %v", what, id, err)
+	}
 }
 
 func (q *OperationQueue) SetProgress(id string, progress string, pct int) error {
@@ -336,7 +408,7 @@ func (q *OperationQueue) ExpireExpired() int {
 			op.Status = StatusFailed
 			op.Error = "command expired"
 			op.CompletedAt = now
-			_ = q.persist(op)
+			journalWarning("expiry", op.ID, q.persist(op))
 			expired++
 		}
 	}
@@ -359,11 +431,20 @@ func (q *OperationQueue) EnqueueCommandWithTTL(ctx context.Context, commandID, s
 	}
 	if commandID != "" {
 		for _, existing := range q.operations {
-			if existing.CommandID == commandID {
-				cp := *existing
-				q.mu.Unlock()
-				return &cp, nil
+			if existing.CommandID != commandID {
+				continue
 			}
+			if existing.ServerID != serverID {
+				// One command id naming two different servers is an ambiguous
+				// target, not a duplicate. Returning the other server's
+				// operation (or running this one) would silently pick a
+				// workload the caller did not name, so it is refused.
+				q.mu.Unlock()
+				return nil, fmt.Errorf("command %s already refers to server %s, not %s", commandID, existing.ServerID, serverID)
+			}
+			cp := *existing
+			q.mu.Unlock()
+			return &cp, nil
 		}
 	}
 	q.nextID++
@@ -413,7 +494,14 @@ func (q *OperationQueue) removeUnqueued(op *Operation) {
 		delete(q.serverOps, op.ServerID)
 	}
 	if q.db != nil {
-		_, _ = q.db.Exec(`DELETE FROM beacon_operations WHERE id = ? AND status = ?`, op.ID, string(StatusPending))
+		ctx, cancel := journalContext()
+		defer cancel()
+		// The in-memory entry is already gone, so a failed delete leaves a row the
+		// next start would treat as an unexecuted pending command and run. Say so
+		// rather than let a rejected command come back after a restart.
+		if _, err := q.db.ExecContext(ctx, `DELETE FROM beacon_operations WHERE id = ? AND status = ?`, op.ID, string(StatusPending)); err != nil {
+			log.Printf("beacon: could not withdraw queued operation %s from the journal: %v", op.ID, err)
+		}
 	}
 }
 
@@ -425,7 +513,9 @@ func (q *OperationQueue) persist(op *Operation) error {
 	if op.Acknowledged {
 		ackVal = 1
 	}
-	_, err := q.db.Exec(`INSERT INTO beacon_operations(id,command_id,server_id,type,status,error,created_at,started_at,completed_at,ttl,progress,progress_pct,result_data,acknowledged)
+	ctx, cancel := journalContext()
+	defer cancel()
+	_, err := q.db.ExecContext(ctx, `INSERT INTO beacon_operations(id,command_id,server_id,type,status,error,created_at,started_at,completed_at,ttl,progress,progress_pct,result_data,acknowledged)
 		VALUES(?,NULLIF(?,''),?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,error=excluded.error,
 		started_at=excluded.started_at,completed_at=excluded.completed_at,
 		progress=excluded.progress,progress_pct=excluded.progress_pct,result_data=excluded.result_data,acknowledged=excluded.acknowledged`,
@@ -505,7 +595,16 @@ func (q *OperationQueue) Shutdown() {
 		cancel()
 	}
 	if started {
-		<-q.done
+		// Bounded, because a handler blocked in a runtime call that never notices
+		// cancellation would otherwise stop the daemon from ever shutting down. On
+		// timeout the state below is still journaled - an operation left running is
+		// recorded as pending and re-runs after restart, which is the same
+		// guarantee a crash gives.
+		select {
+		case <-q.done:
+		case <-time.After(shutdownGrace):
+			log.Printf("beacon: operation queue workers still running after %s; journaling state and closing", shutdownGrace)
+		}
 	}
 	q.mu.Lock()
 	for _, op := range q.operations {
@@ -518,11 +617,16 @@ func (q *OperationQueue) Shutdown() {
 				op.Status = StatusCancelled
 				op.CompletedAt = time.Now().UTC()
 			}
-			_ = q.persist(op)
+			journalWarning("shutdown status", op.ID, q.persist(op))
 		}
 	}
 	q.mu.Unlock()
 	if q.db != nil {
-		_ = q.db.Close()
+		// A journal that will not close cleanly can lose the statuses written
+		// above, which is the difference between a command replaying after the
+		// restart and vanishing from the node.
+		if err := q.db.Close(); err != nil {
+			log.Printf("beacon: command journal did not close cleanly: %v", err)
+		}
 	}
 }

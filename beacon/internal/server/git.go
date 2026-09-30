@@ -395,13 +395,32 @@ func gitEnvironmentForRequest(req gitCloneRequest, dataDir string) ([]string, fu
 		return nil, noop, fmt.Errorf("close askpass script: %w", err)
 	}
 
-	env = append(env,
+	env = append(withoutAskPassEnv(env),
 		"GIT_ASKPASS="+scriptPath,
 		"FORGE_GIT_ASKPASS_USERNAME="+req.Username,
 		"FORGE_GIT_ASKPASS_PASSWORD="+req.AccessToken,
 	)
 
 	return env, cleanup, nil
+}
+
+// withoutAskPassEnv strips inherited GIT_ASKPASS and the FORGE_GIT_ASKPASS_*
+// variables from a base environment so the request-scoped values set by
+// gitEnvironmentForRequest are authoritative. A pre-existing GIT_ASKPASS from
+// the process environment (e.g. a system credential helper on a dev machine)
+// would otherwise shadow — or be shadowed by — the per-request script, leaving
+// duplicate keys whose resolution order is platform-dependent.
+func withoutAskPassEnv(base []string) []string {
+	out := make([]string, 0, len(base))
+	for _, kv := range base {
+		if strings.HasPrefix(kv, "GIT_ASKPASS=") ||
+			strings.HasPrefix(kv, "FORGE_GIT_ASKPASS_USERNAME=") ||
+			strings.HasPrefix(kv, "FORGE_GIT_ASKPASS_PASSWORD=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 func isHex40(s string) bool {
@@ -491,6 +510,19 @@ func (s *Server) handleGitBuild(w http.ResponseWriter, r *http.Request) {
 
 	if req.WorkspaceID == "" || req.ImageTag == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "workspaceId and imageTag are required"})
+		return
+	}
+	if err := validateImageTags([]string{req.ImageTag}); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid imageTag: " + err.Error()})
+		return
+	}
+	buildArgs := make([]string, 0, len(req.BuildArgs))
+	for k, v := range req.BuildArgs {
+		entry := k + "=" + v
+		buildArgs = append(buildArgs, entry)
+	}
+	if err := validateBuildArgs(buildArgs); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid buildArg: " + err.Error()})
 		return
 	}
 

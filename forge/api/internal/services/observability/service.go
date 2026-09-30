@@ -12,12 +12,20 @@ import (
 )
 
 type Service struct {
-	store   *store.Store
-	metrics *MetricsHistory
+	store       *store.Store
+	metrics     *MetricsHistory
+	onNodeMetric func(store.NodeMetric)
 }
 
 func New(store *store.Store) *Service {
 	return &Service{store: store, metrics: NewMetricsHistory(60)}
+}
+
+// SetNodeMetricHook registers a callback invoked after each node metric is
+// persisted. This is how alert evaluation piggybacks on collection without
+// importing the alerting package.
+func (s *Service) SetNodeMetricHook(fn func(store.NodeMetric)) {
+	s.onNodeMetric = fn
 }
 
 func (s *Service) StartMetricsCollection(ctx context.Context, interval time.Duration) {
@@ -74,6 +82,11 @@ func (s *Service) collectNodeMetrics(ctx context.Context) {
 		req.CPULoad1m = 0
 		req.CPULoad5m = 0
 		req.CPULoad15m = 0
+		if node.LoadAverage != nil && *node.LoadAverage > 0 {
+			req.CPULoad1m = *node.LoadAverage
+			req.CPULoad5m = *node.LoadAverage
+			req.CPULoad15m = *node.LoadAverage
+		}
 		req.NetworkRxBytes = 0
 		req.NetworkTxBytes = 0
 
@@ -108,6 +121,25 @@ func (s *Service) collectNodeMetrics(ctx context.Context) {
 		}
 		if _, err := s.store.CreateNodeMetric(ctx, req); err != nil {
 			slog.Error("failed to record node metric", "nodeId", node.ID, "error", err)
+		} else if s.onNodeMetric != nil {
+			s.onNodeMetric(store.NodeMetric{
+				NodeID:           req.NodeID,
+				CPUPercent:       req.CPUPercent,
+				MemoryPercent:    req.MemoryPercent,
+				DiskPercent:      req.DiskPercent,
+				MemoryUsedMB:     req.MemoryUsedMB,
+				MemoryTotalMB:    req.MemoryTotalMB,
+				DiskUsedMB:       req.DiskUsedMB,
+				DiskTotalMB:      req.DiskTotalMB,
+				CPULoad1m:        req.CPULoad1m,
+				CPULoad5m:        req.CPULoad5m,
+				CPULoad15m:       req.CPULoad15m,
+				NetworkRxBytes:   req.NetworkRxBytes,
+				NetworkTxBytes:   req.NetworkTxBytes,
+				ContainerRunning: req.ContainerRunning,
+				ContainerTotal:   req.ContainerTotal,
+				ObservedAt:       req.ObservedAt,
+			})
 		}
 	}
 	n := len(nodes)
@@ -338,7 +370,13 @@ func (s *Service) recordNodeHealth(ctx context.Context, node store.Node) {
 	disk := resourceScore(capacity.TotalDisk, capacity.AvailableDisk)
 	heartbeat := heartbeatScore(node.LastSeenAt)
 	status := statusScore(node.ActualState)
-	total := (cpu + memory + disk + heartbeat + status) / 5
+	total := averageKnownScores(cpu, memory, disk, heartbeat, status)
+	if total < 0 {
+		// Nothing reported: do not fabricate a 30/50 "score" for a
+		// never-seen node. Unknown is recorded as -1 so dashboards can show
+		// "unknown" instead of a misleading mid-range health.
+		total = -1
+	}
 	_, _ = s.store.CreateNodeHealthHistory(ctx, store.CreateNodeHealthHistoryRequest{
 		NodeID:          node.ID,
 		ActualState:     node.ActualState,
@@ -361,7 +399,8 @@ func (s *Service) recordNodeHealth(ctx context.Context, node store.Node) {
 
 func resourceScore(total, available int) int {
 	if total <= 0 {
-		return 50
+		// Unknown capacity: excluded from averages, never a middling 50.
+		return -1
 	}
 	used := total - available
 	if used < 0 {
@@ -377,9 +416,27 @@ func resourceScore(total, available int) int {
 	return score
 }
 
+// averageKnownScores averages only reported (>= 0) components; unknown (-1)
+// is excluded, and fully-unknown totals stay -1.
+func averageKnownScores(scores ...int) int {
+	sum, count := 0, 0
+	for _, v := range scores {
+		if v < 0 {
+			continue
+		}
+		sum += v
+		count++
+	}
+	if count == 0 {
+		return -1
+	}
+	return sum / count
+}
+
 func heartbeatScore(lastSeen *time.Time) int {
 	if lastSeen == nil {
-		return 0
+		// Never seen: unknown, not 0.
+		return -1
 	}
 	age := time.Since(*lastSeen)
 	switch {
@@ -400,8 +457,11 @@ func statusScore(status string) int {
 		return 100
 	case "degraded":
 		return 40
-	default:
+	case "offline":
 		return 0
+	default:
+		// Empty/unrecognised state is "not reported" (unknown), not offline.
+		return -1
 	}
 }
 

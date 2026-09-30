@@ -2,15 +2,27 @@
 
 import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useToast } from "@/components/ui/toast";
 import {
   Activity, BarChart3, Cpu, GanttChart, HardDrive, Network, Plus, Trash2, Zap, Server, Settings2,
 } from "lucide-react";
 import { fetchJSON, postJSON, putJSON, deleteJSON } from "@/lib/api";
-import {AdminPageHeader, AdminPageLayout, AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, cn, AdminLoadingState, AdminErrorState} from "@/components/admin/admin-ui";
+import {AdminPageLayout, AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, cn, AdminErrorState, AdminLoadingState} from "@/components/admin/admin-ui";
 import { OfflineBanner } from "@/components/shared/states-offline";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 
 // Backend contract types
+//
+// Mirrors scheduler.PredictiveScore in
+// forge/api/internal/services/scheduler/predictive.go, where every field is a
+// plain float64 with no `omitempty` — the encoder always emits all of them.
+// There is therefore no "field absent" state to defend against on this
+// endpoint, and a `?? 0` fallback could only invent a score the API never
+// withholds. Uncertainty is carried by `confidence`, not by missing numbers.
+//
+// The previously declared `score`, `cpuLoad`, `memoryUsage`, `diskUsage`,
+// `networkLoad` and `activeServers` fields were never part of that response;
+// they only made dead fallbacks look load-bearing.
 type PredictiveScore = {
   nodeId: string;
   baseScore: number;
@@ -20,12 +32,6 @@ type PredictiveScore = {
   totalScore: number;
   predictedLoad: number;
   confidence: number;
-  score?: number;
-  cpuLoad?: number;
-  memoryUsage?: number;
-  diskUsage?: number;
-  networkLoad?: number;
-  activeServers?: number;
 };
 
 type AffinityRule = {
@@ -112,6 +118,7 @@ const defaultConstraintBackendForm = {
 export default function AdminSchedulerPage() {
   const [confirm, renderConfirm] = useConfirm();
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [tab, setTab] = useState<"scores" | "affinity" | "constraints">("scores");
   const [showCreateAffinity, setShowCreateAffinity] = useState(false);
   const [affinityForm, setAffinityForm] = useState(defaultAffinityForm);
@@ -193,15 +200,18 @@ export default function AdminSchedulerPage() {
       setShowCreateAffinity(false);
       setAffinityForm(defaultAffinityForm);
     },
+    onError: (err) => toast({ tone: "error", title: "Failed to create affinity rule", message: err instanceof Error ? err.message : "An error occurred" }),
   });
 
   const deleteAffinityMutation = useMutation({
     mutationFn: (id: string) => deleteJSON(`/admin/scheduler/predictive/affinity-rules/${encodeURIComponent(id)}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin", "scheduler", "affinity"] }),
+    onError: (err) => toast({ tone: "error", title: "Failed to delete affinity rule", message: err instanceof Error ? err.message : "An error occurred" }),
   });
   const deleteAntiAffinityMutation = useMutation({
     mutationFn: (id: string) => deleteJSON(`/admin/scheduler/predictive/anti-affinity-rules/${encodeURIComponent(id)}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin", "scheduler", "anti-affinity"] }),
+    onError: (err) => toast({ tone: "error", title: "Failed to delete anti-affinity rule", message: err instanceof Error ? err.message : "An error occurred" }),
   });
 
   const createConstraintMutation = useMutation({
@@ -240,7 +250,9 @@ export default function AdminSchedulerPage() {
       setShowCreateConstraint(false);
       setConstraintFormUI(defaultConstraintFormUI);
       setConstraintFormBackend(defaultConstraintBackendForm);
+      toast({ tone: "success", title: "Constraint saved" });
     },
+    onError: (err) => toast({ tone: "error", title: "Failed to save constraint", message: err instanceof Error ? err.message : "An error occurred" }),
   });
 
   const deleteConstraintMutation = useMutation({
@@ -260,6 +272,7 @@ export default function AdminSchedulerPage() {
       throw new Error("No constraint target");
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin", "scheduler", "constraints"] }),
+    onError: (err) => toast({ tone: "error", title: "Failed to delete constraint", message: err instanceof Error ? err.message : "An error occurred" }),
   });
 
   const ingestMetricsMutation = useMutation({
@@ -278,7 +291,9 @@ export default function AdminSchedulerPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin", "scheduler", "scores"] });
+      toast({ tone: "success", title: "Metrics ingested" });
     },
+    onError: (err) => toast({ tone: "error", title: "Failed to ingest metrics", message: err instanceof Error ? err.message : "An error occurred" }),
   });
 
   const lookupPerNodeScore = async () => {
@@ -305,15 +320,17 @@ export default function AdminSchedulerPage() {
         schedulerConfig: config,
       });
     },
+    onSuccess: () => toast({ tone: "success", title: "Scheduler config updated" }),
+    onError: (err) => toast({ tone: "error", title: "Failed to update scheduler", message: err instanceof Error ? err.message : "An error occurred" }),
   });
 
-  const maxScore = Math.max(...scores.map((s) => (s.totalScore ?? s.score ?? 0)), 1);
+  const maxScore = Math.max(...scores.map((s) => s.totalScore), 1);
 
   return (
     <AdminPageLayout>
-      <AdminPageHeader
-        title="Scheduler Configuration"
-        description="Predictive scoring, affinity rules, and constraint-based placement configuration."
+      <SectionHeader
+        title="Scheduler"
+        sub="Placement scoring, strategies and explanations"
       />
       <OfflineBanner onRetry={() => window.location.reload()} />
 
@@ -324,62 +341,62 @@ export default function AdminSchedulerPage() {
           <Card>
             <CardHeader title="Predictive Scoring Metrics" icon={BarChart3} />
             {scoresQuery.isLoading ? (
-              <div className="p-8 text-center text-sm text-slate-300">Loading scores...</div>
+              <AdminLoadingState label="Loading scores..." />
             ) : scoresQuery.isError ? (<div className="p-4"><AdminErrorState message={scoresQuery.error instanceof Error ? scoresQuery.error.message : "Failed to load data"} retry={() => void scoresQuery.refetch()} /></div>) : scores.length === 0 ? (
               <EmptyState icon={BarChart3} message="No scoring data available." />
             ) : (
             <div className="space-y-3 p-4">
               {scores.map((node) => {
-                const scoreVal = node.totalScore ?? node.score ?? 0;
-                const cpuVal = node.predictedLoad ?? node.cpuLoad ?? 0;
+                const scoreVal = node.totalScore;
+                const cpuVal = node.predictedLoad;
                 return (
-                <div key={node.nodeId} className="rounded-lg border border-white/[0.06] bg-[var(--surface-raised)] p-4">
+                <div key={node.nodeId} className="rounded-lg border border-line bg-[var(--surface-raised)] p-4">
                   <div className="flex items-center justify-between mb-3">
-                    <p className="font-mono text-sm font-medium text-slate-200">{node.nodeId}</p>
+                    <p className="font-mono text-sm font-medium text-text">{node.nodeId}</p>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs text-slate-400">Score</span>
-                      <span className="text-lg font-bold text-slate-100">{scoreVal.toFixed(1)}</span>
-                      {typeof node.confidence === "number" && <span className="text-xs text-slate-400">conf: {(node.confidence*100).toFixed(0)}%</span>}
+                      <span className="text-xs text-text-subtle">Score</span>
+                      <span className="text-lg font-bold text-text">{scoreVal.toFixed(1)}</span>
+                      {typeof node.confidence === "number" && <span className="text-xs text-text-subtle">conf: {(node.confidence*100).toFixed(0)}%</span>}
                     </div>
                   </div>
-                  <div className="mb-3 h-2 overflow-hidden rounded-full bg-slate-800">
+                  <div className="mb-3 h-2 overflow-hidden rounded-full bg-overlay-strong">
                     <div
                       className={cn(
                         "h-full rounded-full",
-                        scoreVal / maxScore > 0.8 ? "bg-emerald-500" :
-                        scoreVal / maxScore > 0.5 ? "bg-sky-500" :
-                        scoreVal / maxScore > 0.3 ? "bg-amber-500" : "bg-red-500"
+                        scoreVal / maxScore > 0.8 ? "bg-ok" :
+                        scoreVal / maxScore > 0.5 ? "bg-brand" :
+                        scoreVal / maxScore > 0.3 ? "bg-warn" : "bg-danger"
                       )}
                       style={{ width: `${(scoreVal / maxScore) * 100}%` }}
                     />
                   </div>
                   <div className="grid grid-cols-4 gap-3 text-center">
                     <div>
-                      <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">Trend</p>
+                      <p className="text-[10px] font-semibold uppercase tracking-widest text-text-subtle">Trend</p>
                       <div className="flex items-center justify-center gap-1 mt-1">
-                        <Activity size={12} className="text-slate-400" />
-                        <span className="text-xs text-slate-300">{(node.trendScore ?? 0).toFixed(2)}</span>
+                        <Activity size={12} className="text-text-subtle" />
+                        <span className="text-xs text-text-subtle">{node.trendScore.toFixed(2)}</span>
                       </div>
                     </div>
                     <div>
-                      <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">Affinity</p>
+                      <p className="text-[10px] font-semibold uppercase tracking-widest text-text-subtle">Affinity</p>
                       <div className="flex items-center justify-center gap-1 mt-1">
-                        <Zap size={12} className="text-slate-400" />
-                        <span className="text-xs text-slate-300">{(node.affinityScore ?? 0).toFixed(2)}</span>
+                        <Zap size={12} className="text-text-subtle" />
+                        <span className="text-xs text-text-subtle">{node.affinityScore.toFixed(2)}</span>
                       </div>
                     </div>
                     <div>
-                      <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">Anti-Affinity</p>
+                      <p className="text-[10px] font-semibold uppercase tracking-widest text-text-subtle">Anti-Affinity</p>
                       <div className="flex items-center justify-center gap-1 mt-1">
-                        <HardDrive size={12} className="text-slate-400" />
-                        <span className="text-xs text-slate-300">{(node.antiAffinityScore ?? 0).toFixed(2)}</span>
+                        <HardDrive size={12} className="text-text-subtle" />
+                        <span className="text-xs text-text-subtle">{node.antiAffinityScore.toFixed(2)}</span>
                       </div>
                     </div>
                     <div>
-                      <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">Predicted</p>
+                      <p className="text-[10px] font-semibold uppercase tracking-widest text-text-subtle">Predicted</p>
                       <div className="flex items-center justify-center gap-1 mt-1">
-                        <Cpu size={12} className="text-slate-400" />
-                        <span className="text-xs text-slate-300">{(cpuVal * 100).toFixed(0)}%</span>
+                        <Cpu size={12} className="text-text-subtle" />
+                        <span className="text-xs text-text-subtle">{(cpuVal * 100).toFixed(0)}%</span>
                       </div>
                     </div>
                   </div>
@@ -393,14 +410,14 @@ export default function AdminSchedulerPage() {
             <Card>
               <CardHeader title="Per-Node Score Lookup" icon={Server} />
               <div className="p-4 space-y-3">
-                <p className="text-xs text-slate-400">GET /admin/scheduler/predictive/nodes/:nodeId/score</p>
+                <p className="text-xs text-text-subtle">GET /admin/scheduler/predictive/nodes/:nodeId/score</p>
                 <div className="flex gap-2">
                   <Input placeholder="nodeId" value={lookupNodeId} onChange={setLookupNodeId} />
                   <Btn tone="primary" onClick={lookupPerNodeScore}>Fetch Score</Btn>
                 </div>
-                {lookupError && <p className="text-xs text-red-400">{lookupError}</p>}
+                {lookupError && <p className="text-xs text-danger">{lookupError}</p>}
                 {lookupResult && (
-                  <div className="rounded-lg border border-white/10 bg-[var(--surface-raised)] p-3 text-xs font-mono text-slate-200 space-y-1">
+                  <div className="rounded-lg border border-line bg-[var(--surface-raised)] p-3 text-xs font-mono text-text space-y-1">
                     <div>nodeId: {lookupResult.nodeId}</div>
                     <div>totalScore: {lookupResult.totalScore}</div>
                     <div>baseScore: {lookupResult.baseScore}</div>
@@ -416,7 +433,7 @@ export default function AdminSchedulerPage() {
             <Card>
               <CardHeader title="Ingest Predictive Metrics" icon={Activity} />
               <div className="p-4 space-y-3">
-                <p className="text-xs text-slate-400">POST /admin/scheduler/predictive/metrics/:nodeId</p>
+                <p className="text-xs text-text-subtle">POST /admin/scheduler/predictive/metrics/:nodeId</p>
                 <Input label="Node ID" value={metricsNodeId} onChange={setMetricsNodeId} placeholder="node_abc" />
                 <div className="grid grid-cols-2 gap-3">
                   <Input label="CPU %" type="number" value={String(metricsForm.cpuPercent)} onChange={(v) => setMetricsForm({ ...metricsForm, cpuPercent: Number(v) })} />
@@ -426,8 +443,8 @@ export default function AdminSchedulerPage() {
                   <Input label="Network Rx" type="number" value={String(metricsForm.networkRx)} onChange={(v) => setMetricsForm({ ...metricsForm, networkRx: Number(v) })} />
                   <Input label="Network Tx" type="number" value={String(metricsForm.networkTx)} onChange={(v) => setMetricsForm({ ...metricsForm, networkTx: Number(v) })} />
                 </div>
-                {ingestMetricsMutation.isError && <p className="text-xs text-red-400">{ingestMetricsMutation.error instanceof Error ? ingestMetricsMutation.error.message : "Failed to ingest"}</p>}
-                {ingestMetricsMutation.isSuccess && <p className="text-xs text-emerald-400">Metrics ingested</p>}
+                {ingestMetricsMutation.isError && <p className="text-xs text-danger">{ingestMetricsMutation.error instanceof Error ? ingestMetricsMutation.error.message : "Failed to ingest"}</p>}
+                {ingestMetricsMutation.isSuccess && <p className="text-xs text-ok">Metrics ingested</p>}
                 <Btn tone="primary" onClick={() => ingestMetricsMutation.mutate()} disabled={ingestMetricsMutation.isPending}>{ingestMetricsMutation.isPending ? "Ingesting..." : "Ingest Metrics"}</Btn>
               </div>
             </Card>
@@ -437,15 +454,15 @@ export default function AdminSchedulerPage() {
             <Card>
               <CardHeader title="Scheduler Backends" icon={Settings2} />
               <div className="p-4">
-                <p className="text-xs text-slate-400 mb-3">GET /admin/scheduler/backends (static list)</p>
-                {backendsQuery.isLoading ? <div className="text-sm text-slate-300">Loading backends...</div>
-                : backendsQuery.isError ? <div className="text-sm text-red-300">{backendsQuery.error instanceof Error ? backendsQuery.error.message : "Failed"}</div>
+                <p className="text-xs text-text-subtle mb-3">GET /admin/scheduler/backends (static list)</p>
+                {backendsQuery.isLoading ? <div className="text-sm text-text-subtle">Loading backends...</div>
+                : backendsQuery.isError ? <div className="text-sm text-danger">{backendsQuery.error instanceof Error ? backendsQuery.error.message : "Failed"}</div>
                 : (
                   <div className="space-y-2">
                     {backends.map((b) => (
-                      <div key={b.type} className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
-                        <p className="text-sm font-medium text-slate-100">{b.name} <span className="font-mono text-xs text-slate-400">({b.type})</span></p>
-                        <p className="text-xs text-slate-400">{b.description}</p>
+                      <div key={b.type} className="rounded-lg border border-line bg-overlay-subtle p-3">
+                        <p className="text-sm font-medium text-text">{b.name} <span className="font-mono text-xs text-text-subtle">({b.type})</span></p>
+                        <p className="text-xs text-text-subtle">{b.description}</p>
                       </div>
                     ))}
                   </div>
@@ -455,19 +472,19 @@ export default function AdminSchedulerPage() {
             <Card>
               <CardHeader title="Node Scheduler Config" icon={HardDrive} />
               <div className="p-4 space-y-3">
-                <p className="text-xs text-slate-400">PUT /admin/scheduler/nodes/:id/scheduler</p>
+                <p className="text-xs text-text-subtle">PUT /admin/scheduler/nodes/:id/scheduler</p>
                 <Input label="Node ID" value={schedulerNodeId} onChange={setSchedulerNodeId} placeholder="node UUID" />
                 <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-1.5">Scheduler Type</label>
-                  <select className="h-9 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100" value={schedulerType} onChange={(e) => setSchedulerType(e.target.value)}>
+                  <label className="block text-sm font-medium text-text-subtle mb-1.5">Scheduler Type</label>
+                  <select className="h-9 w-full rounded-lg border border-line bg-[var(--surface-input)] px-3 text-sm text-text" value={schedulerType} onChange={(e) => setSchedulerType(e.target.value)}>
                     <option value="docker">Docker</option>
                     <option value="k3s">K3s</option>
                     <option value="nomad">Nomad</option>
                   </select>
                 </div>
                 <Input label="Scheduler Config (JSON)" value={schedulerConfigJson} onChange={setSchedulerConfigJson} placeholder='{}' />
-                {updateNodeSchedulerMutation.isError && <p className="text-xs text-red-400">{updateNodeSchedulerMutation.error instanceof Error ? updateNodeSchedulerMutation.error.message : "Update failed"}</p>}
-                {updateNodeSchedulerMutation.isSuccess && <p className="text-xs text-emerald-400">Scheduler config updated</p>}
+                {updateNodeSchedulerMutation.isError && <p className="text-xs text-danger">{updateNodeSchedulerMutation.error instanceof Error ? updateNodeSchedulerMutation.error.message : "Update failed"}</p>}
+                {updateNodeSchedulerMutation.isSuccess && <p className="text-xs text-ok">Scheduler config updated</p>}
                 <Btn tone="primary" onClick={() => updateNodeSchedulerMutation.mutate()} disabled={updateNodeSchedulerMutation.isPending || !schedulerNodeId.trim()}>{updateNodeSchedulerMutation.isPending ? "Saving..." : "Update Scheduler"}</Btn>
               </div>
             </Card>
@@ -488,18 +505,18 @@ export default function AdminSchedulerPage() {
               }
             />
             {affinityQuery.isLoading ? (
-              <div className="p-8 text-center text-sm text-slate-300">Loading rules...</div>
+              <AdminLoadingState label="Loading rules..." />
             ) : affinityQuery.isError ? (<div className="p-4"><AdminErrorState message={affinityQuery.error instanceof Error ? affinityQuery.error.message : "Failed to load data"} retry={() => void affinityQuery.refetch()} /></div>) : affinityRules.length === 0 ? (
               <EmptyState icon={GanttChart} message="No affinity rules configured." />
             ) : (
-              <div className="divide-y divide-white/[0.04]">
+              <div className="divide-y divide-line">
                 {affinityRules.map((rule) => (
                   <div key={rule.id} className="flex items-center justify-between px-4 py-3">
                     <div className="flex items-center gap-3">
-                      <Zap size={16} className="text-emerald-400" />
+                      <Zap size={16} className="text-ok" />
                       <div>
-                        <p className="text-sm font-medium text-slate-200">{rule.label || rule.name || rule.id}</p>
-                        <p className="text-xs text-slate-400">
+                        <p className="text-sm font-medium text-text">{rule.label || rule.name || rule.id}</p>
+                        <p className="text-xs text-text-subtle">
                           name: {rule.name ?? "—"} — server: {rule.serverId ?? "—"} — node: {rule.nodeId ?? "—"} — weight: {rule.weight ?? 0}
                         </p>
                       </div>
@@ -519,18 +536,18 @@ export default function AdminSchedulerPage() {
           <Card>
             <CardHeader title="Anti-Affinity Rules" icon={Network} />
             {antiAffinityQuery.isLoading ? (
-              <div className="p-8 text-center text-sm text-slate-300">Loading anti-affinity...</div>
+              <AdminLoadingState label="Loading anti-affinity..." />
             ) : antiAffinityQuery.isError ? (<div className="p-4"><AdminErrorState message={antiAffinityQuery.error instanceof Error ? antiAffinityQuery.error.message : "Failed to load anti-affinity"} retry={() => void antiAffinityQuery.refetch()} /></div>) : antiAffinityRules.length === 0 ? (
               <EmptyState icon={Network} message="No anti-affinity rules configured. GET /admin/scheduler/predictive/anti-affinity-rules" />
             ) : (
-              <div className="divide-y divide-white/[0.04]">
+              <div className="divide-y divide-line">
                 {antiAffinityRules.map((rule) => (
                   <div key={rule.id} className="flex items-center justify-between px-4 py-3">
                     <div className="flex items-center gap-3">
-                      <Zap size={16} className="text-red-400" />
+                      <Zap size={16} className="text-danger" />
                       <div>
-                        <p className="text-sm font-medium text-slate-200">{rule.label || rule.name || rule.id}</p>
-                        <p className="text-xs text-slate-400">
+                        <p className="text-sm font-medium text-text">{rule.label || rule.name || rule.id}</p>
+                        <p className="text-xs text-text-subtle">
                           name: {rule.name ?? "—"} — server: {rule.serverId ?? "—"} — scope: {rule.scope ?? "—"} — weight: {rule.weight ?? 0}
                         </p>
                       </div>
@@ -560,16 +577,16 @@ export default function AdminSchedulerPage() {
               </Btn>
             }
           />
-          <div className="px-4 py-2 text-xs text-slate-400">Backend: PUT /admin/scheduler/constraints expects []Constraint array — frontend now PUTs full list. DELETE /admin/scheduler/constraints/:id also wired (via PUT fallback).</div>
+          <div className="px-4 py-2 text-xs text-text-subtle">Backend: PUT /admin/scheduler/constraints expects []Constraint array — frontend now PUTs full list. DELETE /admin/scheduler/constraints/:id also wired (via PUT fallback).</div>
           {constraintsQuery.isLoading ? (
-            <div className="p-8 text-center text-sm text-slate-300">Loading constraints...</div>
+            <AdminLoadingState label="Loading constraints..." />
           ) : constraintsQuery.isError ? (<div className="p-4"><AdminErrorState message={constraintsQuery.error instanceof Error ? constraintsQuery.error.message : "Failed to load data"} retry={() => void constraintsQuery.refetch()} /></div>) : constraints.length === 0 ? (
             <EmptyState icon={Network} message="No scheduling constraints configured." />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-white/[0.06] text-left text-[10px] uppercase tracking-widest text-slate-400">
+                  <tr className="border-b border-line text-left text-[10px] uppercase tracking-widest text-text-subtle">
                     <th className="px-4 py-3">Type</th>
                     <th className="px-4 py-3">Key</th>
                     <th className="px-4 py-3">Operator</th>
@@ -577,13 +594,13 @@ export default function AdminSchedulerPage() {
                     <th className="px-4 py-3"></th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-white/[0.04]">
+                <tbody className="divide-y divide-line">
                   {constraints.map((c, idx) => (
-                    <tr key={`${c.type}-${c.key}-${idx}`} className="hover:bg-white/[0.02]">
+                    <tr key={`${c.type}-${c.key}-${idx}`} className="hover:bg-overlay-subtle">
                       <td className="px-4 py-3"><Pill tone={c.type === "required" ? "red" : c.type === "preferred" ? "blue" : "yellow"}>{c.type}</Pill></td>
-                      <td className="px-4 py-3 font-mono text-xs text-slate-300">{c.key}</td>
-                      <td className="px-4 py-3 font-mono text-xs text-slate-400">{c.operator}</td>
-                      <td className="px-4 py-3 text-xs text-slate-400">{c.value}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-text-subtle">{c.key}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-text-subtle">{c.operator}</td>
+                      <td className="px-4 py-3 text-xs text-text-subtle">{c.value}</td>
                       <td className="px-4 py-3">
                         <Btn size="sm" tone="danger" onClick={() => { void (async () => { if (await confirm({ title: "Delete this constraint?", description: "The scheduler will stop applying this constraint. This cannot be undone.", danger: true, confirmLabel: "Delete" })) deleteConstraintMutation.mutate({ index: idx, id: c.key }); })(); }}>
                           <Trash2 size={12} />
@@ -600,13 +617,13 @@ export default function AdminSchedulerPage() {
 
       {showCreateAffinity && (
         <Modal title="Create Affinity Rule" onClose={() => setShowCreateAffinity(false)}>
-          <div className="grid gap-4">
+          <div className="space-y-4">
             <Input label="Label" value={affinityForm.label} onChange={(v) => setAffinityForm({ ...affinityForm, label: v })} placeholder="Co-locate cache nodes" />
             <Input label="Name" value={affinityForm.name} onChange={(v) => setAffinityForm({ ...affinityForm, name: v })} placeholder="cache-affinity" />
             <div>
-              <label className="block text-sm font-medium text-slate-300 mb-1.5">Type</label>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-text-subtle">Type</label>
               <select
-                className="h-9 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100 outline-none focus:border-[var(--brand)]/60 focus:ring-1 focus:ring-[var(--brand)]/30"
+                className="h-9 w-full rounded-lg border border-line bg-[var(--surface-input)] px-3 text-sm text-text outline-none focus:border-[color-mix(in_srgb,var(--brand)_60%,transparent)] focus:ring-1 focus:ring-[color-mix(in_srgb,var(--brand)_30%,transparent)]"
                 value={affinityForm.type}
                 onChange={(e) => setAffinityForm({ ...affinityForm, type: e.target.value as "affinity" | "anti_affinity" })}
               >
@@ -633,14 +650,15 @@ export default function AdminSchedulerPage() {
 
       {showCreateConstraint && (
         <Modal title="Add Constraint" onClose={() => setShowCreateConstraint(false)}>
-          <div className="mb-3 flex items-center gap-2 text-xs">
+          <div className="space-y-4">
+          <div className="flex items-center gap-2 text-xs text-text-subtle">
             <label className="flex items-center gap-1"><input type="checkbox" checked={useBackendConstraintShape} onChange={(e) => setUseBackendConstraintShape(e.target.checked)} /> Use backend shape (required/preferred/forbidden + key)</label>
           </div>
           {useBackendConstraintShape ? (
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">Type</label>
-                <select className="h-9 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100" value={constraintFormBackend.type} onChange={(e) => setConstraintFormBackend({ ...constraintFormBackend, type: e.target.value as ConstraintBackend["type"] })}>
+                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-text-subtle">Type</label>
+                <select className="h-9 w-full rounded-lg border border-line bg-[var(--surface-input)] px-3 text-sm text-text" value={constraintFormBackend.type} onChange={(e) => setConstraintFormBackend({ ...constraintFormBackend, type: e.target.value as ConstraintBackend["type"] })}>
                   <option value="required">required</option>
                   <option value="preferred">preferred</option>
                   <option value="forbidden">forbidden</option>
@@ -648,8 +666,8 @@ export default function AdminSchedulerPage() {
               </div>
               <Input label="Key" value={constraintFormBackend.key} onChange={(v) => setConstraintFormBackend({ ...constraintFormBackend, key: v })} placeholder="region | node_id | name" />
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">Operator</label>
-                <select className="h-9 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100" value={constraintFormBackend.operator} onChange={(e) => setConstraintFormBackend({ ...constraintFormBackend, operator: e.target.value })}>
+                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-text-subtle">Operator</label>
+                <select className="h-9 w-full rounded-lg border border-line bg-[var(--surface-input)] px-3 text-sm text-text" value={constraintFormBackend.operator} onChange={(e) => setConstraintFormBackend({ ...constraintFormBackend, operator: e.target.value })}>
                   <option value="eq">eq</option>
                   <option value="neq">neq</option>
                   <option value="in">in</option>
@@ -662,14 +680,14 @@ export default function AdminSchedulerPage() {
           ) : (
             <div className="grid gap-4 sm:grid-cols-2">
               <Input label="Name" value={constraintFormUI.name} onChange={(v) => setConstraintFormUI({ ...constraintFormUI, name: v })} placeholder="Max CPU per node" />
-              <label className="flex items-center gap-2 text-sm font-medium text-slate-300 pt-6">
-                <input type="checkbox" checked={constraintFormUI.enabled} onChange={(e) => setConstraintFormUI({ ...constraintFormUI, enabled: e.target.checked })} className="rounded border-white/10 bg-[var(--surface-input)]" />
+              <label className="flex items-center gap-2 text-sm font-medium text-text-subtle pt-6">
+                <input type="checkbox" checked={constraintFormUI.enabled} onChange={(e) => setConstraintFormUI({ ...constraintFormUI, enabled: e.target.checked })} className="rounded border-line bg-[var(--surface-input)]" />
                 Enabled
               </label>
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">Type (maps to key)</label>
+                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-text-subtle">Type (maps to key)</label>
                 <select
-                  className="h-9 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100 outline-none focus:border-[var(--brand)]/60 focus:ring-1 focus:ring-[var(--brand)]/30"
+                  className="h-9 w-full rounded-lg border border-line bg-[var(--surface-input)] px-3 text-sm text-text outline-none focus:border-[color-mix(in_srgb,var(--brand)_60%,transparent)] focus:ring-1 focus:ring-[color-mix(in_srgb,var(--brand)_30%,transparent)]"
                   value={constraintFormUI.type}
                   onChange={(e) => setConstraintFormUI({ ...constraintFormUI, type: e.target.value as ConstraintUI["type"] })}
                 >
@@ -681,9 +699,9 @@ export default function AdminSchedulerPage() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">Operator</label>
+                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-text-subtle">Operator</label>
                 <select
-                  className="h-9 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100 outline-none focus:border-[var(--brand)]/60 focus:ring-1 focus:ring-[var(--brand)]/30"
+                  className="h-9 w-full rounded-lg border border-line bg-[var(--surface-input)] px-3 text-sm text-text outline-none focus:border-[color-mix(in_srgb,var(--brand)_60%,transparent)] focus:ring-1 focus:ring-[color-mix(in_srgb,var(--brand)_30%,transparent)]"
                   value={constraintFormUI.operator}
                   onChange={(e) => setConstraintFormUI({ ...constraintFormUI, operator: e.target.value as ConstraintUI["operator"] })}
                 >
@@ -697,8 +715,9 @@ export default function AdminSchedulerPage() {
               <Input label="Value" value={constraintFormUI.value} onChange={(v) => setConstraintFormUI({ ...constraintFormUI, value: v })} placeholder="80" />
             </div>
           )}
-          <div className="mt-2 text-xs text-slate-400">Will PUT full array to /admin/scheduler/constraints (backend expects []Constraint). Legacy single POST was 400.</div>
-          {createConstraintMutation.isError && <p className="text-xs text-red-400">{createConstraintMutation.error instanceof Error ? createConstraintMutation.error.message : "Create failed"}</p>}
+          <div className="text-xs text-text-subtle">Will PUT full array to /admin/scheduler/constraints (backend expects []Constraint). Legacy single POST was 400.</div>
+          {createConstraintMutation.isError && <p className="text-sm text-danger">{createConstraintMutation.error instanceof Error ? createConstraintMutation.error.message : "Create failed"}</p>}
+          </div>
           <ModalFooter
             onCancel={() => setShowCreateConstraint(false)}
             onConfirm={() => createConstraintMutation.mutate()}

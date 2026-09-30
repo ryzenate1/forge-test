@@ -7,7 +7,7 @@ import { AdminHealth } from "@/components/admin/AdminHealth";
 import AdminMonitoring from "@/app/admin/monitoring/page";
 import AdminHost from "@/app/admin/host/page";
 import { AdminServers } from "@/components/admin/AdminServers";
-import { jsonResponse } from "@/test/fetch-mock";
+import { jsonResponse, mockFetchByUrl } from "@/test/fetch-mock";
 import { renderWithQuery } from "@/test/render";
 import { apiPage } from "@/test/fixtures";
 
@@ -161,8 +161,9 @@ describe("AdminOverview — mocked API", () => {
     expect(screen.getAllByText(/2 running/).length).toBeGreaterThanOrEqual(1);
     // attention section: platform is calm when no failures
     expect(await screen.findByText(/No open issues/)).toBeInTheDocument();
-    // Recent activity renders the audit event action (underscores replaced)
-    expect(await screen.findByText("server create")).toBeInTheDocument();
+    // Recent activity and the infrastructure events table both render the audit
+    // event action (underscores replaced), so more than one match is expected.
+    expect((await screen.findAllByText("server create")).length).toBeGreaterThanOrEqual(1);
     // Capacity section present
     expect(screen.getAllByText("Capacity").length).toBeGreaterThanOrEqual(1);
   });
@@ -194,8 +195,11 @@ describe("AdminOverview — mocked API", () => {
 
     renderWithQuery(<AdminOverview />);
 
-    // Overall becomes critical — shows offline count and failures text
-    expect(await screen.findByText(/nodes offline/)).toBeInTheDocument();
+    // Overall becomes critical — shows offline count and failures text.
+    // Singular: this fixture has one offline node, and the headline says so.
+    // Asserted exactly rather than as /nodes? offline/ so a regression back to
+    // "1 nodes offline" fails here.
+    expect(await screen.findByText("1 node offline")).toBeInTheDocument();
     expect(screen.getByText(/Node heartbeat failure/)).toBeInTheDocument();
     // affected node appears in attention group
     expect(screen.getByText("beta")).toBeInTheDocument();
@@ -240,8 +244,8 @@ describe("AdminOverview — mocked API", () => {
     ]);
 
     renderWithQuery(<AdminOverview />);
-    // Empty activity should show "No recent changes."
-    expect(await screen.findByText("No recent changes.")).toBeInTheDocument();
+    // An empty audit feed says so; it does not fall back to sample events.
+    expect(await screen.findByText("No audit events recorded.")).toBeInTheDocument();
     expect(screen.getByText("All systems operational")).toBeInTheDocument();
   });
 
@@ -423,14 +427,31 @@ describe("AdminMonitoring — time-series and telemetry", () => {
 
     renderWithQuery(<AdminMonitoring />);
 
-    expect(await screen.findByText(/No telemetry for 1 hour yet/i)).toBeInTheDocument();
-    expect(screen.getByText(/Charts stay empty until beacons report/i)).toBeInTheDocument();
+    // An empty window must read as "no samples", never as zero usage.
+    expect(await screen.findByText(/No samples recorded for 1 hour/i)).toBeInTheDocument();
+    expect(screen.getByText(/Charts stay empty rather than flat at zero/i)).toBeInTheDocument();
+  });
+
+  it("surfaces a failed telemetry query instead of rendering an empty window", async () => {
+    // A 500 is not "no data": showing the empty-state banner here would claim
+    // the collector reported nothing when in fact we never got an answer.
+    installFetch([
+      { test: (u) => u.includes("/monitoring/nodes/metrics"), response: () => new Response("boom", { status: 500 }) },
+      { test: (u) => u.includes("/monitoring/summary"), response: () => jsonResponse({ nodes: [], unacknowledgedAlerts: 0, recentHealthChecks: [] }) },
+      { test: (u) => u.includes("/alerts"), response: () => jsonResponse({ alerts: [] }) },
+      { test: (u) => u.includes("/nodes"), response: () => jsonResponse(apiPage([{ id: "n1", name: "alpha" }])) },
+    ]);
+
+    renderWithQuery(<AdminMonitoring />);
+
+    expect(await screen.findByText(/Telemetry query failed/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No samples recorded for/i)).not.toBeInTheDocument();
   });
 
   it("renders charts and beacon list when telemetry is present", async () => {
     const liveMetrics = nodeMetrics([
-      { cpuLoad1m: 1.2, networkRxBytes: 1024, cpuPercent: 30 },
-      { cpuLoad1m: 0.9, networkRxBytes: 2048, cpuPercent: 32 },
+      { cpuLoad1m: 1.2, networkRxBytes: 1024, cpuPercent: 30, observedAt: "2026-08-16T11:50:00Z" },
+      { cpuLoad1m: 0.9, networkRxBytes: 2048, cpuPercent: 32, observedAt: "2026-08-16T12:00:00Z" },
     ]);
 
     installMonitoringFetch(liveMetrics);
@@ -439,10 +460,17 @@ describe("AdminMonitoring — time-series and telemetry", () => {
 
     // Should render monitoring heading and window controls
     expect(await screen.findByRole("heading", { name: "Monitoring", level: 1 })).toBeInTheDocument();
-    expect(screen.getByText(/What happens over time/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "1 hour" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "6 hours" })).toBeInTheDocument();
-    expect(screen.getByText(/Filter by beacon/i)).toBeInTheDocument();
+    expect(screen.getByText("Platform, node and workload health dashboards.")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Last 1 hour" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Last 6 hours" })).toBeInTheDocument();
+    // Section titles say what the data is: these series are allocated shares of
+    // capacity, not measured usage, and no workload is ranked by usage.
+    expect(screen.getByText("Allocation Over Time")).toBeInTheDocument();
+    expect(screen.getByText("Node Allocation")).toBeInTheDocument();
+    expect(screen.getByText("Workloads")).toBeInTheDocument();
+    expect(screen.getByText(/per-workload usage is not reported/i)).toBeInTheDocument();
+    expect(screen.getByText("System Health")).toBeInTheDocument();
+    expect(screen.queryByText(/No samples recorded for/i)).not.toBeInTheDocument();
   });
 
   it("allows switching time window", async () => {
@@ -450,19 +478,24 @@ describe("AdminMonitoring — time-series and telemetry", () => {
 
     renderWithQuery(<AdminMonitoring />);
 
-    expect(await screen.findByText(/No telemetry for 1 hour yet/i)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "6 hours" }));
-    expect(await screen.findByText(/No telemetry for 6 hours yet/i)).toBeInTheDocument();
+    expect(await screen.findByText(/No samples recorded for 1 hour/i)).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Select time range" }), "6h");
+    // The banner must name the window it is reporting on, so switching windows
+    // cannot leave a stale "1 hour" claim on screen.
+    expect(await screen.findByText(/No samples recorded for 6 hours/i)).toBeInTheDocument();
   });
 
-  it("navigates or displays About Monitoring info cards", async () => {
+  it("renders screenshot sections with empty telemetry", async () => {
     installMonitoringFetch([]);
 
     renderWithQuery(<AdminMonitoring />);
 
-    expect(await screen.findByText(/About Monitoring/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Overview" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /Health/i }).length).toBeGreaterThanOrEqual(1);
+    expect(await screen.findByText(/No samples recorded for 1 hour/i)).toBeInTheDocument();
+    expect(screen.getByText("Node Allocation")).toBeInTheDocument();
+    expect(screen.getByText("Workloads")).toBeInTheDocument();
+    expect(screen.getByText("System Health")).toBeInTheDocument();
+    expect(screen.getByText("Recent Activity")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /View Health/i })).toBeInTheDocument();
   });
 
   // Unit sanity for the isSynthetic predicate itself (mirrors component logic)
@@ -501,7 +534,12 @@ describe("AdminHost page", () => {
     installHostFetch();
     renderWithQuery(<AdminHost />);
 
-    expect(await screen.findByText(/Host Management/)).toBeInTheDocument();
+    // Host readings are per-node and the page names no default: nothing is
+    // fetched until the operator picks a target node.
+    expect(await screen.findByText("No node selected")).toBeInTheDocument();
+    await screen.findByRole("option", { name: /alpha/ });
+    await userEvent.selectOptions(screen.getByLabelText("Target node"), "n1");
+
     // default tab is System
     expect(await screen.findByText("Hostname")).toBeInTheDocument();
     expect(screen.getByText("host-1")).toBeInTheDocument();
@@ -511,10 +549,14 @@ describe("AdminHost page", () => {
     installHostFetch();
     renderWithQuery(<AdminHost />);
 
+    await screen.findByRole("option", { name: /alpha/ });
+    await userEvent.selectOptions(screen.getByLabelText("Target node"), "n1");
     await screen.findByText("Hostname");
 
     await userEvent.click(screen.getByRole("tab", { name: "Disk" }));
-    expect(await screen.findByText("/")).toBeInTheDocument();
+    // The device line shares its <p> with fstype and usage ("… · ext4 · …"),
+    // so match by regex: string matching is full-text exact in this suite.
+    expect(await screen.findByText(/\/dev\/sda1/)).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("tab", { name: "Memory" }));
     // Memory tab formats via fmtMB -> 8192 MiB becomes "8.0 GB"
@@ -531,7 +573,7 @@ describe("AdminHost page", () => {
   it("shows no-nodes empty state", async () => {
     installHostFetch({ nodes: [] });
     renderWithQuery(<AdminHost />);
-    expect(await screen.findByText(/No nodes/)).toBeInTheDocument();
+    expect(await screen.findByText("No nodes available")).toBeInTheDocument();
   });
 });
 
@@ -561,7 +603,9 @@ describe("AdminServers page", () => {
 
     expect(await screen.findByText("alpha-mc")).toBeInTheDocument();
     expect(screen.getByText("beta-mc")).toBeInTheDocument();
-    expect(screen.getByText("Servers")).toBeInTheDocument();
+    // The header carries no hand-passed title (it resolves from the registry
+    // description), so assert the KPI tile the list renders instead of an h1.
+    expect(screen.getByText("Total Servers")).toBeInTheDocument();
   });
 
   it("filters servers by search query", async () => {
@@ -572,7 +616,7 @@ describe("AdminServers page", () => {
     renderWithQuery(<AdminServers />);
 
     await screen.findByText("alpha-mc");
-    const search = screen.getByPlaceholderText("Search Servers");
+    const search = screen.getByPlaceholderText(/Search servers by name/);
     await userEvent.type(search, "beta");
     expect(screen.queryByText("alpha-mc")).not.toBeInTheDocument();
     expect(screen.getByText("beta-mc")).toBeInTheDocument();
@@ -588,12 +632,102 @@ describe("AdminServers page", () => {
     installServersFetch([]);
     renderWithQuery(<AdminServers />);
     await screen.findByText(/No servers/);
-    await userEvent.click(screen.getByRole("button", { name: /Create New/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Create Server/ }));
     // dialog title — scope inside dialog: heading + button share the same label so use getAll
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getAllByText("Create Server").length).toBeGreaterThanOrEqual(1);
     const nameInput = screen.getByPlaceholderText("My Game Server");
     await userEvent.type(nameInput, "my-server");
     expect(nameInput).toHaveValue("my-server");
+  });
+
+  it("renders KPI counts, filters by status, and paginates", async () => {
+    installServersFetch([
+      { id: "s1", name: "alpha-mc", status: "running", desiredState: "running", memoryMb: 1024, diskMb: 5120, createdAt: "2025-09-20T14:22:00Z", updatedAt: "2025-09-23T09:14:00Z", generation: 1 },
+      { id: "s2", name: "beta-mc", status: "stopped", desiredState: "stopped", memoryMb: 2048, diskMb: 10240, createdAt: "2025-09-21T10:00:00Z", generation: 0 },
+      { id: "s3", name: "gamma-mc", status: "crashed", memoryMb: 512, diskMb: 1024, createdAt: "2025-09-22T10:00:00Z", generation: 0 },
+    ]);
+    renderWithQuery(<AdminServers />);
+
+    expect(await screen.findByText("alpha-mc")).toBeInTheDocument();
+    expect(screen.getByText("Total Servers")).toBeInTheDocument();
+    expect(screen.getByText(/1 running.*1 stopped.*1 error/)).toBeInTheDocument();
+    expect(screen.getByText("Manual stop")).toBeInTheDocument();
+
+    await userEvent.selectOptions(screen.getByLabelText("Filter by status"), "running");
+    expect(screen.queryByText("beta-mc")).not.toBeInTheDocument();
+    expect(screen.getByText("alpha-mc")).toBeInTheDocument();
+    expect(screen.getByText(/1 of 3 servers/)).toBeInTheDocument();
+  });
+
+  it("switches to grid view and selects rows for bulk actions", async () => {
+    installServersFetch([
+      { id: "s1", name: "alpha-mc", status: "stopped", desiredState: "stopped", generation: 0 },
+      { id: "s2", name: "beta-mc", status: "stopped", desiredState: "stopped", generation: 0 },
+    ]);
+    renderWithQuery(<AdminServers />);
+
+    await screen.findByText("alpha-mc");
+    await userEvent.click(screen.getByRole("button", { name: "Grid view" }));
+    expect(screen.getByRole("button", { name: "Grid view" })).toHaveAttribute("aria-pressed", "true");
+
+    await userEvent.click(screen.getByRole("button", { name: "List view" }));
+    await userEvent.click(screen.getByLabelText("Select alpha-mc"));
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+  });
+
+  it("opens the detail modal with live KPIs, info rows and power actions", async () => {
+    const server = {
+      id: "s1", name: "alpha-mc", description: "Test server.", status: "running",
+      desiredState: "running", actualState: "running", nodeId: "n1", node: "node-a",
+      ownerEmail: "admin@example.com", template: "Minecraft Java", dockerImage: "itzg/minecraft-server:java21",
+      memoryMb: 2048, diskMb: 10240, cpuLimit: 100, allocationLimit: 2, databaseLimit: 1, backupLimit: 2,
+      createdAt: "2025-09-20T14:22:00Z", generation: 1,
+    };
+    const mocked = mockFetchByUrl({
+      "/servers?page=1&per_page=100": jsonResponse(apiPage([server])),
+      "/servers/s1": jsonResponse(server),
+      "/servers/s1/stats": jsonResponse({
+        cpuPercent: 12.5, memoryBytes: 1174405120, memoryLimit: 4294967296,
+        diskBytes: 3355443200, diskLimit: 10737418240,
+        networkRxBytes: 1048576, networkTxBytes: 2097152, uptimeMs: 367782000,
+      }),
+      "/servers/s1/startup": jsonResponse({
+        startupCommand: "java -jar server.jar", rawStartupCommand: "java -jar server.jar", dockerImages: {},
+        variables: [
+          { name: "Minecraft Version", description: "Version", envVariable: "VANILLA_VERSION", defaultValue: "latest", serverValue: "1.21.1", isEditable: true, rules: "" },
+        ],
+      }),
+      "/servers/s1/activity?page=1&per_page=50": jsonResponse({
+        data: [{ id: "e1", action: "server.start", actorEmail: "admin@example.com", targetType: "server", targetId: "s1", createdAt: "2025-09-23T09:14:00Z" }],
+        pagination: { page: 1, per_page: 50, total: 1, total_pages: 1 },
+      }),
+      "/servers/s1/power": { method: "POST", response: jsonResponse({ serverId: "s1", signal: "restart", accepted: true }) },
+      "/users": jsonResponse([]),
+      "/nodes": jsonResponse([{ id: "n1", name: "node-a", heartbeatState: "healthy", lastSeenAt: new Date().toISOString() }]),
+      "/allocations": jsonResponse([]),
+      "/regions": jsonResponse([]),
+      "/mounts": jsonResponse([]),
+    });
+    // eggs + templates (order-independent routes)
+    mocked.addRoute((url) => url.includes("/eggs"), jsonResponse([]));
+
+    renderWithQuery(<AdminServers />);
+    const user = userEvent.setup();
+
+    await screen.findByText("alpha-mc");
+    await user.click(screen.getByRole("button", { name: "alpha-mc" }));
+
+    expect(await screen.findByText("12.5%")).toBeInTheDocument();
+    expect(screen.getAllByText("4d 6h 9m").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Quick Actions")).toBeInTheDocument();
+    expect(screen.getByText("Server Information")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Restart" }));
+    await waitFor(() => {
+      const powerCall = mocked.calls.find((call) => call.url.endsWith("/servers/s1/power"));
+      expect(powerCall).toBeDefined();
+      expect(JSON.parse(String(powerCall!.init.body))).toEqual({ signal: "restart" });
+    });
   });
 });

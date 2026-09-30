@@ -16,7 +16,6 @@ import {
   cleanupCrossNodeIngressStale,
   fetchCrossNodeIngressStats,
 } from "@/lib/api/crossnode";
-import { useT } from "@/components/TranslationProvider";
 import { useToast } from "@/components/ui/toast";
 import { OfflineBanner } from "@/components/shared/states-offline";
 import {
@@ -35,7 +34,6 @@ import {
 type Tab = "health" | "resolver" | "ingress";
 
 export function AdminCrossnode() {
-  const t = useT();
   const qc = useQueryClient();
   const [tab, setTab] = useState<Tab>("health");
 
@@ -47,7 +45,7 @@ export function AdminCrossnode() {
   });
 
   const tabs: Array<{ id: string; label: string }> = [
-    { id: "health", label: t("admin.crossnode.tabs.health", ["Health"]) as string ?? "Health" },
+    { id: "health", label: "Health" },
     { id: "resolver", label: "Resolver & Cache" },
     { id: "ingress", label: "Ingress Sync" },
   ];
@@ -56,7 +54,7 @@ export function AdminCrossnode() {
     <AdminPageLayout>
       <OfflineBanner onRetry={() => { void healthQ.refetch(); qc.invalidateQueries({ queryKey: ["admin-crossnode"] }); }} />
       <SectionHeader
-        title={(t("admin.crossnode.title", ["Cross-Node"]) as string) ?? "Cross-Node"}
+        title="Cross-Node"
         sub="Cross-node resolver cache and ingress sync controls — 11 routes from handlers_crossnode.go:12. Health, resolve, cache, ingress sync and cleanup."
         action={
           <Btn size="sm" tone="ghost" onClick={() => { void healthQ.refetch(); qc.invalidateQueries({ queryKey: ["admin-crossnode"] }); }}>
@@ -64,16 +62,6 @@ export function AdminCrossnode() {
           </Btn>
         }
       />
-
-      {/* Terminal header — Industrial Terminal */}
-      <div className="flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] px-3 py-2 font-mono text-[11px] text-[var(--text-subtle)]">
-        <span className="h-2 w-2 rounded-full bg-[var(--brand)] shadow-[0_0_8px_var(--brand)]" />
-        <span className="text-[var(--text)]">forge</span>
-        <span className="text-[var(--text-subtle)]">::</span>
-        <span className="text-[var(--brand)]">crossnode</span>
-        <span className="text-[var(--text-subtle)]">— resolver · ingress sync · cache · health</span>
-        <span className="ml-auto hidden sm:inline text-[10px] uppercase tracking-widest text-[var(--text-subtle)]">var(--canvas) var(--surface) var(--line) var(--brand)</span>
-      </div>
 
       <AdminTabs tabs={tabs} active={tab} onChange={(id) => setTab(id as Tab)} />
 
@@ -103,7 +91,6 @@ function HealthPanel({ healthQ }: { healthQ: ReturnType<typeof useQuery> }) {
                   <span className={`h-2 w-2 rounded-full ${h?.resolver_available ? "bg-emerald-500" : "bg-red-500"}`} />
                   <span className="text-sm font-semibold text-[var(--text)]">{h?.resolver_available ? "Available" : "Unavailable"}</span>
                 </div>
-                <div className="mt-1 text-xs text-[var(--text-subtle)]">{h?.resolver_status ?? "—"}</div>
                 <Pill tone={h?.resolver_available ? "green" : "red"} className="mt-2">{h?.resolver_available ? "active" : "inactive"}</Pill>
               </div>
               <div className="rounded-xl border border-[var(--line)] bg-[var(--canvas)] p-4">
@@ -112,7 +99,6 @@ function HealthPanel({ healthQ }: { healthQ: ReturnType<typeof useQuery> }) {
                   <span className={`h-2 w-2 rounded-full ${h?.ingress_sync_available ? "bg-emerald-500" : "bg-red-500"}`} />
                   <span className="text-sm font-semibold text-[var(--text)]">{h?.ingress_sync_available ? "Available" : "Unavailable"}</span>
                 </div>
-                <div className="mt-1 text-xs text-[var(--text-subtle)]">{h?.ingress_sync_status ?? "—"}</div>
                 <Pill tone={h?.ingress_sync_available ? "green" : "yellow"} className="mt-2">{h?.ingress_sync_available ? "active" : "inactive"}</Pill>
               </div>
               <div className="rounded-xl border border-[var(--line)] bg-[var(--canvas)] p-4 sm:col-span-2">
@@ -163,7 +149,10 @@ function ResolverPanel() {
 
   const resolveMut = useMutation({
     mutationFn: () => resolveCrossNodeTarget({ serverId: serverId.trim() || undefined, nodeId: nodeId.trim() || undefined }),
-    onSuccess: (data) => toast({ tone: "success", title: `Resolved → ${data.host}` }),
+    onSuccess: (data) =>
+      data.resolved
+        ? toast({ tone: "success", title: `Resolved → ${data.host}` })
+        : toast({ tone: "warning", title: "No reachable target", message: data.reason }),
     onError: (e: Error) => toast({ tone: "error", title: "Resolve failed", message: e.message }),
   });
 
@@ -272,7 +261,18 @@ function IngressPanel() {
   const syncMut = useMutation({
     mutationFn: triggerCrossNodeIngressSync,
     onSuccess: (data) => {
-      toast({ tone: "success", title: data.message ?? "Sync triggered" });
+      const r = data.result;
+      if (r?.skipped) {
+        toast({ tone: "warning", title: "Sync skipped", message: r.reason ?? "The synchronizer skipped this reconcile" });
+      } else if (r) {
+        toast({
+          tone: data.synced ? "success" : "warning",
+          title: data.synced ? "Sync triggered" : "Sync finished without reconciling",
+          message: `${r.observedRules} rules observed · ${r.groups} groups · ${r.healthyBackends} healthy backends`,
+        });
+      } else {
+        toast({ tone: data.synced ? "success" : "warning", title: data.synced ? "Sync triggered" : "Sync returned no result" });
+      }
       void qc.invalidateQueries({ queryKey: ["admin-crossnode-ingress"] });
     },
     onError: (e: Error) => toast({ tone: "error", title: "Sync failed", message: e.message }),

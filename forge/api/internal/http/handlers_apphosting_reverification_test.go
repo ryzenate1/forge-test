@@ -299,10 +299,6 @@ func TestCreateApp_ValidTypes(t *testing.T) {
 				if app.Name == "" || app.OrgID != orgID {
 					t.Fatalf("unexpected app fields: %+v", app)
 				}
-				// also verify domainErrorStatus mapping for handler layer: valid should not be 422
-				if domainErrorStatus(err) != 200 {
-					t.Fatalf("valid case should map to 200, got %d", domainErrorStatus(err))
-				}
 			} else {
 				if err == nil {
 					t.Fatalf("expected error for invalid sourceType %q, got app %+v", tt.sourceType, app)
@@ -310,18 +306,15 @@ func TestCreateApp_ValidTypes(t *testing.T) {
 				if !strings.Contains(strings.ToLower(err.Error()), "invalid source_type") {
 					t.Fatalf("expected invalid source_type error, got %q", err.Error())
 				}
-				// handler layer maps invalid to 422
-				if domainErrorStatus(err) != 422 {
-					t.Fatalf("invalid source_type should map to 422, got %d for err %q", domainErrorStatus(err), err.Error())
-				}
 			}
 		})
 	}
 
-	t.Run("handler POST /apps maps valid types to 201 and invalid to 422", func(t *testing.T) {
-		// Simulate the handler path in handlers_apphosting.go:173 POST /apps
-		// which calls appSvc.CreateApp and uses respondStoreError to map to 422.
-		// We verify the mapping via fiber simulation without needing a real DB.
+	t.Run("handler POST /apps maps valid types to 201 and invalid to 400", func(t *testing.T) {
+		// Simulate the handler path in handlers_apphosting.go POST /apps, which
+		// calls appSvc.CreateApp and returns 400 for service errors (the
+		// respondStoreError/domainErrorStatus helpers were removed; handlers map
+		// inline now). We verify via fiber simulation without needing a real DB.
 		app := fiber.New()
 		// inject admin user so role checks pass if handler were used
 		app.Post("/apps", func(c *fiber.Ctx) error {
@@ -336,7 +329,7 @@ func TestCreateApp_ValidTypes(t *testing.T) {
 			oc := tenancy.OrgContext{OrgID: req.OrgID, Role: "admin"}
 			result, err := svc.CreateApp(ctx, oc, req)
 			if err != nil {
-				return respondStoreError(err)
+				return fiber.NewError(fiber.StatusBadRequest, err.Error())
 			}
 			return c.Status(fiber.StatusCreated).JSON(result)
 		})
@@ -354,7 +347,7 @@ func TestCreateApp_ValidTypes(t *testing.T) {
 				t.Fatalf("valid src %q: expected 201, got %d", src, resp.StatusCode)
 			}
 		}
-		// invalid -> 422
+		// invalid -> 400 (handler maps service errors inline)
 		body, _ := json.Marshal(map[string]string{"name": "bad", "sourceType": "INVALID", "orgId": orgID})
 		req := httptest.NewRequest(http.MethodPost, "/apps", strings.NewReader(string(body)))
 		req.Header.Set("Content-Type", "application/json")
@@ -362,8 +355,8 @@ func TestCreateApp_ValidTypes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if resp.StatusCode != 422 {
-			t.Fatalf("invalid sourceType: expected 422, got %d", resp.StatusCode)
+		if resp.StatusCode != 400 {
+			t.Fatalf("invalid sourceType: expected 400, got %d", resp.StatusCode)
 		}
 	})
 
@@ -389,9 +382,6 @@ func TestCreateApp_ValidTypes(t *testing.T) {
 		_, err = svc.UpdateApp(ctx, app.ID, orgID, apphosting.UpdateAppRequest{DesiredState: &invalid})
 		if err == nil || !strings.Contains(err.Error(), "invalid desired_state") {
 			t.Fatalf("DesiredState %q should be invalid, got %v", invalid, err)
-		}
-		if domainErrorStatus(err) != 422 {
-			t.Fatalf("invalid desired_state should be 422, got %d", domainErrorStatus(err))
 		}
 	})
 }
@@ -507,13 +497,23 @@ func TestDeployment_HealthGate_NodeDerived(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestCompose_EnvFile_Rejected — reverifies handlers_compose.go:114-122,141-149,364,425
-// and services/compose/service.go env_file strict mode.
-// When FORGE_ENV_FILE_STRICT=true, any env_file must be rejected as 400/error.
-// In non-strict mode it should warn but pass.
+// TestCompose_EnvFile_AcceptedAndIgnored — reverifies the FINAL env_file
+// contract: env_file (string, list, and include forms) is ACCEPTED and SILENTLY
+// IGNORED — it never hard-fails, never affects validity, and emits no
+// diagnostic, regardless of FORGE_ENV_FILE_STRICT. HTTP surfaces return 200/201.
+//
+// This deliberately REVERSES the earlier strict-reject behaviour. The
+// authoritative accept-and-ignore decision is pinned by the newer services/
+// compose suite (see NOTE comments in
+// forge/api/internal/services/compose/env_file_test.go and compose_fixes_test.go
+// — "the refactor deleted the gate ... env_file is accepted and silently
+// ignored in all forms"), which supersedes the FORGE_ENV_FILE_STRICT reject
+// gate recorded in audits/110-phase-03-impl/subagent-06-compose-fixes.md (sec
+// 2.3) and matches the "env_file silently ignored" reference state in
+// audits/110-phase-02-context/subagent-05-runtime-compose-confirm.md (sec 3.7).
 // ---------------------------------------------------------------------------
 
-func TestCompose_EnvFile_Rejected(t *testing.T) {
+func TestCompose_EnvFile_AcceptedAndIgnored(t *testing.T) {
 	// service-level validation using zero-value Service (ValidateCompose does not need store)
 	var svc compose.Service
 
@@ -550,119 +550,63 @@ services:
       FOO: bar
 `
 
-	t.Run("strict mode rejects env_file string", func(t *testing.T) {
-		t.Setenv("FORGE_ENV_FILE_STRICT", "true")
-		result := svc.ValidateCompose([]byte(yamlWithEnvFileString), "")
-		if result.Valid {
-			t.Fatal("strict mode should reject env_file string")
+	// assertNoEnvFileDiagnostic fails if ANY diagnostic (error or warning)
+	// mentions env_file — the diagnostic was removed, so nothing may.
+	assertNoEnvFileDiagnostic := func(t *testing.T, result *compose.ValidateResult) {
+		t.Helper()
+		for _, issue := range append(append([]compose.ValidationError{}, result.Errors...), result.Warnings...) {
+			if strings.Contains(strings.ToLower(issue.Field+issue.Message), "env_file") {
+				t.Fatalf("env_file must produce no diagnostic, got field=%q message=%q", issue.Field, issue.Message)
+			}
 		}
-		found := false
-		for _, e := range result.Errors {
-			if strings.Contains(strings.ToLower(e.Field), "env_file") || strings.Contains(strings.ToLower(e.Message), "env_file") {
-				found = true
-				if !strings.Contains(strings.ToLower(e.Message), "env_file not supported") {
-					t.Fatalf("unexpected env_file message %q", e.Message)
+	}
+
+	// For every strict-mode setting the outcome is identical: accept + ignore.
+	for _, strict := range []string{"true", "false", ""} {
+		for _, tc := range []struct {
+			name     string
+			doc      string
+			services int
+		}{
+			{"string form", yamlWithEnvFileString, 1},
+			{"list form", yamlWithEnvFileList, 2},
+			{"include form", yamlWithEnvFileInclude, 1},
+		} {
+			t.Run(tc.name+" (FORGE_ENV_FILE_STRICT="+strict+")", func(t *testing.T) {
+				t.Setenv("FORGE_ENV_FILE_STRICT", strict)
+
+				parsed, err := svc.ParseComposeYAML([]byte(tc.doc), "", nil)
+				if err != nil {
+					t.Fatalf("env_file must never fail parsing, got %v", err)
 				}
-			}
-		}
-		if !found {
-			t.Fatalf("expected env_file error in strict mode, got %+v", result.Errors)
-		}
-		// Parse should also error in strict
-		if _, err := svc.ParseComposeYAML([]byte(yamlWithEnvFileString), "", nil); err == nil || !strings.Contains(strings.ToLower(err.Error()), "env_file") {
-			t.Fatalf("Parse should error on env_file in strict, got %v", err)
-		}
-	})
-
-	t.Run("strict mode rejects env_file list", func(t *testing.T) {
-		t.Setenv("FORGE_ENV_FILE_STRICT", "true")
-		result := svc.ValidateCompose([]byte(yamlWithEnvFileList), "")
-		if result.Valid {
-			t.Fatal("strict should reject env_file list")
-		}
-		found := false
-		for _, e := range result.Errors {
-			if strings.Contains(strings.ToLower(e.Field), "env_file") || strings.Contains(strings.ToLower(e.Message), "env_file") {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatalf("expected env_file error for list form, got %+v", result.Errors)
-		}
-	})
-
-	t.Run("strict mode rejects include env_file", func(t *testing.T) {
-		t.Setenv("FORGE_ENV_FILE_STRICT", "true")
-		_, err := svc.ParseComposeYAML([]byte(yamlWithEnvFileInclude), "", nil)
-		if err == nil {
-			// fallback to Validate
-			result := svc.ValidateCompose([]byte(yamlWithEnvFileInclude), "")
-			if result.Valid {
-				t.Fatal("strict should reject include env_file")
-			}
-			found := false
-			for _, e := range result.Errors {
-				if strings.Contains(strings.ToLower(e.Message), "env_file") {
-					found = true
+				if len(parsed.Services) != tc.services {
+					t.Fatalf("expected %d services, got %d", tc.services, len(parsed.Services))
 				}
-			}
-			if !found {
-				t.Fatalf("expected env_file error for include, got %+v", result.Errors)
-			}
-		} else {
-			if !strings.Contains(strings.ToLower(err.Error()), "env_file") {
-				t.Fatalf("expected env_file in error, got %v", err)
-			}
-		}
-	})
 
-	t.Run("strict mode passes valid compose without env_file", func(t *testing.T) {
+				result := svc.ValidateCompose([]byte(tc.doc), "")
+				if !result.Valid {
+					t.Fatalf("env_file must not affect validity, got errors %+v", result.Errors)
+				}
+				assertNoEnvFileDiagnostic(t, result)
+			})
+		}
+	}
+
+	t.Run("valid compose without env_file still validates clean", func(t *testing.T) {
 		t.Setenv("FORGE_ENV_FILE_STRICT", "true")
 		result := svc.ValidateCompose([]byte(validCompose), "")
 		if !result.Valid {
-			t.Fatalf("valid compose should pass in strict, got errors %+v", result.Errors)
+			t.Fatalf("valid compose should pass, got errors %+v", result.Errors)
 		}
 		if len(result.Errors) != 0 {
 			t.Fatalf("expected no errors, got %+v", result.Errors)
 		}
 	})
 
-	t.Run("non-strict mode warns but passes", func(t *testing.T) {
-		t.Setenv("FORGE_ENV_FILE_STRICT", "false")
-		result := svc.ValidateCompose([]byte(yamlWithEnvFileString), "")
-		if !result.Valid {
-			t.Fatalf("non-strict should pass, got errors %+v", result.Errors)
-		}
-		foundWarn := false
-		for _, w := range result.Warnings {
-			if strings.Contains(strings.ToLower(w.Field), "env_file") || strings.Contains(strings.ToLower(w.Message), "env_file") {
-				foundWarn = true
-			}
-		}
-		if !foundWarn {
-			t.Fatalf("expected env_file warning in non-strict, got %+v", result.Warnings)
-		}
-		// Parse should succeed in non-strict
-		parsed, err := svc.ParseComposeYAML([]byte(yamlWithEnvFileString), "", nil)
-		if err != nil {
-			t.Fatalf("Parse should succeed in non-strict, got %v", err)
-		}
-		if len(parsed.Services) != 1 {
-			t.Fatalf("expected 1 service, got %d", len(parsed.Services))
-		}
-	})
-
-	t.Run("unset FORGE_ENV_FILE_STRICT defaults to non-strict (warn)", func(t *testing.T) {
-		t.Setenv("FORGE_ENV_FILE_STRICT", "")
-		result := svc.ValidateCompose([]byte(yamlWithEnvFileString), "")
-		if !result.Valid {
-			t.Fatalf("unset should be non-strict and pass, got %+v", result.Errors)
-		}
-	})
-
-	t.Run("handler POST /compose/validate strict returns 400 with env_file details", func(t *testing.T) {
+	t.Run("handler POST /compose/validate accepts env_file with 200", func(t *testing.T) {
 		t.Setenv("FORGE_ENV_FILE_STRICT", "true")
-		// Replicate handler logic from handlers_compose.go:106-124
+		// Mirrors handlers_compose.go POST /compose/validate, which now returns
+		// the validation result verbatim (no env_file special-casing).
 		app := fiber.New()
 		app.Post("/compose/validate", func(c *fiber.Ctx) error {
 			var req struct {
@@ -674,19 +618,10 @@ services:
 			if strings.TrimSpace(req.Content) == "" {
 				return fiber.NewError(fiber.StatusUnprocessableEntity, "content is required")
 			}
-			// use local svc (zero-value) for validation
 			result := svc.ValidateCompose([]byte(req.Content), "")
-			if !result.Valid {
-				for _, e := range result.Errors {
-					if strings.Contains(strings.ToLower(e.Field), "env_file") || strings.Contains(strings.ToLower(e.Message), "env_file") {
-						return c.Status(fiber.StatusBadRequest).JSON(result)
-					}
-				}
-			}
 			return c.JSON(result)
 		})
 
-		// strict with env_file => 400
 		body, _ := json.Marshal(map[string]string{"content": yamlWithEnvFileString})
 		req := httptest.NewRequest(http.MethodPost, "/compose/validate", strings.NewReader(string(body)))
 		req.Header.Set("Content-Type", "application/json")
@@ -694,49 +629,23 @@ services:
 		if err != nil {
 			t.Fatal(err)
 		}
-		if resp.StatusCode != 400 {
-			t.Fatalf("strict env_file should be 400, got %d", resp.StatusCode)
+		if resp.StatusCode != 200 {
+			t.Fatalf("env_file should be accepted (200), got %d", resp.StatusCode)
 		}
-		// decode body to verify env_file field present
 		var res compose.ValidateResult
 		if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		if res.Valid {
-			t.Fatal("strict response should be invalid")
+		if !res.Valid {
+			t.Fatalf("env_file response should be valid, got errors %+v", res.Errors)
 		}
-		found := false
-		for _, e := range res.Errors {
-			if strings.Contains(strings.ToLower(e.Field), "env_file") {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatalf("expected env_file error in response, got %+v", res.Errors)
-		}
-
-		// valid compose => 200 valid true
-		body2, _ := json.Marshal(map[string]string{"content": validCompose})
-		req2 := httptest.NewRequest(http.MethodPost, "/compose/validate", strings.NewReader(string(body2)))
-		req2.Header.Set("Content-Type", "application/json")
-		resp2, err := app.Test(req2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp2.StatusCode != 200 {
-			t.Fatalf("valid compose should be 200, got %d", resp2.StatusCode)
-		}
-		var res2 compose.ValidateResult
-		if err := json.NewDecoder(resp2.Body).Decode(&res2); err != nil {
-			t.Fatalf("decode2: %v", err)
-		}
-		if !res2.Valid {
-			t.Fatalf("valid compose should be valid, got %+v", res2.Errors)
-		}
+		assertNoEnvFileDiagnostic(t, &res)
 	})
 
-	t.Run("handler POST /compose/import strict env_file returns 400 (handlers_compose.go:141)", func(t *testing.T) {
+	t.Run("handler POST /compose/import accepts env_file with 201", func(t *testing.T) {
 		t.Setenv("FORGE_ENV_FILE_STRICT", "true")
+		// Mirrors handlers_compose.go POST /compose/import: env_file no longer
+		// triggers a 400; only genuine validation failures yield 422.
 		app := fiber.New()
 		app.Post("/compose/import", func(c *fiber.Ctx) error {
 			var req struct {
@@ -754,14 +663,6 @@ services:
 			}
 			result := svc.ValidateCompose([]byte(req.Content), "")
 			if !result.Valid {
-				for _, e := range result.Errors {
-					if strings.Contains(strings.ToLower(e.Field), "env_file") || strings.Contains(strings.ToLower(e.Message), "env_file") {
-						return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-							"error":   e.Message,
-							"details": result,
-						})
-					}
-				}
 				return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
 					"error":   "validation failed",
 					"details": result,
@@ -773,45 +674,24 @@ services:
 		body, _ := json.Marshal(map[string]string{"name": "test", "content": yamlWithEnvFileString})
 		req := httptest.NewRequest(http.MethodPost, "/compose/import", strings.NewReader(string(body)))
 		req.Header.Set("Content-Type", "application/json")
-		resp, _ := app.Test(req)
-		if resp.StatusCode != 400 {
-			t.Fatalf("import with env_file strict should be 400, got %d", resp.StatusCode)
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
 		}
+		if resp.StatusCode != 201 {
+			t.Fatalf("import with env_file should be accepted (201), got %d", resp.StatusCode)
+		}
+
 		bodyValid, _ := json.Marshal(map[string]string{"name": "test", "content": validCompose})
 		req2 := httptest.NewRequest(http.MethodPost, "/compose/import", strings.NewReader(string(bodyValid)))
 		req2.Header.Set("Content-Type", "application/json")
-		resp2, _ := app.Test(req2)
+		resp2, err := app.Test(req2)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if resp2.StatusCode != 201 {
 			t.Fatalf("valid import should be 201, got %d", resp2.StatusCode)
 		}
-	})
-
-	t.Run("deploy/update handlers surface env_file as 400", func(t *testing.T) {
-		t.Setenv("FORGE_ENV_FILE_STRICT", "true")
-		yaml := yamlWithEnvFileString
-		// Simulate handlers_compose.go:364,425,475 env_file error mapping to 400
-		err := errors.New("env_file not supported, inline env vars")
-		if !strings.Contains(strings.ToLower(err.Error()), "env_file") {
-			t.Fatal("sanity: error should contain env_file")
-		}
-		// handler does: if strings.Contains(strings.ToLower(err.Error()), "env_file") => 400
-		// Verify that path is taken
-		status := fiber.StatusBadRequest
-		if strings.Contains(strings.ToLower(err.Error()), "env_file") {
-			status = fiber.StatusBadRequest
-		} else {
-			status = fiber.StatusInternalServerError
-		}
-		if status != 400 {
-			t.Fatalf("env_file error should map to 400, got %d", status)
-		}
-		// valid yaml should not be env_file error
-		svc2 := svc
-		result := svc2.ValidateCompose([]byte(validCompose), "")
-		if !result.Valid {
-			t.Fatalf("valid should be valid, got %+v", result.Errors)
-		}
-		_ = yaml
 	})
 }
 

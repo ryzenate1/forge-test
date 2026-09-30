@@ -3,8 +3,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Cpu } from "lucide-react";
+import { queryKeys } from "@/lib/api/query-keys";
 import { getNodeMetrics, type MetricPeriod, type NodeMetrics } from "@/lib/api/monitoring";
 import { Card, CardHeader } from "@/components/admin/admin-ui";
+import { chart } from "@/lib/design-tokens";
 import { SpinnerPage } from "@/components/shared";
 
 interface ServerCPUChartProps {
@@ -35,7 +37,7 @@ function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: 
 
 export function ServerCPUChart({ nodeId, height = 300, period = "1h" }: ServerCPUChartProps) {
   const { data, isLoading, isError } = useQuery({
-    queryKey: ["cpu-chart", nodeId, period],
+    queryKey: queryKeys.monitoring.history(nodeId ?? "all", period),
     queryFn: () => getNodeMetrics({ nodeId, period }),
     refetchInterval: 30_000,
   });
@@ -90,20 +92,20 @@ export function ServerCPUChart({ nodeId, height = 300, period = "1h" }: ServerCP
             <AreaChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
               <defs>
                 <linearGradient id="cpuGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                  <stop offset="5%" stopColor={chart.cpu} stopOpacity={0.3} />
+                  <stop offset="95%" stopColor={chart.cpu} stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
               <XAxis
                 dataKey="timestamp"
-                tick={{ fill: "#64748b", fontSize: 11 }}
+                tick={{ fill: chart.axis, fontSize: 11 }}
                 tickLine={false}
                 axisLine={false}
                 tickFormatter={(v) => new Date(v).toLocaleTimeString()}
               />
               <YAxis
-                tick={{ fill: "#64748b", fontSize: 11 }}
+                tick={{ fill: chart.axis, fontSize: 11 }}
                 tickLine={false}
                 axisLine={false}
                 tickFormatter={(v) => `${v}%`}
@@ -114,11 +116,11 @@ export function ServerCPUChart({ nodeId, height = 300, period = "1h" }: ServerCP
               <Area
                 type="monotone"
                 dataKey="value"
-                stroke="#3b82f6"
+                stroke={chart.cpu}
                 strokeWidth={2}
                 fill="url(#cpuGradient)"
                 dot={false}
-                activeDot={{ r: 4, fill: "#3b82f6" }}
+                activeDot={{ r: 4, fill: chart.cpu }}
                 name="CPU %"
               />
             </AreaChart>

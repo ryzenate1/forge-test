@@ -2,10 +2,11 @@
 
 import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useToast } from "@/components/ui/toast";
 import { Globe, Plus, Trash2, ShieldCheck, ShieldAlert, RotateCw, Network } from "lucide-react";
-import { fetchJSON, postJSON, deleteJSON } from "@/lib/api";
-import { checkDNS as checkDNSApi } from "@/lib/api/domains";
-import { AdminPageLayout, AdminSelect, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader } from "@/components/admin/admin-ui";
+import { fetchServers } from "@/lib/api/servers";
+import { fetchServerDomains, addServerDomain, removeServerDomain, verifyDomain, checkDNS as checkDNSApi } from "@/lib/api/domains";
+import { AdminPageLayout, AdminSelect, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader, AdminLoadingState, AdminErrorState } from "@/components/admin/admin-ui";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import Link from "next/link";
 
@@ -20,15 +21,6 @@ type DomainRecord = {
   createdAt: string;
 };
 
-type VerificationResult = {
-  domain: string;
-  verified: boolean;
-  dnsResolved: boolean;
-  expectedIp?: string;
-  resolvedIps?: string[];
-  error?: string;
-};
-
 type DNSResult = {
   domain: string;
   resolved: boolean;
@@ -41,6 +33,7 @@ type DNSResult = {
 export default function AdminDomainsPage() {
   const [confirm, renderConfirm] = useConfirm();
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [serverFilter, setServerFilter] = useState("");
   const [showAddModal, setShowAddModal] = useState(false);
@@ -49,21 +42,15 @@ export default function AdminDomainsPage() {
   const [showDNSModal, setShowDNSModal] = useState(false);
   const [dnsResult, setDnsResult] = useState<DNSResult | null>(null);
 
-  const domainsQuery = useQuery({
+  const domainsQuery = useQuery<DomainRecord[]>({
     queryKey: ["domains", serverFilter || "all"],
-    queryFn: async () => {
-      if (serverFilter) {
-        const result = await fetchJSON<DomainRecord[]>("/servers/" + encodeURIComponent(serverFilter) + "/domains");
-        return result;
-      }
-      return [] as DomainRecord[];
-    },
+    queryFn: async () => (await fetchServerDomains(serverFilter)) as unknown as DomainRecord[],
     enabled: !!serverFilter,
   });
 
-  const serversQuery = useQuery<Array<{ id: string; name: string }>>({
+  const serversQuery = useQuery({
     queryKey: ["admin", "servers", "list"],
-    queryFn: () => fetchJSON<Array<{ id: string; name: string }>>("/servers"),
+    queryFn: () => fetchServers(),
   });
 
   const domains = useMemo(() => domainsQuery.data ?? [], [domainsQuery.data]);
@@ -74,60 +61,77 @@ export default function AdminDomainsPage() {
   );
 
   const addMutation = useMutation({
-    mutationFn: () =>
-      postJSON<DomainRecord>("/servers/" + encodeURIComponent(addForm.serverId) + "/domains", {
-        domain: addForm.domain,
-      }),
+    mutationFn: () => addServerDomain(addForm.serverId, addForm.domain),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["domains"] });
       setShowAddModal(false);
       setAddForm({ serverId: "", domain: "" });
+      toast({ tone: "success", title: "Domain added" });
     },
+    onError: (err) => toast({ tone: "error", title: "Failed to add domain", message: err instanceof Error ? err.message : "An error occurred" }),
   });
 
   const deleteMutation = useMutation({
     mutationFn: ({ serverId, id }: { serverId: string; id: string }) =>
-      deleteJSON("/servers/" + encodeURIComponent(serverId) + "/domains/" + encodeURIComponent(id)),
+      removeServerDomain(serverId, id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["domains"] });
+      toast({ tone: "success", title: "Domain removed" });
     },
+    onError: (err) => toast({ tone: "error", title: "Failed to delete domain", message: err instanceof Error ? err.message : "An error occurred" }),
   });
 
   const verifyMutation = useMutation({
-    mutationFn: (id: string) => postJSON<VerificationResult>("/domains/verify", { id }),
-    onSuccess: () => {
+    mutationFn: (id: string) => verifyDomain(id),
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["domains"] });
+      const reason = (result as unknown as { error?: string }).error ?? result.message;
+      if (result.verified) {
+        toast({ tone: "success", title: "Domain verified" });
+      } else {
+        toast({ tone: "error", title: "Verification failed", message: reason ?? "Ownership could not be confirmed." });
+      }
     },
+    onError: (err) => toast({ tone: "error", title: "Verification failed", message: err instanceof Error ? err.message : "An error occurred" }),
   });
 
   const checkDNSMutation = useMutation({
     mutationFn: (data: { domain: string; expectedIp: string }) =>
       checkDNSApi(data.domain, data.expectedIp || undefined),
-    onSuccess: (result) => {
+    onSuccess: (raw) => {
+      const result = raw as unknown as DNSResult;
       setDnsResult({
-        domain: dnsForm.domain,
-        resolved: result.configured,
-        ips: result.currentIp ? [result.currentIp] : [],
+        domain: result.domain ?? dnsForm.domain,
+        resolved: result.resolved ?? false,
+        ips: result.ips ?? [],
         expectedIp: result.expectedIp,
-        match: result.configured,
-        error: result.message,
+        match: result.match ?? false,
+        error: result.error,
       });
     },
+    onError: (err, data) => setDnsResult({
+      domain: data.domain,
+      resolved: false,
+      ips: [],
+      expectedIp: data.expectedIp,
+      match: false,
+      error: err instanceof Error ? err.message : "DNS check failed",
+    }),
   });
 
   return (
     <AdminPageLayout>
       <SectionHeader
-        title="Domain Management"
-        sub="Manage custom domains for game servers. Verify ownership via HTTP challenge. DNS providers wired via lib/api/dns.ts (createProvider, verifyProvider, setDefault, deleteProvider) — see ACME & Proxy Domains."
+        title="Domains"
+        sub="Custom domains with DNS and TLS status."
         action={
           <div className="flex gap-2">
-            <Link href="/admin/dns"><Btn tone="ghost" className="border border-[var(--brand)]/20 hover:bg-[var(--brand)]/10"><ShieldCheck size={12} /> DNS Providers</Btn></Link>
-            <Link href="/admin/security"><Btn tone="ghost" className="border border-[var(--brand)]/20 hover:bg-[var(--brand)]/10">Security Headers</Btn></Link>
+            <Link href="/admin/dns"><Btn tone="ghost" className="border border-[color-mix(in_srgb,var(--brand)_20%,transparent)] hover:bg-[color-mix(in_srgb,var(--brand)_10%,transparent)]"><ShieldCheck size={12} /> DNS Providers</Btn></Link>
+            <Link href="/admin/security"><Btn tone="ghost" className="border border-[color-mix(in_srgb,var(--brand)_20%,transparent)] hover:bg-[color-mix(in_srgb,var(--brand)_10%,transparent)]">Security Headers</Btn></Link>
             <Btn tone="ghost" onClick={() => setShowDNSModal(true)}>
               <Network size={14} /> Check DNS
             </Btn>
-            <Btn size="sm" tone="primary" onClick={() => setShowAddModal(true)} className="bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white">
+            <Btn size="sm" tone="primary" onClick={() => setShowAddModal(true)} className="bg-[var(--brand)] hover:bg-[color-mix(in_srgb,var(--brand)_90%,transparent)] text-white">
               <Plus size={12} /> Add Domain
             </Btn>
           </div>
@@ -144,14 +148,21 @@ export default function AdminDomainsPage() {
         {!serverFilter ? (
           <EmptyState icon={Globe} message="Select a server to view its domains." />
         ) : domainsQuery.isLoading ? (
-          <div className="p-8 text-center text-sm text-slate-500">Loading domains...</div>
+          <AdminLoadingState label="Loading domains…" />
+        ) : domainsQuery.isError ? (
+          <div className="p-4">
+            <AdminErrorState
+              message={domainsQuery.error instanceof Error ? domainsQuery.error.message : "Failed to load domains"}
+              retry={() => void domainsQuery.refetch()}
+            />
+          </div>
         ) : filteredDomains.length === 0 ? (
           <EmptyState icon={Globe} message="No domains configured for this server." />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-white/[0.06] text-left text-[10px] uppercase tracking-widest text-slate-500">
+                <tr className="border-b border-line text-left text-[10px] uppercase tracking-widest text-text-muted">
                   <th className="px-4 py-3">Domain</th>
                   <th className="px-4 py-3">Type</th>
                   <th className="px-4 py-3">Status</th>
@@ -159,10 +170,10 @@ export default function AdminDomainsPage() {
                   <th className="px-4 py-3"></th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-white/[0.04]">
+              <tbody className="divide-y divide-line">
                 {Array.isArray(filteredDomains) && filteredDomains.map((d) => (
-                  <tr key={d.id} className="hover:bg-white/[0.02]">
-                    <td className="px-4 py-3 font-mono text-xs font-medium text-slate-200">
+                  <tr key={d.id} className="hover:bg-overlay-subtle">
+                    <td className="px-4 py-3 font-mono text-xs font-medium text-text">
                       {d.domain}
                     </td>
                     <td className="px-4 py-3">
@@ -173,16 +184,16 @@ export default function AdminDomainsPage() {
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1.5">
                         {d.verified ? (
-                          <ShieldCheck size={14} className="text-emerald-400" />
+                          <ShieldCheck size={14} className="text-ok" />
                         ) : (
-                          <ShieldAlert size={14} className="text-amber-400" />
+                          <ShieldAlert size={14} className="text-warn" />
                         )}
                         <Pill tone={d.verified ? "green" : "yellow"}>
                           {d.verified ? "Verified" : "Unverified"}
                         </Pill>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-400">
+                    <td className="px-4 py-3 text-xs text-text-subtle">
                       {d.verifiedAt ? new Date(d.verifiedAt).toLocaleString() : "—"}
                     </td>
                     <td className="px-4 py-3">
@@ -220,11 +231,11 @@ export default function AdminDomainsPage() {
 
       {showAddModal && (
         <Modal title="Add Domain" onClose={() => setShowAddModal(false)}>
-          <div className="grid gap-4">
+          <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-300 mb-1.5">Server</label>
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-text-subtle">Server</label>
               <select
-                className="h-9 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100 outline-none focus:border-[#dc2626]/60 focus:ring-1 focus:ring-[#dc2626]/30"
+                className="h-9 w-full rounded-lg border border-line bg-[var(--surface-input)] px-3 text-sm text-text outline-none focus:border-[color-mix(in_srgb,var(--brand)_60%,transparent)] focus:ring-1 focus:ring-[color-mix(in_srgb,var(--brand)_30%,transparent)]"
                 value={addForm.serverId}
                 onChange={(e) => setAddForm({ ...addForm, serverId: e.target.value })}
               >
@@ -243,7 +254,7 @@ export default function AdminDomainsPage() {
               placeholder="example.com or *.example.com"
             />
             {addForm.domain?.startsWith("*.") && (
-              <p className="text-xs text-slate-400">Wildcard domain detected. DNS verification will use test.{addForm.domain.replace("*.", "")}</p>
+              <p className="text-xs text-text-subtle">Wildcard domain detected. DNS verification will use test.{addForm.domain.replace("*.", "")}</p>
             )}
           </div>
           <ModalFooter
@@ -257,7 +268,7 @@ export default function AdminDomainsPage() {
 
       {showDNSModal && (
         <Modal title="Check DNS Resolution" onClose={() => { setShowDNSModal(false); setDnsResult(null); }}>
-          <div className="grid gap-4">
+          <div className="space-y-4">
             <Input
               label="Domain"
               value={dnsForm.domain}
@@ -271,18 +282,18 @@ export default function AdminDomainsPage() {
               placeholder="1.2.3.4"
             />
             {dnsResult && (
-              <div className={`p-4 rounded-lg border ${dnsResult.match ? "border-emerald-500/30 bg-emerald-500/10" : "border-amber-500/30 bg-amber-500/10"}`}>
-                <p className={`text-sm font-medium ${dnsResult.match ? "text-emerald-400" : "text-amber-400"}`}>
+              <div className={`p-4 rounded-lg border ${dnsResult.match ? "border-ok-line bg-ok-subtle" : "border-warn-line bg-warn-subtle"}`}>
+                <p className={`text-sm font-medium ${dnsResult.match ? "text-ok" : "text-warn"}`}>
                   {dnsResult.match ? "DNS matches expected IP" : "DNS mismatch or not verified"}
                 </p>
-                {dnsResult.error && <p className="text-xs text-red-400 mt-1">{dnsResult.error}</p>}
+                {dnsResult.error && <p className="text-sm text-danger">{dnsResult.error}</p>}
                 {dnsResult.ips && dnsResult.ips.length > 0 && (
-                  <p className="text-xs text-slate-400 mt-1">
+                  <p className="text-xs text-text-subtle mt-1">
                     Resolved IPs: {dnsResult.ips.join(", ")}
                   </p>
                 )}
                 {dnsResult.expectedIp && (
-                  <p className="text-xs text-slate-500 mt-1">Expected: {dnsResult.expectedIp}</p>
+                  <p className="text-xs text-text-muted mt-1">Expected: {dnsResult.expectedIp}</p>
                 )}
               </div>
             )}

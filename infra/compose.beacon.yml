@@ -49,7 +49,8 @@ services:
       DOCKER_HOST: tcp://docker-proxy:2375
       APP_ENV: production
       DAEMON_ADDR: ${DAEMON_ADDR:-0.0.0.0:9090}
-      DAEMON_SFTP_ADDR: ${DAEMON_SFTP_ADDR:-127.0.0.1:2022}
+      # Single SFTP bind variable (authoritative; legacy DAEMON_SFTP_ADDR
+      # alias intentionally unset — see compose.yml).
       DAEMON_SFTP_BIND_ADDR: ${DAEMON_SFTP_BIND_ADDR:-0.0.0.0:2022}
       DAEMON_DATA_DIR: ${DAEMON_DATA_DIR:-/srv/game-panel/servers}
       DAEMON_BACKUP_DIR: ${DAEMON_BACKUP_DIR:-/srv/game-panel/servers/.beacon/backups}
@@ -77,11 +78,24 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    cap_add:
-      - NET_ADMIN
+    # NOTE: no cap_add here. An earlier revision granted NET_ADMIN, but the
+    # beacon drives game containers through the docker-proxy socket and never
+    # manages host interfaces itself — the capability only widened a
+    # container breakout. If packet-level features ever need it, scope the
+    # grant with a comment linking the feature, and prefer NET_RAW alone.
     networks:
+      # docker-api reaches docker-proxy; docker-egress is the only path to
+      # PANEL_API_URL (and image registries). `internal: true` on docker-api
+      # blocks all outbound traffic, so without this second attachment the
+      # beacon could never register with or heartbeat to the panel.
       - docker-api
+      - docker-egress
 
 networks:
   docker-api:
     internal: true
+  # Non-internal bridge for control-plane egress. docker-proxy is deliberately
+  # NOT attached here, so the Docker API socket stays unreachable from any
+  # network that has outbound connectivity.
+  docker-egress:
+    internal: false

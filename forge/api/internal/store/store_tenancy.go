@@ -246,6 +246,41 @@ func (s *Store) GetProject(ctx context.Context, projectID string) (Project, erro
 	return p, nil
 }
 
+// ErrProjectNotFound is returned when a project lookup names a row that does
+// not exist, so callers can tell that apart from a query failure.
+var ErrProjectNotFound = errors.New("project not found")
+
+// GetProjectOrgID returns the organization that owns a project.
+//
+// This is the narrow lookup the authorization middleware needs — it resolves a
+// :projectId route parameter to the org whose membership is then checked — and
+// exists so those guards do not reach for a raw query or load the whole
+// project row to read one column.
+//
+// An empty org_id is impossible in a well-formed row, so it is reported as an
+// error rather than returned: the guards treat an unresolvable organization as
+// a denial, and an empty string that reached a membership check would compare
+// against nothing and deny for the wrong reason.
+func (s *Store) GetProjectOrgID(ctx context.Context, projectID string) (string, error) {
+	if s.db == nil {
+		return "", errors.New("no database connection")
+	}
+	var orgID string
+	err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(org_id::text, '')
+		FROM projects WHERE id = $1
+	`, projectID).Scan(&orgID)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", fmt.Errorf("%w: %s", ErrProjectNotFound, projectID)
+	case err != nil:
+		return "", fmt.Errorf("read org for project %s: %w", projectID, err)
+	case orgID == "":
+		return "", fmt.Errorf("project %s has no owning organization", projectID)
+	}
+	return orgID, nil
+}
+
 func (s *Store) CreateProject(ctx context.Context, orgID string, req CreateProjectRequest, actorID *string) (Project, error) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
@@ -554,7 +589,7 @@ func (s *Store) ListServersForOrg(ctx context.Context, orgID string, page, perPa
 
 	countQuery := `SELECT count(*) FROM servers WHERE org_id = $1`
 	baseQuery := `
-		SELECT s.id::text, s.name, COALESCE(s.description, ''), s.status, s.desired_state::text, s.actual_state::text, s.config_sync_pending, s.suspended, s.transferring, s.transfer_target_node_id::text, s.transfer_state, s.transfer_error, s.transfer_run_token::text, s.memory_mb, s.cpu_shares, s.disk_mb, n.name, u.email, e.name
+		SELECT s.id::text, s.name, COALESCE(s.description, ''), s.status, s.desired_state::text, s.actual_state::text, s.config_sync_pending, s.suspended, s.transferring, s.transfer_target_node_id::text, s.transfer_state, s.transfer_error, s.transfer_run_token::text, s.memory_mb, s.cpu_shares, s.disk_mb, n.name, u.email, e.name, COALESCE(s.runtime_provider, 'docker')
 		FROM servers s
 		JOIN nodes n ON n.id = s.node_id
 		JOIN users u ON u.id = s.owner_id
@@ -590,7 +625,7 @@ func (s *Store) ListServersForOrg(ctx context.Context, orgID string, page, perPa
 	servers := []Server{}
 	for rows.Next() {
 		var server Server
-		if err := rows.Scan(&server.ID, &server.Name, &server.Description, &server.Status, &server.DesiredState, &server.ActualState, &server.ConfigSyncPending, &server.Suspended, &server.Transferring, &server.TransferTargetNodeID, &server.TransferState, &server.TransferError, &server.TransferRunToken, &server.MemoryMB, &server.CPUShares, &server.DiskMB, &server.Node, &server.Owner, &server.Template); err != nil {
+		if err := rows.Scan(&server.ID, &server.Name, &server.Description, &server.Status, &server.DesiredState, &server.ActualState, &server.ConfigSyncPending, &server.Suspended, &server.Transferring, &server.TransferTargetNodeID, &server.TransferState, &server.TransferError, &server.TransferRunToken, &server.MemoryMB, &server.CPUShares, &server.DiskMB, &server.Node, &server.Owner, &server.Template, &server.RuntimeProvider); err != nil {
 			return nil, 0, err
 		}
 		servers = append(servers, server)

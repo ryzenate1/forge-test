@@ -92,16 +92,8 @@ export function OnboardingManager() {
     <AdminPageLayout
       title="Onboarding Wizard"
       description="Connect repo → get URL. Phase 8 scaffold: no remote registry push; returns queued deployment + demo URL. Endpoints: GET /onboarding/status, GET /onboarding/repos, GET /onboarding/repos/:repo/branches, POST /onboarding/connect, POST /onboarding/deploy, GET /ide/files."
-      breadcrumbs={[{ label: "Admin", href: "/admin/onboarding" }, { label: "Onboarding" }]}
     >
       <OfflineBanner onRetry={() => { void loadStatus(); void loadSources(); }} />
-      <div className="flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] px-3 py-2 font-mono text-[11px] text-[var(--text-subtle)]">
-        <span className="h-2 w-2 rounded-full bg-[var(--brand)]" />
-        <span>onboarding</span>
-        <span className="text-[var(--text-subtle)]">::</span>
-        <span className="text-[var(--brand)]">wizard</span>
-        <span className="ml-auto hidden sm:inline uppercase tracking-widest text-[var(--text-subtle)]">var(--brand) var(--canvas) var(--surface) var(--line)</span>
-      </div>
       {error && (
         <div role="alert" className="flex items-center justify-between gap-3 rounded-xl border border-red-500/25 bg-red-500/[0.09] p-4 text-sm text-red-200 motion-safe:transition-colors motion-reduce:transition-none">
           <span>{error}</span> <button onClick={() => setError(null)} className="rounded px-2 py-1 text-xs underline hover:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]">Dismiss</button>
@@ -118,7 +110,7 @@ export function OnboardingManager() {
           {status ? (
             <div className="space-y-2 text-sm text-[var(--text)]">
               <p>Connected: {String(status.connected)} · Sources: {status.sourceCount} · Has apps: {String(status.hasApps)}</p>
-              <p className="text-xs text-[var(--text-subtle)]">Providers: {status.providers.join(", ") || "none"} · Templates: {status.templateKeys.join(", ")}</p>
+              <p className="text-xs text-[var(--text-subtle)]">Providers: {(status.providers ?? []).join(", ") || "none"} · Templates: {(status.templateKeys ?? []).join(", ")}</p>
               {status.oauthUrl && <a href={status.oauthUrl} target="_blank" rel="noreferrer" className="text-xs text-[var(--brand)] underline hover:text-[var(--brand-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] rounded">GitHub OAuth →</a>}
             </div>
           ) : (
@@ -210,7 +202,7 @@ export function OnboardingManager() {
                 <div key={s.id} className="rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] p-3 text-xs">
                   <p className="font-bold text-[var(--text)]">{s.owner}/{s.name} · {s.branch}</p>
                   <p className="text-[var(--text-subtle)]">{s.cloneUrl}</p>
-                  <p className="mt-1 font-mono text-[11px] text-[var(--text-subtle)]">{s.files.join(" · ")}</p>
+                  <p className="mt-1 font-mono text-[11px] text-[var(--text-subtle)]">{(s.files ?? []).join(" · ")}</p>
                 </div>
               ))}
             </div>

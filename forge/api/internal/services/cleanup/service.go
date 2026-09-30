@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime"
 	"sync"
 	"time"
@@ -20,7 +21,7 @@ type Metrics struct {
 }
 
 type Info struct {
-	StaleReservations int `json:"staleReservations"`
+	StaleReservations   int `json:"staleReservations"`
 	OrphanedAllocations int `json:"orphanedAllocations"`
 }
 
@@ -62,13 +63,6 @@ func (s *Service) Start(ctx context.Context) {
 	}
 	ctx, s.cancel = context.WithCancel(ctx)
 	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				buf := make([]byte, 4096)
-				n := runtime.Stack(buf, false)
-				fmt.Printf("cleanup service panic recovered: %v\nstack: %s", r, buf[:n])
-			}
-		}()
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for {
@@ -76,10 +70,24 @@ func (s *Service) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_, _ = s.RunCleanup(ctx)
+				s.runCleanupSafe(ctx)
 			}
 		}
 	}()
+}
+
+// runCleanupSafe performs one cleanup pass, recovering from a panic so a single
+// failure cannot terminate the cleanup goroutine and leave stale reservations and
+// orphaned allocations uncollected forever.
+func (s *Service) runCleanupSafe(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			slog.Error("cleanup service panic recovered", "panic", r, "stack", string(buf[:n]))
+		}
+	}()
+	_, _ = s.RunCleanup(ctx)
 }
 
 func (s *Service) Stop() {
@@ -115,7 +123,7 @@ func (s *Service) RunCleanup(ctx context.Context) (Info, error) {
 	info.OrphanedAllocations = orphaned
 
 	s.publish(ctx, events.EventReservationExpired, "cleanup", "system", map[string]any{
-		"staleReservations":  info.StaleReservations,
+		"staleReservations":   info.StaleReservations,
 		"orphanedAllocations": info.OrphanedAllocations,
 	})
 	return info, nil
@@ -126,27 +134,30 @@ func (s *Service) cleanOrphanedAllocations(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Read the reservation set once. The previous code re-queried the full
+	// placement-reservation list for every server-less allocation (an N+1 that
+	// scaled with orphan count), and silently skipped each allocation when that
+	// query failed — reporting success for orphaned allocations it never decided
+	// on. Unknown reservations is not "no reservations", so a failed read now
+	// surfaces as an error instead of an implicit no-op.
+	reservations, err := s.store.ListPlacementReservations(ctx)
+	if err != nil {
+		return 0, err
+	}
+	activeNode := make(map[string]bool, len(reservations))
+	for _, res := range reservations {
+		if res.Status == "active" {
+			activeNode[res.NodeID] = true
+		}
+	}
 	cleaned := 0
 	for _, alloc := range allocations {
-		if alloc.Server == nil {
-			nodeAllocs, err := s.store.ListPlacementReservations(ctx)
-			if err != nil {
+		if alloc.Server == nil && !activeNode[alloc.Node] {
+			if err := s.store.DeleteAllocation(ctx, alloc.ID, nil); err != nil {
 				continue
 			}
-			orphaned := true
-			for _, res := range nodeAllocs {
-				if res.NodeID == alloc.Node && res.Status == "active" {
-					orphaned = false
-					break
-				}
-			}
-			if orphaned {
-				if err := s.store.DeleteAllocation(ctx, alloc.ID, nil); err != nil {
-					continue
-				}
-				s.increment(func(m *Metrics) { m.OrphanedAllocationsCleaned++ })
-				cleaned++
-			}
+			s.increment(func(m *Metrics) { m.OrphanedAllocationsCleaned++ })
+			cleaned++
 		}
 	}
 	return cleaned, nil
@@ -171,7 +182,7 @@ func (s *Service) Inspect(ctx context.Context) (Info, error) {
 		}
 	}
 	return Info{
-		StaleReservations:  len(expired),
+		StaleReservations:   len(expired),
 		OrphanedAllocations: orphaned,
 	}, nil
 }

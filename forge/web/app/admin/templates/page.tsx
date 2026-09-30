@@ -1,8 +1,6 @@
-"use client";
+import { redirect } from "next/navigation";
 
-import { AdminPageLayout } from "@/components/admin/admin-ui";
-import { AdminTemplates } from "@/components/admin/AdminTemplates";
-
-export default function AdminTemplatesPage() {
-  return <AdminPageLayout><AdminTemplates /></AdminPageLayout>;
+export default async function AdminTemplatesPage({ searchParams }: { searchParams: Promise<{ nestId?: string }> }) {
+  const { nestId } = await searchParams;
+  redirect(`/admin/compatibility-templates${nestId ? `?nestId=${encodeURIComponent(nestId)}` : ""}`);
 }

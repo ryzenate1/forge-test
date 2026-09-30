@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -24,6 +25,15 @@ import (
 )
 
 const dbServicePingTimeout = 5 * time.Second
+
+// readOnlyQueryRe admits only statements that cannot mutate state: SELECT /
+// SHOW / EXPLAIN / WITH and table-introspection DESCRIBE. Anything else
+// (DML, DDL, CALL, ...) is rejected before it reaches the engine.
+var readOnlyQueryRe = regexp.MustCompile(`(?is)^\s*(select|show|explain|describe|desc|with)\b`)
+
+// mutatingKeywordRe catches writes smuggled into an otherwise read-looking
+// statement (e.g. `SELECT ... INTO OUTFILE` in MySQL).
+var mutatingKeywordRe = regexp.MustCompile(`(?is)\b(insert|update|delete|drop|alter|truncate|create|grant|revoke|copy|call|execute|into\s+(out|dump)file|vacuum|analyze|reload|kill|do)\b`)
 
 type adminDB interface {
 	PingContext(context.Context) error
@@ -60,22 +70,31 @@ func NewDatabaseServiceProvisioner(s *store.Store, dc *daemon.Client, beaconBase
 	}
 }
 
-func generatePassword(length int) string {
+func generatePassword(length int) (string, error) {
+	if length <= 0 {
+		return "", fmt.Errorf("password length must be positive")
+	}
 	b := make([]byte, length)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)[:length]
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate password: %w", err)
+	}
+	return hex.EncodeToString(b)[:length], nil
 }
 
-func generateDBName() string {
+func generateDBName() (string, error) {
 	b := make([]byte, 6)
-	_, _ = rand.Read(b)
-	return "db_" + hex.EncodeToString(b)[:8]
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate db name: %w", err)
+	}
+	return "db_" + hex.EncodeToString(b)[:8], nil
 }
 
-func generateUsername() string {
+func generateUsername() (string, error) {
 	b := make([]byte, 4)
-	_, _ = rand.Read(b)
-	return "u_" + hex.EncodeToString(b)[:8]
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate username: %w", err)
+	}
+	return "u_" + hex.EncodeToString(b)[:8], nil
 }
 
 func defaultPortForEngine(engine string) int {
@@ -154,7 +173,7 @@ func connectionString(engine, dbName, username, password, host string, port int)
 	}
 }
 
-func credsJSON(engine, dbName, username, password string) json.RawMessage {
+func credsJSON(engine, dbName, username, password string) (json.RawMessage, error) {
 	creds := map[string]string{
 		"username": username,
 		"password": password,
@@ -163,8 +182,11 @@ func credsJSON(engine, dbName, username, password string) json.RawMessage {
 	case "postgresql", "mysql", "mariadb", "mongodb":
 		creds["database"] = dbName
 	}
-	raw, _ := json.Marshal(creds)
-	return raw
+	raw, err := json.Marshal(creds)
+	if err != nil {
+		return nil, fmt.Errorf("encode database credentials: %w", err)
+	}
+	return raw, nil
 }
 
 func (p *DatabaseServiceProvisioner) ProvisionService(ctx context.Context, name, engine, version string, memoryMB, cpuShares int) (store.DatabaseService, error) {
@@ -191,9 +213,21 @@ func (p *DatabaseServiceProvisioner) ProvisionService(ctx context.Context, name,
 		return store.DatabaseService{}, fmt.Errorf("create service record: %w", err)
 	}
 
-	dbName := generateDBName()
-	username := generateUsername()
-	password := generatePassword(32)
+	dbName, err := generateDBName()
+	if err != nil {
+		_ = p.store.UpdateDatabaseServiceStatus(ctx, svc.ID, "failed", "", 0, "", "", "", "", "", "", nil)
+		return store.DatabaseService{}, fmt.Errorf("generate database name: %w", err)
+	}
+	username, err := generateUsername()
+	if err != nil {
+		_ = p.store.UpdateDatabaseServiceStatus(ctx, svc.ID, "failed", "", 0, "", "", "", "", "", "", nil)
+		return store.DatabaseService{}, fmt.Errorf("generate database username: %w", err)
+	}
+	password, err := generatePassword(32)
+	if err != nil {
+		_ = p.store.UpdateDatabaseServiceStatus(ctx, svc.ID, "failed", "", 0, "", "", "", "", "", "", nil)
+		return store.DatabaseService{}, fmt.Errorf("generate database password: %w", err)
+	}
 	volumeName := "mgp-dbsvc-" + svc.ID[:12]
 	port := defaultPortForEngine(engine)
 
@@ -220,7 +254,11 @@ func (p *DatabaseServiceProvisioner) ProvisionService(ctx context.Context, name,
 		return store.DatabaseService{}, fmt.Errorf("encrypt database credential: %w", err)
 	}
 	connStr := connectionString(engine, dbName, username, password, p.dockerHost, resp.Port)
-	creds := credsJSON(engine, dbName, username, password)
+	creds, err := credsJSON(engine, dbName, username, password)
+	if err != nil {
+		_ = p.store.UpdateDatabaseServiceStatus(ctx, svc.ID, "failed", "", 0, "", "", "", resp.ContainerID, resp.VolumeID, "", nil)
+		return store.DatabaseService{}, err
+	}
 	if err := p.store.UpdateDatabaseServiceStatus(ctx, svc.ID, "running", p.dockerHost, resp.Port, username, encPass, dbName, resp.ContainerID, resp.VolumeID, connStr, creds); err != nil {
 		return store.DatabaseService{}, fmt.Errorf("persist provisioned service: %w", err)
 	}
@@ -551,6 +589,68 @@ func (p *DatabaseServiceProvisioner) adminConn(ctx context.Context, serviceID st
 	default:
 		return nil, errors.New("admin connection not supported for this engine")
 	}
+}
+
+// RunReadOnlyQuery executes a single read-only statement against the service's
+// admin connection path (same credentials the provisioner uses everywhere
+// else) and returns at most maxRows rows as generic maps. The query is
+// validated against a read-only allow-list before execution; callers exposing
+// user-supplied SQL must apply their own stricter guard on top.
+func (p *DatabaseServiceProvisioner) RunReadOnlyQuery(ctx context.Context, serviceID, query string, maxRows int) ([]map[string]any, error) {
+	trimmed := strings.TrimSpace(query)
+	if trimmed == "" {
+		return nil, errors.New("query is required")
+	}
+	if !readOnlyQueryRe.MatchString(trimmed) {
+		return nil, errors.New("only read-only queries are allowed")
+	}
+	if mutatingKeywordRe.MatchString(trimmed) {
+		return nil, errors.New("only read-only queries are allowed")
+	}
+	if strings.Contains(strings.TrimRight(trimmed, ";"), ";") {
+		return nil, errors.New("multiple statements are not allowed")
+	}
+	if maxRows <= 0 {
+		maxRows = 100
+	}
+	conn, err := p.adminConn(ctx, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	rows, err := conn.QueryContext(ctx, trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("run diagnostic query: %w", err)
+	}
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, 32)
+	for rows.Next() {
+		if len(out) >= maxRows {
+			break
+		}
+		raw := make([]any, len(columns))
+		ptrs := make([]any, len(columns))
+		for i := range raw {
+			ptrs[i] = &raw[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, err
+		}
+		row := make(map[string]any, len(columns))
+		for i, col := range columns {
+			val := raw[i]
+			if b, ok := val.([]byte); ok {
+				val = string(b)
+			}
+			row[col] = val
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }
 
 func quoteIdent(engine, value string) string {

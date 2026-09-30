@@ -16,6 +16,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -65,10 +66,13 @@ type Server struct {
 	dataDir           string
 	allowedMounts     []string
 	allowedMountsMu   sync.RWMutex
+	mountRecordsMu    sync.RWMutex
+	mountRecords      map[string]struct{}
 	hostFileRoots     []string
 	hostFileRootsMu   sync.RWMutex
 	token             string
 	metricsToken      string
+	sftpEnabled       bool
 	version           string
 	started           time.Time
 	backups           backup.BackupInterface
@@ -99,6 +103,10 @@ type Server struct {
 	nonceMu           sync.Mutex
 	seenNonces        map[string]time.Time
 	diskFreeFn        func(dir string) (int64, error)
+	// installMu guards lazy creation of installs, which tracks the install
+	// currently running per server so the install websocket can attach to it.
+	installMu sync.Mutex
+	installs  *installHub
 }
 
 // SetPanelClient wires the remote panel client so that install-status
@@ -120,6 +128,22 @@ func (s *Server) SetTokenGenerator(g *tokens.Generator) {
 
 func (s *Server) SetMetricsToken(token string) {
 	s.metricsToken = strings.TrimSpace(token)
+}
+
+// SetSFTPEnabled records whether the daemon actually brought up an SFTP
+// listener. The capability report used to claim SFTP unconditionally, so a node
+// whose host key failed to unlock told the panel it offered file access it did
+// not have. It is the daemon's job to say so once the listener is running.
+func (s *Server) SetSFTPEnabled(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.sftpEnabled = enabled
+}
+
+// SFTPEnabled reports the recorded listener state.
+func (s *Server) SFTPEnabled() bool {
+	return s != nil && s.sftpEnabled
 }
 
 // SetAllowedMounts configures the host paths that panel-supplied mounts may
@@ -315,7 +339,7 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 	// left behind by crashes or abandoned uploads, instead of relying solely
 	// on cleanup-on-next-chunk. Stops when serverCtx is cancelled by Shutdown.
 	startUploadCleanupLoop(serverCtx, dataDir)
-	if rt == nil {
+	if !runtimeAvailable(rt) {
 		server.dockerState = "error"
 	}
 	mux := http.NewServeMux()
@@ -332,6 +356,7 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 	mux.HandleFunc("POST /servers/{id}/power", server.power)
 	mux.HandleFunc("GET /servers/{id}/operations", server.listOperations)
 	mux.HandleFunc("GET /operations/{id}", server.getOperation)
+	mux.HandleFunc("GET /servers/{id}/state", server.state)
 	mux.HandleFunc("GET /servers/{id}/stats", server.stats)
 	mux.HandleFunc("GET /servers/{id}/logs", server.logs)
 	mux.HandleFunc("POST /servers/{id}/backups", server.createBackup)
@@ -344,6 +369,7 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 	mux.HandleFunc("GET /servers/{id}/ws/logs", server.logsWS)
 	mux.HandleFunc("GET /servers/{id}/ws/console", server.consoleWS)
 	mux.HandleFunc("GET /servers/{id}/ws/backup", server.backupProgressWS)
+	mux.HandleFunc("POST /servers/{id}/health/report", server.handleServerHealthReport)
 	mux.HandleFunc("GET /servers/{id}/files", server.listFiles)
 	mux.HandleFunc("DELETE /servers/{id}/files", server.deleteFile)
 	mux.HandleFunc("POST /servers/{id}/files/mkdir", server.makeDir)
@@ -359,6 +385,16 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 	mux.HandleFunc("GET /servers/{id}/files/content", server.readFile)
 	mux.HandleFunc("PUT /servers/{id}/files/content", server.writeFile)
 	mux.HandleFunc("PUT /servers/{id}/files/upload", server.uploadFileChunk)
+	// Container file manager: operates inside the running workload container
+	// bound to this server id (resolved by the daemon, never supplied by the
+	// caller) via the Docker archive/exec APIs.
+	mux.HandleFunc("GET /servers/{id}/container/files/ls", server.handleServerContainerFilesLs)
+	mux.HandleFunc("GET /servers/{id}/container/files/read", server.handleServerContainerFilesRead)
+	mux.HandleFunc("GET /servers/{id}/container/files/download", server.handleServerContainerFilesDownload)
+	mux.HandleFunc("PUT /servers/{id}/container/files/write", server.handleServerContainerFilesWrite)
+	mux.HandleFunc("POST /servers/{id}/container/files/upload", server.handleServerContainerFilesUpload)
+	mux.HandleFunc("POST /servers/{id}/container/files/mkdir", server.handleServerContainerFilesMkdir)
+	mux.HandleFunc("DELETE /servers/{id}/container/files", server.handleServerContainerFilesRemove)
 	mux.HandleFunc("POST /servers/{id}/command", server.command)
 	mux.HandleFunc("POST /servers/{id}/transfers", server.startTransfer)
 	mux.HandleFunc("GET /servers/{id}/transfers/{transferId}", server.getTransferStatus)
@@ -434,6 +470,7 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 	mux.HandleFunc("GET /api/commands/pending", server.handlePendingCommands)
 	// Portainer-inspired container/image/network/volume admin
 	mux.HandleFunc("GET /api/admin/containers", server.handleContainerList)
+	mux.HandleFunc("POST /api/admin/containers", server.handleContainerCreate)
 	mux.HandleFunc("GET /api/admin/containers/{id}", server.handleContainerInspect)
 	mux.HandleFunc("GET /api/admin/containers/{id}/logs", server.handleContainerLogs)
 	mux.HandleFunc("POST /api/admin/containers/{id}/start", server.handleContainerStart)
@@ -461,6 +498,14 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 	mux.HandleFunc("GET /api/admin/volumes/{id}", server.handleVolumeInspect)
 	mux.HandleFunc("GET /api/admin/volumes/usage", server.handleVolumeUsage)
 
+	// Docker disk-usage reporting & automated cleanup (called by the panel's
+	// dockerleanup service over the signed admin channel). The retention decision
+	// lives in the control plane; Beacon only queries the engine and prunes.
+	mux.HandleFunc("GET /api/admin/docker-cleanup/disk-usage", server.handleDockerDiskUsage)
+	mux.HandleFunc("POST /api/admin/docker-cleanup/prune-images", server.handleDockerPruneImages)
+	mux.HandleFunc("POST /api/admin/docker-cleanup/prune-build-cache", server.handleDockerPruneBuildCache)
+	mux.HandleFunc("POST /api/admin/docker-cleanup/prune-volumes", server.handleDockerPruneVolumes)
+
 	// Host system info endpoints (v1 API)
 	mux.HandleFunc("GET /v1/host/info", server.handleHostInfo)
 	mux.HandleFunc("GET /v1/host/disk", server.handleHostDisk)
@@ -480,6 +525,32 @@ func NewServerWithBackup(rt runtime.Runtime, dataDir string, backups backup.Back
 	mux.HandleFunc("GET /v1/firewall/forward", server.handleFirewallListForwards)
 	mux.HandleFunc("POST /v1/firewall/forward", server.handleFirewallAddForward)
 	mux.HandleFunc("DELETE /v1/firewall/forward/{id}", server.handleFirewallDeleteForward)
+
+	// Host-level file management (v1 API). The panel's /host/files/* routes call
+	// these; confinement is enforced inside the handlers — an explicit allowlist
+	// set via SetHostFileAllowlist restricts to those roots, otherwise a
+	// conservative denylist still blocks sensitive paths.
+	mux.HandleFunc("GET /v1/files/list", server.handleHostFilesList)
+	mux.HandleFunc("GET /v1/files/download", server.handleHostFilesDownload)
+	mux.HandleFunc("POST /v1/files/read", server.handleHostFilesRead)
+	mux.HandleFunc("POST /v1/files/write", server.handleHostFilesWrite)
+	mux.HandleFunc("POST /v1/files/mkdir", server.handleHostFilesMkdir)
+	mux.HandleFunc("POST /v1/files/remove", server.handleHostFilesRemove)
+	mux.HandleFunc("POST /v1/files/rename", server.handleHostFilesRename)
+	mux.HandleFunc("POST /v1/files/copy", server.handleHostFilesCopy)
+	mux.HandleFunc("POST /v1/files/chmod", server.handleHostFilesChmod)
+	mux.HandleFunc("POST /v1/files/upload", server.handleHostFilesUpload)
+	mux.HandleFunc("GET /v1/terminal/ws", server.handleHostTerminalWS)
+
+	// Kubernetes proxy endpoints. The panel calls these to populate the
+	// /admin/kubernetes dashboard without needing a kubeconfig on the API host.
+	// They are gated behind the same token auth as every other v1 route; when the
+	// runtime is not KubernetesRuntime the handlers return 503 rather than fabricating data.
+	mux.HandleFunc("GET /v1/kubernetes/pods", server.handleKubernetesListPods)
+	mux.HandleFunc("GET /v1/kubernetes/deployments", server.handleKubernetesListDeployments)
+	mux.HandleFunc("GET /v1/kubernetes/services", server.handleKubernetesListServices)
+	mux.HandleFunc("GET /v1/kubernetes/events", server.handleKubernetesListEvents)
+	mux.HandleFunc("POST /v1/kubernetes/deployments/{name}/scale", server.handleKubernetesScaleDeployment)
 
 	return server, sanitizeInternalErrors(recoverPanics(securityHeaders(requestTimeout(server.authenticate(mux)))))
 }
@@ -511,7 +582,12 @@ func (w *sanitizingResponseWriter) WriteHeader(status int) {
 		return
 	}
 	w.wrote = true
-	if status >= http.StatusInternalServerError {
+	// Only 500 ("unexpected condition") is sanitized. A 503 is a deliberate,
+	// retryable operational signal in this API — /health, /ready and every
+	// "runtime unavailable"-style answer carries its reason in the body, and
+	// replacing it with "internal server error" would misreport a
+	// known-degraded node as an unknown failure to health-check consumers.
+	if status >= http.StatusInternalServerError && status != http.StatusServiceUnavailable {
 		w.internal = true
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Del("Content-Length")
@@ -606,15 +682,60 @@ func (s *Server) Shutdown() {
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "daemon", "runtime": s.runtime != nil})
+	available := runtimeAvailable(s.runtime)
+	if !available {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "service": "daemon", "runtime": false, "reason": "container runtime unavailable"})
+		return
+	}
+	// A wired runtime is not a working engine: when the socket is gone
+	// (Colima stopped, dockerd down) the daemon must say so. Ping the
+	// engine like the capability report does; unknown is not healthy.
+	if err := s.pingRuntime(r.Context()); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "service": "daemon", "runtime": false, "reason": "container runtime ping failed: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "daemon", "runtime": true})
 }
 
-func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
-	if s.runtime == nil {
+func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
+	if !runtimeAvailable(s.runtime) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ready": false, "reason": "runtime unavailable"})
 		return
 	}
+	if err := s.pingRuntime(r.Context()); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ready": false, "reason": "container runtime ping failed: " + err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ready": true})
+}
+
+// pingRuntime verifies the engine behind the wired runtime actually answers.
+// Runtimes without a Ping method report nothing, so only a failed ping fails;
+// a missing engine is already handled by runtimeAvailable above.
+func (s *Server) pingRuntime(ctx context.Context) error {
+	if s.runtime == nil {
+		return errRuntimeUnavailable
+	}
+	pinger, ok := s.runtime.(runtime.Pinger)
+	if !ok {
+		return nil
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return pinger.Ping(pingCtx)
+}
+
+// runtimeAvailable reports whether the wired runtime can actually serve
+// workloads. Mock mode installs UnavailableRuntime, which answers every call
+// with an error, so it must never be reported as an available runtime.
+func runtimeAvailable(rt runtime.Runtime) bool {
+	if rt == nil {
+		return false
+	}
+	if available, ok := rt.(runtime.Availability); ok {
+		return available.Available()
+	}
+	return true
 }
 
 func (s *Server) sessions() *sessionRegistry { return s.sessionsReg }
@@ -626,10 +747,7 @@ func (s *Server) TrackSession(userID, serverID string, closer io.Closer) func() 
 }
 
 func (s *Server) trackWebSocket(r *http.Request, conn *websocket.Conn) func() {
-	userID := strings.TrimSpace(r.Header.Get("X-Panel-User-ID"))
-	if userID == "" {
-		userID = strings.TrimSpace(r.URL.Query().Get("user"))
-	}
+	userID := s.webSocketUser(r)
 	if userID == "" {
 		return func() {}
 	}
@@ -637,8 +755,31 @@ func (s *Server) trackWebSocket(r *http.Request, conn *websocket.Conn) func() {
 	return func() { s.sessionsReg.untrack(conn) }
 }
 
+// webSocketUser derives the session owner from the validated JWT claims when
+// available, falling back to the legacy explicit fields. The JWT path is
+// authoritative: header/query user IDs are caller-controlled and must never
+// override an authenticated claim.
+func (s *Server) webSocketUser(r *http.Request) string {
+	if s.tokenGenerator != nil {
+		if tokenStr := r.URL.Query().Get("token"); tokenStr != "" {
+			if claims, err := s.tokenGenerator.Validate(tokenStr); err == nil && strings.TrimSpace(claims.User) != "" {
+				return strings.TrimSpace(claims.User)
+			}
+		}
+		if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+			if claims, err := s.tokenGenerator.Validate(strings.TrimPrefix(auth, "Bearer ")); err == nil && strings.TrimSpace(claims.User) != "" {
+				return strings.TrimSpace(claims.User)
+			}
+		}
+	}
+	if userID := strings.TrimSpace(r.Header.Get("X-Panel-User-ID")); userID != "" {
+		return userID
+	}
+	return strings.TrimSpace(r.URL.Query().Get("user"))
+}
+
 func (s *Server) dockerStatus() string {
-	if s.runtime == nil {
+	if !runtimeAvailable(s.runtime) {
 		return "error"
 	}
 	return s.dockerState
@@ -654,8 +795,22 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeMetric("game_panel_daemon_uptime_seconds", "Daemon process uptime.", "gauge", formatFloat(time.Since(process.StartTime).Seconds()))
+	// Host uptime is reported separately and only when it could be read. Omitting
+	// the series is different from reporting 0, which a scraper would read as a
+	// machine that booted this instant.
+	if hostUptime := hostUptimeSeconds(); hostUptime >= 0 {
+		writeMetric("game_panel_host_uptime_seconds", "Wall time since the host booted.", "gauge", formatInt64(hostUptime))
+	}
+	// Reported only when it is positive: the estimate is the difference between
+	// wall and monotonic clocks, and zero is also what a correctly synchronised
+	// clock produces, so emitting 0 everywhere would advertise a fact the node
+	// did not observe. Clock slew (an NTP step) reads as suspend time and is
+	// labelled as the estimate it is.
+	if suspended := suspendDuration(s.started); suspended > 0 {
+		writeMetric("game_panel_host_suspend_seconds", "Estimated time the host was suspended since the daemon started (wall minus monotonic; includes clock steps).", "gauge", formatFloat(suspended.Seconds()))
+	}
 	runtimeEnabled := "0"
-	if s.runtime != nil {
+	if runtimeAvailable(s.runtime) {
 		runtimeEnabled = "1"
 	}
 	writeMetric("game_panel_daemon_runtime_enabled", "Runtime availability, 1 when enabled.", "gauge", runtimeEnabled)
@@ -666,10 +821,33 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	writeMetric("game_panel_daemon_memory_heap_bytes", "Heap bytes reserved by the Go runtime.", "gauge", formatUint(process.MemHeapBytes))
 	writeMetric("game_panel_daemon_gc_total", "Number of completed garbage collection cycles.", "counter", formatUint(process.NumGC))
 
-	if s.runtime != nil {
+	if runtimeAvailable(s.runtime) {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		for _, serverID := range s.manager.ServerIDs() {
+			// Lifecycle is reported first and independently of telemetry. A stopped
+			// container produces no stats, so a stats-only scrape made "exited",
+			// "never created" and "the runtime did not answer" indistinguishable from
+			// a workload that simply has no metrics.
+			inspection, inspectErr := s.runtime.Inspect(ctx, serverID)
+			if inspectErr == nil {
+				_, _ = fmt.Fprintf(w, "# HELP game_panel_daemon_container_state Container lifecycle: 2 running, 1 present but not running, 0 absent.\n")
+				_, _ = fmt.Fprintf(w, "# TYPE game_panel_daemon_container_state gauge\n")
+				state := 0
+				switch {
+				case !inspection.Exists:
+					state = 0
+				case inspection.Running:
+					state = 2
+				default:
+					state = 1
+				}
+				_, _ = fmt.Fprintf(w, "game_panel_daemon_container_state{server_id=%q} %d\n", serverID, state)
+				if !inspection.Running {
+					// Nothing to measure; the state series already says what this is.
+					continue
+				}
+			}
 			stats, err := s.runtime.Stats(ctx, serverID)
 			if err != nil {
 				continue
@@ -756,14 +934,49 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// The control plane sends the provider it placed the workload on. This
-	// field was not read at all, so a request for lxc or kvm produced a Docker
-	// container and reported success. Serving a different runtime than the one
-	// asked for is a failure, not a fallback.
-	provider := s.runtimeProvider()
-	if requested := strings.ToLower(strings.TrimSpace(body.Provider)); requested != "" && requested != provider {
-		http.Error(w, fmt.Sprintf("runtime provider %q is not available on this node, which runs %q", requested, provider), http.StatusBadRequest)
+	// The control plane sends the provider it placed the workload on. Two
+	// different refusals matter here and are not the same thing:
+	//
+	//   - a name Forge has no runtime for at all (lxc, kvm without the opt-in,
+	//     or anything unrecognised) is a bad request, and must be rejected. It
+	//     used to be answered with a Docker container and a success response,
+	//     which is the phantom-provider bug.
+	//   - a real provider this particular node does not run is a placement
+	//     conflict: the panel put the workload on the wrong machine.
+	//
+	// A node that cannot advertise its own engine skips the second check rather
+	// than rejecting every request as a mismatch.
+	requestedProvider := strings.ToLower(strings.TrimSpace(body.Provider))
+	if requestedProvider == "unknown" {
+		http.Error(w, "runtime provider \"unknown\" is ambiguous; specify the placed provider explicitly", http.StatusBadRequest)
 		return
+	}
+	if err := runtime.ValidateProvider(requestedProvider); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	provider := s.runtimeProvider()
+	if requestedProvider != "" && provider != "" && provider != "unknown" && requestedProvider != provider {
+		http.Error(w, fmt.Sprintf("runtime provider %q is not available on this node, which runs %q", requestedProvider, provider), http.StatusConflict)
+		return
+	}
+	mode := requestedProvider
+	if mode == "" || mode == "unknown" {
+		mode = provider
+	}
+	// Never silently default an ambiguous workload to Docker when the node
+	// knows its own engine: an unknown engine there means the placement was
+	// never resolved, and serving Docker for it is the phantom-provider bug.
+	// Test doubles and mock runtimes report "unknown" as their provider; with
+	// no engine to compare against, the legacy docker default is kept so the
+	// placement check (above) remains the enforcement point.
+	if mode == "" || mode == "unknown" {
+		if provider == "" || provider == "unknown" {
+			mode = runtime.ProviderDocker
+		} else {
+			http.Error(w, "runtime provider is unknown; specify the placed provider explicitly", http.StatusBadRequest)
+			return
+		}
 	}
 
 	rootDir, err := s.safePath(body.ServerID, "")
@@ -821,7 +1034,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.manager.MarkCreated(body.ServerID, rootDir, body.DiskMB)
-	writeJSON(w, http.StatusAccepted, map[string]any{"serverId": body.ServerID, "accepted": true, "mode": provider})
+	writeJSON(w, http.StatusAccepted, map[string]any{"serverId": body.ServerID, "accepted": true, "mode": mode})
 }
 
 // runtimeProvider reports the runtime this beacon is actually configured with,
@@ -884,6 +1097,11 @@ func (s *Server) syncConfiguration(w http.ResponseWriter, r *http.Request) {
 	}
 	s.manager.UpdateRuntimeConfig(serverID, memoryMBFromConfiguration(payload), allocationIPFromConfiguration(payload), allocationPortFromConfiguration(payload), stopTypeFromConfiguration(payload), stopValueFromConfiguration(payload), stopTimeoutFromConfiguration(payload))
 	s.manager.MarkConfigurationSynced(serverID, diskLimitMBFromConfiguration(payload))
+	// Workloads always reconcile through buildHostConfigWithSettings, which
+	// enforces a read-only rootfs, dropped capabilities, no-new-privileges,
+	// and bounded json-file logging. Configuration sync never relaxes those:
+	// it only reconciles image, command, env, ports, mounts, and limits.
+	log.Printf("[beacon] configuration synced for server %s (read-only rootfs preserved)", serverID)
 	writeJSON(w, http.StatusOK, map[string]any{"serverId": serverID, "synced": true})
 }
 
@@ -1096,10 +1314,19 @@ func (s *Server) install(w http.ResponseWriter, r *http.Request) {
 	}
 	env := s.effectiveEnvMapList(serverID, body.Env)
 
-	// Mark as installing
-	s.manager.MarkInstalling(serverID, true)
+	// Claim the server for this install. BeginInstall refuses when a power
+	// operation or another install already holds it, instead of silently
+	// overwriting the claim.
+	if err := s.manager.BeginInstall(serverID); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	s.beginInstall(serverID)
+	defer s.finishInstall(serverID)
+	s.publishInstall(serverID, map[string]any{"type": "status", "data": "Running install script..."})
 
-	// Execute installation
+	// Execute installation. This request is the only place an install command is
+	// accepted; installWS only ever reads progress from the session opened above.
 	result, err := s.runtime.Install(r.Context(), runtime.InstallRequest{
 		ServerID:   serverID,
 		Image:      body.Image,
@@ -1109,7 +1336,8 @@ func (s *Server) install(w http.ResponseWriter, r *http.Request) {
 		RootDir:    rootDir,
 	})
 	if err != nil {
-		s.manager.MarkInstalling(serverID, false)
+		s.manager.EndInstall(serverID, true)
+		s.publishInstall(serverID, map[string]any{"type": "error", "data": err.Error()})
 		s.notifyPanelInstallStatus(serverID, false, err.Error())
 		http.Error(w, err.Error(), runtimeErrorStatus(err, http.StatusConflict))
 		return
@@ -1119,180 +1347,37 @@ func (s *Server) install(w http.ResponseWriter, r *http.Request) {
 	logPath := filepath.Join(installDir, "install.log")
 	_ = os.WriteFile(logPath, []byte(result.Logs), 0o640)
 
-	// Mark installation complete
-	s.manager.MarkInstalling(serverID, false)
+	// Mark installation complete — or failed. A non-zero installer exit must be
+	// recorded as a failure, not cleared to "installed" because the container
+	// happened to run to completion.
+	success := result.ExitCode == 0
+	s.manager.EndInstall(serverID, !success)
+
+	// Stream the collected output to any attached socket. The runtime hands back
+	// installer output once the container exits, so the lines land together.
+	for _, line := range strings.Split(result.Logs, "\n") {
+		if line != "" {
+			s.publishInstall(serverID, map[string]any{"type": "log", "data": line})
+		}
+	}
 
 	// Notify Panel of installation status
-	success := result.ExitCode == 0
 	errorMsg := ""
 	if !success {
 		errorMsg = "install script failed with exit code " + strconv.Itoa(result.ExitCode)
 	}
 	s.notifyPanelInstallStatus(serverID, success, errorMsg)
+	s.publishInstall(serverID, map[string]any{"type": "complete", "success": success, "exitCode": result.ExitCode, "error": errorMsg})
 
 	if result.ExitCode != 0 {
 		http.Error(w, "install script failed with exit code "+strconv.Itoa(result.ExitCode), http.StatusConflict)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"serverId": serverID, "accepted": true, "mode": "docker", "exitCode": result.ExitCode, "logs": result.Logs})
+	writeJSON(w, http.StatusAccepted, map[string]any{"serverId": serverID, "accepted": true, "mode": s.runtimeProvider(), "exitCode": result.ExitCode, "logs": result.Logs})
 }
 
-func (s *Server) installWS(w http.ResponseWriter, r *http.Request) {
-	if s.runtime == nil {
-		http.Error(w, errRuntimeUnavailable.Error(), http.StatusServiceUnavailable)
-		return
-	}
-
-	// Authenticate WebSocket connection
-	claims, err := s.authenticateWebSocket(w, r)
-	if err != nil {
-		http.Error(w, "authentication required: "+err.Error(), http.StatusUnauthorized)
-		return
-	}
-
-	// Validate token scope for install operations
-	if claims.Scope != tokens.ScopeWebsocket {
-		http.Error(w, "invalid token scope for install websocket connection", http.StatusForbidden)
-		return
-	}
-
-	conn, err := websocketUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-	defer s.trackWebSocket(r, conn)()
-
-	serverID := r.PathValue("id")
-
-	// Validate that the token is for this specific server
-	if claims.ServerID != serverID {
-		conn.WriteJSON(map[string]interface{}{
-			"type": "error",
-			"data": "token not valid for this server",
-		})
-		return
-	}
-
-	// Send initial status
-	conn.WriteJSON(map[string]interface{}{
-		"type": "status",
-		"data": "Starting installation...",
-	})
-
-	// Read installation request from WebSocket
-	var body struct {
-		Image      string            `json:"image"`
-		Entrypoint string            `json:"entrypoint"`
-		Script     string            `json:"script"`
-		Env        map[string]string `json:"env"`
-	}
-	if err := conn.ReadJSON(&body); err != nil {
-		conn.WriteJSON(map[string]interface{}{
-			"type":  "error",
-			"data":  "Invalid install request",
-			"error": err.Error(),
-		})
-		return
-	}
-
-	rootDir, err := s.safePath(serverID, "")
-	if err != nil {
-		conn.WriteJSON(map[string]interface{}{
-			"type": "error",
-			"data": err.Error(),
-		})
-		return
-	}
-
-	installDir, err := s.safePath(serverID, ".install")
-	if err != nil {
-		conn.WriteJSON(map[string]interface{}{
-			"type": "error",
-			"data": err.Error(),
-		})
-		return
-	}
-
-	if err := os.MkdirAll(installDir, 0o750); err != nil {
-		conn.WriteJSON(map[string]interface{}{
-			"type": "error",
-			"data": err.Error(),
-		})
-		return
-	}
-
-	scriptPath := filepath.Join(installDir, "install.sh")
-	script := body.Script
-	if strings.TrimSpace(script) == "" {
-		script = "#!/bin/sh\nset -eu\necho \"No install script configured.\"\n"
-	}
-
-	if err := os.WriteFile(scriptPath, []byte(script), 0o750); err != nil {
-		conn.WriteJSON(map[string]interface{}{
-			"type": "error",
-			"data": err.Error(),
-		})
-		return
-	}
-
-	env := s.effectiveEnvMapList(serverID, body.Env)
-
-	s.manager.MarkInstalling(serverID, true)
-
-	conn.WriteJSON(map[string]interface{}{
-		"type": "status",
-		"data": "Running install script...",
-	})
-
-	result, err := s.runtime.Install(r.Context(), runtime.InstallRequest{
-		ServerID:   serverID,
-		Image:      body.Image,
-		Entrypoint: body.Entrypoint,
-		Script:     script,
-		Env:        env,
-		RootDir:    rootDir,
-	})
-	if err != nil {
-		s.manager.MarkInstalling(serverID, false)
-		conn.WriteJSON(map[string]interface{}{
-			"type": "error",
-			"data": err.Error(),
-		})
-		s.notifyPanelInstallStatus(serverID, false, err.Error())
-		return
-	}
-
-	// Stream logs
-	for _, line := range strings.Split(result.Logs, "\n") {
-		if line != "" {
-			conn.WriteJSON(map[string]interface{}{
-				"type": "log",
-				"data": line,
-			})
-		}
-	}
-
-	// Save logs
-	logPath := filepath.Join(installDir, "install.log")
-	_ = os.WriteFile(logPath, []byte(result.Logs), 0o640)
-
-	s.manager.MarkInstalling(serverID, false)
-
-	success := result.ExitCode == 0
-	errorMsg := ""
-	if !success {
-		errorMsg = "install script failed with exit code " + strconv.Itoa(result.ExitCode)
-	}
-	s.notifyPanelInstallStatus(serverID, success, errorMsg)
-
-	conn.WriteJSON(map[string]interface{}{
-		"type":     "complete",
-		"success":  success,
-		"exitCode": result.ExitCode,
-		"error":    errorMsg,
-	})
-}
+// The install websocket lives in install_stream.go: it attaches to an install
+// started by the HTTP POST above and streams progress only, never commands.
 
 func (s *Server) reinstall(w http.ResponseWriter, r *http.Request) {
 	serverID := r.PathValue("id")
@@ -1318,6 +1403,101 @@ func (s *Server) notifyPanelInstallStatus(serverID string, success bool, errorMs
 	if err := s.panelClient.SetInstallationStatus(ctx, serverID, success); err != nil {
 		log.Printf("[beacon] failed to notify panel of install status for %s: %v", serverID, err)
 	}
+}
+
+// handleServerHealthReport receives a health-probe result for one server and
+// forwards it to the control plane's remote health-ingest endpoint
+// (POST /api/remote/servers/:id/health), where the resource-limits service
+// records the observation that gates deploys and auto-rollback.
+//
+// Beacon owns the container and therefore the probe verdict; the observation
+// store lives on the API. This handler is a thin, node-authenticated forward:
+// the surrounding auth middleware has already verified the caller's HMAC
+// signature, and we re-sign the outbound request with the same node credential
+// (s.token) used for every other panel call. A standalone beacon with no panel
+// configured acknowledges the probe locally instead of surfacing a spurious
+// failure to the healthcheck loop.
+func (s *Server) handleServerHealthReport(w http.ResponseWriter, r *http.Request) {
+	serverID := strings.TrimSpace(r.PathValue("id"))
+	if serverID == "" {
+		http.Error(w, "server id is required", http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		Healthy     bool   `json:"healthy"`
+		Detail      string `json:"detail"`
+		ProcessType string `json:"processType"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	// The API fails closed on an empty process type, so fall back to the
+	// compose convention for a single-process service rather than dropping it.
+	processType := strings.TrimSpace(body.ProcessType)
+	if processType == "" {
+		processType = "main"
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"healthy":     body.Healthy,
+		"detail":      body.Detail,
+		"processType": processType,
+	})
+	if err != nil {
+		http.Error(w, "encode health report", http.StatusInternalServerError)
+		return
+	}
+
+	panelBase := strings.TrimSpace(os.Getenv("PANEL_API_URL"))
+	if panelBase == "" {
+		panelBase = strings.TrimSpace(os.Getenv("WINGS_PANEL_URL"))
+	}
+	// Derive the panel root from either env form, tolerating a value that
+	// already carries the /api/remote or /api/v1 suffix.
+	panelBase = strings.TrimRight(strings.TrimSuffix(strings.TrimSuffix(panelBase, "/api/remote"), "/api/v1"), "/")
+	if panelBase == "" || s.token == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{"accepted": true, "forwarded": false})
+		return
+	}
+
+	endpoint := panelBase + "/api/remote/servers/" + url.PathEscape(serverID) + "/health"
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		http.Error(w, "build panel health request", http.StatusInternalServerError)
+		return
+	}
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		http.Error(w, "generate panel request nonce", http.StatusInternalServerError)
+		return
+	}
+	nonce := hex.EncodeToString(nonceBytes)
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/vnd.forge.v1+json")
+	req.Header.Set("X-Panel-Timestamp", timestamp)
+	req.Header.Set("X-Panel-Nonce", nonce)
+	req.Header.Set("X-Panel-Signature", sign(s.token, req.Method, req.URL.RequestURI(), timestamp, payload, nonce))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	res, err := client.Do(req)
+	if err != nil {
+		http.Error(w, "forward health report: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer res.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		http.Error(w, "panel rejected health report: "+res.Status, http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"accepted": true, "forwarded": true})
 }
 
 func (s *Server) power(w http.ResponseWriter, r *http.Request) {
@@ -1362,7 +1542,7 @@ func (s *Server) power(w http.ResponseWriter, r *http.Request) {
 			}
 			switch status.Status {
 			case StatusCompleted:
-				writeJSON(w, http.StatusAccepted, map[string]any{"serverId": serverID, "signal": body.Signal, "accepted": true, "mode": "docker", "operationId": op.ID})
+				writeJSON(w, http.StatusAccepted, map[string]any{"serverId": serverID, "signal": body.Signal, "accepted": true, "mode": s.runtimeProvider(), "operationId": op.ID})
 				return
 			case StatusFailed:
 				err := errors.New(status.Error)
@@ -1430,7 +1610,42 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.manager.Delete(serverID)
-	writeJSON(w, http.StatusAccepted, map[string]any{"serverId": serverID, "signal": "delete", "accepted": true, "mode": "docker"})
+	writeJSON(w, http.StatusAccepted, map[string]any{"serverId": serverID, "signal": "delete", "accepted": true, "mode": s.runtimeProvider()})
+}
+
+// state reports the container's lifecycle truth: whether it exists, whether it
+// is running, and its runtime status string. Stats cannot answer this — a
+// stopped-but-existing container has no stats to stream, so before this
+// endpoint the control plane could only infer "missing" from a failed stats
+// call and could never tell missing from stopped.
+func (s *Server) state(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil {
+		http.Error(w, errRuntimeUnavailable.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	inspection, err := s.runtime.Inspect(r.Context(), r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), runtimeErrorStatus(err, http.StatusConflict))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"serverId":  inspection.ServerID,
+		"exists":    inspection.Exists,
+		"running":   inspection.Running,
+		"status":    inspection.Status,
+		"startedAt": inspection.StartedAt,
+	})
+}
+
+// statsResponse carries telemetry plus the explicit lifecycle state. The state
+// fields are what let the control plane distinguish running from stopped from
+// missing; older panels ignore the extra keys and keep reading the metrics.
+type statsResponse struct {
+	runtime.Stats
+	Exists    bool      `json:"exists"`
+	Running   bool      `json:"running"`
+	Status    string    `json:"status"`
+	StartedAt time.Time `json:"startedAt"`
 }
 
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
@@ -1438,12 +1653,37 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, errRuntimeUnavailable.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	stats, err := s.runtime.Stats(r.Context(), r.PathValue("id"))
+	serverID := r.PathValue("id")
+	// Lifecycle first: it answers even when there are no metrics to stream, and
+	// an inspect failure is reported as a failure rather than as zero telemetry.
+	inspection, err := s.runtime.Inspect(r.Context(), serverID)
 	if err != nil {
 		http.Error(w, err.Error(), runtimeErrorStatus(err, http.StatusConflict))
 		return
 	}
-	writeJSON(w, http.StatusOK, stats)
+	stats, err := s.runtime.Stats(r.Context(), serverID)
+	if err != nil {
+		if status := runtimeErrorStatus(err, 0); status == http.StatusNotFound {
+			// The metrics call authoritatively reports the container is gone. A
+			// zeroed "exists" reading would be a stale, dishonest success; the
+			// missing resource must surface as 404 regardless of the earlier inspect.
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		if inspection.Exists && inspection.Running {
+			// A running workload that cannot report metrics is a real error; a
+			// stopped one legitimately has none.
+			http.Error(w, err.Error(), runtimeErrorStatus(err, http.StatusConflict))
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, statsResponse{
+		Stats:     stats,
+		Exists:    inspection.Exists,
+		Running:   inspection.Running,
+		Status:    inspection.Status,
+		StartedAt: inspection.StartedAt,
+	})
 }
 
 func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
@@ -1463,7 +1703,28 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 	defer reader.Close()
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = stdcopy.StdCopy(w, w, io.LimitReader(reader, 256*1024))
+	// Only the Docker-family engines multiplex stdout/stderr with the
+	// StdCopy frame header. Every other runtime hands back a plain byte
+	// stream; running it through StdCopy would discard the payload and
+	// answer 200 with an empty body.
+	if dockerFramedLogs(s.runtimeProvider()) {
+		_, _ = stdcopy.StdCopy(w, w, io.LimitReader(reader, 256*1024))
+		return
+	}
+	_, _ = io.Copy(w, io.LimitReader(reader, 256*1024))
+}
+
+// dockerFramedLogs reports whether the named provider multiplexes log
+// streams with the Docker StdCopy framing. Unknown providers are treated
+// as plain streams: demultiplexing plain bytes drops them silently, while
+// copying framed bytes through only loses the stream separation.
+func dockerFramedLogs(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case runtime.ProviderDocker, runtime.ProviderPodman:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
@@ -1666,6 +1927,16 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Claim the server for the duration of the restore. Without this, a power
+	// start (or an install) can race the file rewrite and boot half-restored
+	// contents, or be silently clobbered by the restore finishing afterwards.
+	if s.manager != nil {
+		if err := s.manager.BeginRestore(serverID); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		defer func() { s.manager.EndRestore(serverID, true) }()
+	}
 	// A restore is destructive even when truncate is false because archive
 	// entries replace live files. Persist a complete recovery point first and
 	// serialize it with all other backup operations for this daemon.
@@ -1712,6 +1983,9 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.manager != nil {
+		s.manager.EndRestore(serverID, false)
+	}
 	if s.panelClient != nil {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1781,6 +2055,16 @@ func (s *Server) statsWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	// Spend the one-time ticket now that the upgrade succeeded. A replay of
+	// the same ticket must not open a second stream, and the connection is
+	// registered in the session registry below so deauthorize-user can
+	// still close it afterwards.
+	ticketServerID := r.PathValue("id")
+	if _, redeemErr := s.redeemWebSocketTicket(r); redeemErr != nil {
+		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		_ = conn.WriteJSON(map[string]any{"serverId": ticketServerID, "error": redeemErr.Error()})
+		return
+	}
 	defer s.trackWebSocket(r, conn)()
 	configureWebSocket(conn)
 	writer := &webSocketWriter{conn: conn}
@@ -1795,35 +2079,134 @@ func (s *Server) statsWS(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(writer, serverID, errors.New("token not valid for this server"))
 		return
 	}
-	stream, err := s.runtime.StatsStream(r.Context(), serverID)
-	if err != nil {
-		writeJSONError(writer, serverID, err)
-		return
-	}
-	defer stream.Close()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
+	// Drain the client side so control frames are processed: the pong that
+	// answers our keepalive ping is what extends the read deadline, and without
+	// a reader the session dies after one deadline interval.
 	go func() {
-		<-r.Context().Done()
-		_ = stream.Close()
+		defer cancel()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
 	}()
 
-	for {
-		runtimeStats, err := runtime.DecodeDockerStats(stream)
+	s.streamStats(ctx, writer, serverID)
+}
+
+// streamStats carries telemetry plus the workload's lifecycle. A stopped
+// workload has no metrics to sample, which is a state and not an error, so the
+// socket stays open reporting that state and attaches to the metric stream by
+// itself once the workload starts.
+func (s *Server) streamStats(ctx context.Context, writer *webSocketWriter, serverID string) {
+	lastState := ""
+	for ctx.Err() == nil {
+		inspection, retry, ok := s.inspectForStream(ctx, writer, serverID)
+		if !ok {
+			return
+		}
+		if retry {
+			if !waitTick(ctx) {
+				return
+			}
+			continue
+		}
+
+		if !inspection.Running {
+			if key := lifecycleKey(inspection); key != lastState {
+				frame := lifecycleFrame(inspection)
+				frame["metrics"] = false
+				if err := writer.WriteJSON(frame); err != nil {
+					return
+				}
+				lastState = key
+			}
+			if !waitTick(ctx) {
+				return
+			}
+			continue
+		}
+
+		stream, err := s.runtime.StatsStream(ctx, serverID)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			// The workload is running but its metrics cannot be read. That is a
+			// real failure, not an absence of load.
+			if writeErr := writer.WriteJSON(map[string]any{
+				"serverId": serverID,
+				"type":     "error",
+				"code":     "stats_unavailable",
+				"data":     err.Error(),
+				"error":    err.Error(),
+			}); writeErr != nil {
+				return
+			}
+			lastState = ""
+			if !waitTick(ctx) {
+				return
+			}
+			continue
+		}
+
+		closed := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+			case <-closed:
+			}
+			_ = stream.Close()
+		}()
+
+		writeOK := true
+		for {
+			runtimeStats, decodeErr := decodeProviderStats(stream, s.runtimeProvider())
+			if decodeErr != nil {
+				break
+			}
+			frame := lifecycleFrame(inspection)
+			frame["metrics"] = true
+			frame["cpuPercent"] = runtimeStats.CPUPercent
+			frame["memoryBytes"] = runtimeStats.MemoryBytes
+			frame["memoryLimit"] = runtimeStats.MemoryLimit
+			frame["networkRxBytes"] = runtimeStats.NetworkRxBytes
+			frame["networkTxBytes"] = runtimeStats.NetworkTxBytes
+			if err := writer.WriteJSON(frame); err != nil {
+				writeOK = false
+				break
+			}
+		}
+		close(closed)
+		_ = stream.Close()
+		if !writeOK || ctx.Err() != nil {
 			return
 		}
-		stats := map[string]any{
-			"serverId":       serverID,
-			"cpuPercent":     runtimeStats.CPUPercent,
-			"memoryBytes":    runtimeStats.MemoryBytes,
-			"memoryLimit":    runtimeStats.MemoryLimit,
-			"networkRxBytes": runtimeStats.NetworkRxBytes,
-			"networkTxBytes": runtimeStats.NetworkTxBytes,
-		}
-		if err := writer.WriteJSON(stats); err != nil {
-			return
-		}
+		// The metric stream ended: the workload stopped, or was replaced.
+		// Re-inspect rather than assume which.
+		lastState = ""
 	}
+}
+
+// decodeProviderStats decodes one frame from a StatsStream using the framing
+// of the provider that produced it. Docker and Podman both stream raw engine
+// samples that need DecodeDockerStats (Podman speaks the Docker API);
+// every other runtime streams runtime.Stats JSON.
+// Decoding Docker frames as Stats (or vice versa) yields zero telemetry that
+// looks healthy, so the provider selects the decoder explicitly.
+func decodeProviderStats(stream io.Reader, provider string) (runtime.Stats, error) {
+	name := strings.ToLower(strings.TrimSpace(provider))
+	if name == runtime.ProviderDocker || name == runtime.ProviderPodman || name == "" {
+		return runtime.DecodeDockerStats(stream)
+	}
+	var stats runtime.Stats
+	if err := json.NewDecoder(stream).Decode(&stats); err != nil {
+		return runtime.Stats{}, err
+	}
+	return stats, nil
 }
 
 func (s *Server) logsWS(w http.ResponseWriter, r *http.Request) {
@@ -1850,6 +2233,16 @@ func (s *Server) logsWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	// Spend the one-time ticket now that the upgrade succeeded. A replay of
+	// the same ticket must not open a second stream, and the connection is
+	// registered in the session registry below so deauthorize-user can
+	// still close it afterwards.
+	ticketServerID := r.PathValue("id")
+	if _, redeemErr := s.redeemWebSocketTicket(r); redeemErr != nil {
+		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		_ = conn.WriteJSON(map[string]any{"serverId": ticketServerID, "error": redeemErr.Error()})
+		return
+	}
 	defer s.trackWebSocket(r, conn)()
 	configureWebSocket(conn)
 	writer := &webSocketWriter{conn: conn}
@@ -1864,7 +2257,22 @@ func (s *Server) logsWS(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(writer, serverID, errors.New("token not valid for this server"))
 		return
 	}
-	stream, err := s.runtime.LogsStream(r.Context(), serverID, "100")
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	// Drain the client side so control frames are processed: the pong that
+	// answers our keepalive ping is what extends the read deadline, and without
+	// a reader the session dies after one deadline interval.
+	go func() {
+		defer cancel()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	stream, err := s.runtime.LogsStream(ctx, serverID, "100")
 	if err != nil {
 		writeJSONError(writer, serverID, err)
 		return
@@ -1877,7 +2285,11 @@ func (s *Server) logsWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	logWriter := &wsLogWriter{writer: writer, serverID: serverID}
-	_, _ = stdcopy.StdCopy(logWriter, logWriter, stream)
+	if dockerFramedLogs(s.runtimeProvider()) {
+		_, _ = stdcopy.StdCopy(logWriter, logWriter, stream)
+		return
+	}
+	_, _ = io.Copy(logWriter, stream)
 }
 
 type wsLogWriter struct {
@@ -1927,6 +2339,14 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	// Spend the one-time ticket now that the upgrade succeeded. A replay of
+	// the same ticket must not open a second console, matching statsWS/logsWS.
+	ticketServerID := r.PathValue("id")
+	if _, redeemErr := s.redeemWebSocketTicket(r); redeemErr != nil {
+		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		_ = conn.WriteJSON(map[string]any{"serverId": ticketServerID, "type": "error", "data": redeemErr.Error()})
+		return
+	}
 	defer s.trackWebSocket(r, conn)()
 	configureWebSocket(conn)
 	writer := &webSocketWriter{conn: conn}
@@ -1942,59 +2362,141 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The manager owns one attach per running server. Every websocket receives
-	// only this server's bounded replay and live output.
-	if err := s.consoles.Ensure(serverID); err != nil {
-		_ = writer.WriteJSON(map[string]any{"type": "error", "data": err.Error()})
-		return
-	}
-	ch, unsubscribe, err := s.consoles.Subscribe(serverID)
-	if err != nil {
-		_ = writer.WriteJSON(map[string]any{"type": "error", "data": err.Error()})
-		return
-	}
-	defer unsubscribe()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
-	errs := make(chan error, 2)
-
+	// Read commands for the whole session, across however many workload runs it
+	// spans. The read deadline is the one configureWebSocket installed and the
+	// pong handler extends; setting a shorter deadline per iteration here would
+	// clobber that extension and kill an idle-but-healthy console.
 	go func() {
-		for msg := range ch {
-			if err := writer.WriteJSON(map[string]any{"type": "output", "data": string(msg)}); err != nil {
-				errs <- err
+		defer cancel()
+		for {
+			messageType, payload, err := conn.ReadMessage()
+			if err != nil {
 				return
 			}
-		}
-		errs <- nil
-	}()
-
-	// Read commands from the WebSocket and forward to Docker.
-	go func() {
-		for {
-			select {
-			case <-r.Context().Done():
-				errs <- r.Context().Err()
-				return
-			default:
-				conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-				messageType, payload, err := conn.ReadMessage()
-				if err != nil {
-					errs <- err
+			if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
+				continue
+			}
+			cmd := strings.TrimSpace(string(payload))
+			if cmd == "" {
+				continue
+			}
+			// A command that cannot be delivered is reported as a failure. It is
+			// never silently dropped and never acknowledged.
+			if err := s.consoles.Write(serverID, cmd); err != nil {
+				code := "command_failed"
+				if errors.Is(err, errConsoleNotRunning) {
+					code = "not_running"
+				}
+				if writeErr := writer.WriteJSON(map[string]any{
+					"serverId": serverID,
+					"type":     "error",
+					"code":     code,
+					"data":     err.Error(),
+				}); writeErr != nil {
 					return
 				}
-				if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
-					continue
-				}
-				cmd := strings.TrimSpace(string(payload))
-				if cmd == "" {
-					continue
-				}
-				if err := s.consoles.Write(serverID, cmd); err != nil {
-					_ = writer.WriteJSON(map[string]any{"type": "error", "data": err.Error()})
-				}
 			}
 		}
 	}()
-	<-errs
+
+	s.streamConsole(ctx, writer, serverID)
+}
+
+// streamConsole keeps a console session attached for as long as the websocket
+// lives. While the workload is not running it reports that state and waits
+// instead of closing, then attaches on its own once the workload starts, so a
+// restart does not look like a transport failure to the viewer.
+func (s *Server) streamConsole(ctx context.Context, writer *webSocketWriter, serverID string) {
+	lastState := ""
+	for ctx.Err() == nil {
+		inspection, retry, ok := s.inspectForStream(ctx, writer, serverID)
+		if !ok {
+			return
+		}
+		if retry {
+			if !waitTick(ctx) {
+				return
+			}
+			continue
+		}
+
+		if key := lifecycleKey(inspection); key != lastState {
+			frame := lifecycleFrame(inspection)
+			frame["type"] = "state"
+			if err := writer.WriteJSON(frame); err != nil {
+				return
+			}
+			lastState = key
+		}
+
+		if !inspection.Running {
+			if !waitTick(ctx) {
+				return
+			}
+			continue
+		}
+
+		// The manager owns one attach per running server. Every websocket
+		// receives only this server's bounded replay and live output.
+		if err := s.consoles.Ensure(serverID); err != nil {
+			if writeErr := writer.WriteJSON(map[string]any{
+				"serverId": serverID,
+				"type":     "error",
+				"code":     "attach_failed",
+				"data":     err.Error(),
+			}); writeErr != nil {
+				return
+			}
+			lastState = ""
+			if !waitTick(ctx) {
+				return
+			}
+			continue
+		}
+		ch, unsubscribe, err := s.consoles.Subscribe(serverID)
+		if err != nil {
+			// The producer detached between Ensure and Subscribe: re-inspect
+			// rather than guess which way the workload went.
+			lastState = ""
+			if !waitTick(ctx) {
+				return
+			}
+			continue
+		}
+		delivered := pumpConsole(ctx, writer, ch, serverID)
+		unsubscribe()
+		if !delivered {
+			return
+		}
+		// The producer detached — the workload stopped, or its console closed.
+		// Re-inspect so the next state frame is a fresh reading.
+		lastState = ""
+	}
+}
+
+// pumpConsole forwards one attach's output. It reports false when the socket
+// can no longer be written to, and true when the producer simply detached.
+func pumpConsole(ctx context.Context, writer *webSocketWriter, ch <-chan []byte, serverID string) bool {
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case msg, open := <-ch:
+			if !open {
+				return true
+			}
+			if err := writer.WriteJSON(map[string]any{
+				"serverId": serverID,
+				"type":     "output",
+				"data":     string(msg),
+			}); err != nil {
+				return false
+			}
+		}
+	}
 }
 
 func (s *Server) backupProgressWS(w http.ResponseWriter, r *http.Request) {
@@ -2134,9 +2636,14 @@ func isTextFile(filePath string) bool {
 }
 
 func (s *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
-	filePath := r.URL.Query().Get("path")
-	if filePath == "" {
+	rawPath := r.URL.Query().Get("path")
+	if rawPath == "" {
 		http.Error(w, "path is required", http.StatusBadRequest)
+		return
+	}
+	cleanPath, err := rootfs.Clean(rawPath)
+	if err != nil || cleanPath == "" {
+		http.Error(w, "invalid path", http.StatusBadRequest)
 		return
 	}
 	fsys, err := s.serverFilesystem(r.PathValue("id"), false)
@@ -2145,7 +2652,7 @@ func (s *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer fsys.Close()
-	file, err := fsys.Open(filePath)
+	file, err := fsys.Open(cleanPath)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -2156,7 +2663,7 @@ func (s *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path is not a regular file", http.StatusBadRequest)
 		return
 	}
-	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": path.Base(filePath)})
+	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": path.Base(cleanPath)})
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", disposition)
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
@@ -2167,13 +2674,19 @@ func (s *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) readFile(w http.ResponseWriter, r *http.Request) {
+	rawPath := r.URL.Query().Get("path")
+	cleanPath, err := rootfs.Clean(rawPath)
+	if err != nil || cleanPath == "" {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
 	fsys, err := s.serverFilesystem(r.PathValue("id"), false)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	defer fsys.Close()
-	file, err := fsys.Open(r.URL.Query().Get("path"))
+	file, err := fsys.Open(cleanPath)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -2343,13 +2856,18 @@ func (s *Server) uploadFileChunk(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) makeDir(w http.ResponseWriter, r *http.Request) {
+	cleanPath, err := rootfs.Clean(r.URL.Query().Get("path"))
+	if err != nil || cleanPath == "" {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
 	fsys, err := s.serverFilesystem(r.PathValue("id"), true)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	defer fsys.Close()
-	if err := fsys.MkdirAll(r.URL.Query().Get("path"), 0o750); err != nil {
+	if err := fsys.MkdirAll(cleanPath, 0o750); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -2371,6 +2889,11 @@ func (s *Server) renameFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer fsys.Close()
+	from, err := rootfs.Clean(body.From)
+	if err != nil || from == "" {
+		http.Error(w, "invalid source", http.StatusBadRequest)
+		return
+	}
 	to, err := rootfs.Clean(body.To)
 	if err != nil || to == "" {
 		http.Error(w, "invalid destination", http.StatusBadRequest)
@@ -2380,7 +2903,7 @@ func (s *Server) renameFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := fsys.Rename(body.From, to); err != nil {
+	if err := fsys.Rename(from, to); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2388,8 +2911,14 @@ func (s *Server) renameFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Query().Get("path") == "" {
+	rawPath := r.URL.Query().Get("path")
+	if rawPath == "" {
 		http.Error(w, "cannot delete server root", http.StatusBadRequest)
+		return
+	}
+	cleanPath, err := rootfs.Clean(rawPath)
+	if err != nil || cleanPath == "" {
+		http.Error(w, "invalid path", http.StatusBadRequest)
 		return
 	}
 	fsys, err := s.serverFilesystem(r.PathValue("id"), false)
@@ -2398,7 +2927,7 @@ func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer fsys.Close()
-	if err := fsys.RemoveAll(r.URL.Query().Get("path")); err != nil {
+	if err := fsys.RemoveAll(cleanPath); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2599,6 +3128,11 @@ func (s *Server) chmodFiles(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path and mode are required", http.StatusBadRequest)
 		return
 	}
+	cleanPath, err := rootfs.Clean(body.Path)
+	if err != nil || cleanPath == "" {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
 	fsys, err := s.serverFilesystem(r.PathValue("id"), false)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -2614,7 +3148,7 @@ func (s *Server) chmodFiles(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid mode format", http.StatusBadRequest)
 		return
 	}
-	if err := fsys.Chmod(body.Path, os.FileMode(mode)); err != nil {
+	if err := fsys.Chmod(cleanPath, os.FileMode(mode)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2635,18 +3169,28 @@ func (s *Server) copyFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	serverID := r.PathValue("id")
+	from, err := rootfs.Clean(body.From)
+	if err != nil || from == "" {
+		http.Error(w, "invalid source", http.StatusBadRequest)
+		return
+	}
+	to, err := rootfs.Clean(body.To)
+	if err != nil || to == "" || from == to {
+		http.Error(w, "invalid destination", http.StatusBadRequest)
+		return
+	}
 	fsys, err := s.serverFilesystem(serverID, false)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	defer fsys.Close()
-	info, err := fsys.Stat(body.From)
+	info, err := fsys.Stat(from)
 	if err != nil || !info.Mode().IsRegular() {
 		http.Error(w, "source is not a regular file", http.StatusNotFound)
 		return
 	}
-	if _, err := fsys.Stat(body.To); err == nil {
+	if _, err := fsys.Stat(to); err == nil {
 		http.Error(w, "destination already exists", http.StatusConflict)
 		return
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -2657,7 +3201,7 @@ func (s *Server) copyFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInsufficientStorage)
 		return
 	}
-	if _, err := fsys.Copy(body.From, body.To, info.Mode().Perm(), info.Size()); err != nil {
+	if _, err := fsys.Copy(from, to, info.Mode().Perm(), info.Size()); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2674,11 +3218,18 @@ func (s *Server) pullRemoteFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	parsed, err := url.Parse(body.URL)
-	if err != nil {
+	if strings.Contains(body.URL, "\x00") || strings.Contains(body.Target, "\x00") || strings.Contains(body.FileName, "\x00") {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	parsed, err := url.Parse(strings.TrimSpace(body.URL))
+	if err != nil || parsed.Hostname() == "" || parsed.User != nil {
 		http.Error(w, "invalid URL", http.StatusBadRequest)
 		return
 	}
+	// Re-validate at the sink: only a freshly validated canonical URL reaches
+	// http.NewRequest (SSRF). pullClientFactory pins DNS and validates
+	// redirects; the explicit User/host check above sanitizes for analysis.
 	client, err := s.pullClientFactory(r.Context(), parsed)
 	if err != nil {
 		status := http.StatusBadRequest
@@ -2779,6 +3330,23 @@ func (s *Server) startTransfer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "targetNode and targetUrl are required", http.StatusBadRequest)
 		return
 	}
+	if strings.Contains(body.TargetNode, "\x00") || strings.Contains(body.TargetURL, "\x00") {
+		http.Error(w, "invalid transfer request", http.StatusBadRequest)
+		return
+	}
+	// TargetNode is an opaque node identifier: restrict to a conservative
+	// charset so it can never carry path separators into file or URL joins.
+	if len(body.TargetNode) > 128 || body.TargetNode != filepath.Base(body.TargetNode) || strings.Contains(body.TargetNode, "..") {
+		http.Error(w, "invalid targetNode", http.StatusBadRequest)
+		return
+	}
+	for _, ch := range body.TargetNode {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' {
+			continue
+		}
+		http.Error(w, "invalid targetNode", http.StatusBadRequest)
+		return
+	}
 	serverID := r.PathValue("id")
 	serverRoot, err := s.safePath(serverID, "")
 	if err != nil {
@@ -2796,6 +3364,10 @@ func (s *Server) startTransfer(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getTransferStatus(w http.ResponseWriter, r *http.Request) {
 	transferID := r.PathValue("transferId")
+	if !safeUploadID(transferID) {
+		http.Error(w, "invalid transfer id", http.StatusBadRequest)
+		return
+	}
 	transferMgr := s.transfers
 	transfer, ok := transferMgr.Get(transferID)
 	if !ok {
@@ -2807,6 +3379,10 @@ func (s *Server) getTransferStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) cancelTransfer(w http.ResponseWriter, r *http.Request) {
 	transferID := r.PathValue("transferId")
+	if !safeUploadID(transferID) {
+		http.Error(w, "invalid transfer id", http.StatusBadRequest)
+		return
+	}
 	transferMgr := s.transfers
 	if err := transferMgr.Cancel(transferID); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -2826,13 +3402,20 @@ func (s *Server) cancelTransfer(w http.ResponseWriter, r *http.Request) {
 //  2. Extracts the archive to the destination server's root directory
 //  3. Notifies the source daemon that the transfer is complete
 func (s *Server) receiveTransferArchive(w http.ResponseWriter, r *http.Request) {
-	serverID := r.Header.Get("X-Transfer-ServerID")
+	serverID := strings.TrimSpace(r.Header.Get("X-Transfer-ServerID"))
 	if err := serverid.Validate(serverID); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	transferID := r.Header.Get("X-Transfer-ID")
+	transferID := strings.TrimSpace(r.Header.Get("X-Transfer-ID"))
 	if !safeUploadID(transferID) {
+		http.Error(w, "invalid transfer id", http.StatusBadRequest)
+		return
+	}
+	// Sanitize for static analysis: safeUploadID guarantees Base==value and no
+	// "..", so Base is identity but makes the sanitization explicit.
+	transferID = path.Base(transferID)
+	if transferID != filepath.Base(transferID) || strings.Contains(transferID, "..") {
 		http.Error(w, "invalid transfer id", http.StatusBadRequest)
 		return
 	}
@@ -2851,10 +3434,20 @@ func (s *Server) receiveTransferArchive(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid X-Transfer-Size header", http.StatusBadRequest)
 		return
 	}
-	expectedChecksum := r.Header.Get("X-Checksum")
-	if expectedChecksum == "" {
+	expectedChecksum := strings.TrimSpace(r.Header.Get("X-Checksum"))
+	if expectedChecksum == "" || strings.Contains(expectedChecksum, "\x00") {
 		http.Error(w, "X-Checksum header is required", http.StatusBadRequest)
 		return
+	}
+	if len(expectedChecksum) != 64 {
+		http.Error(w, "invalid checksum", http.StatusBadRequest)
+		return
+	}
+	for _, ch := range expectedChecksum {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') && (ch < 'A' || ch > 'F') {
+			http.Error(w, "invalid checksum", http.StatusBadRequest)
+			return
+		}
 	}
 
 	fsys, err := s.serverFilesystem(serverID, true)
@@ -2871,7 +3464,19 @@ func (s *Server) receiveTransferArchive(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusInsufficientStorage)
 		return
 	}
+	// Explicit stdlib sanitization at the file sinks below: transferID comes
+	// from a request header and must already be a plain basename.
+	if transferID != path.Base(transferID) || transferID != filepath.Base(transferID) ||
+		strings.ContainsAny(transferID, `/\`+"\x00") || strings.Contains(transferID, "..") {
+		http.Error(w, "invalid transfer id", http.StatusBadRequest)
+		return
+	}
 	tempName := path.Join(".backups", ".transfer-"+transferID+".tar.gz")
+	// The joined staging name must already be clean; rootfs confines the open.
+	if cleanStaging := path.Clean(tempName); cleanStaging != tempName || strings.HasPrefix(cleanStaging, "../") || strings.HasPrefix(cleanStaging, "/") {
+		http.Error(w, "invalid transfer id", http.StatusBadRequest)
+		return
+	}
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	if offset > 0 {
 		info, statErr := fsys.Stat(tempName)
@@ -3086,23 +3691,31 @@ func safeBackupName(name string) bool {
 // the suffix is appended here so restore/delete/download work for both forms.
 // Path traversal and absolute paths are always rejected.
 func normalizeBackupName(name string) (string, bool) {
-	if name == "" || len(name) > 128 || strings.Contains(name, "..") ||
-		strings.HasPrefix(name, "/") || strings.ContainsAny(name, `/\`) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
 		return "", false
 	}
-	for _, char := range name {
+	// A backup name becomes an archive filename on the node: reject traversal
+	// sequences, hidden-file names, and any character outside a conservative
+	// charset so the value can never escape the backups directory.
+	if strings.Contains(trimmed, "..") || strings.HasPrefix(trimmed, ".") {
+		return "", false
+	}
+	for _, char := range trimmed {
 		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' {
 			continue
 		}
 		return "", false
 	}
-	if !strings.HasSuffix(name, ".zip") {
-		name += ".zip"
+	// Canonical form carries a .zip suffix, but only when it still fits the
+	// length cap; a stem already at the cap is accepted without forcing it.
+	if !strings.HasSuffix(trimmed, ".zip") && len(trimmed)+len(".zip") <= 100 {
+		trimmed += ".zip"
 	}
-	if len(name) > 128 {
+	if len(trimmed) > 100 {
 		return "", false
 	}
-	return name, true
+	return trimmed, true
 }
 
 func randomHex(size int) (string, error) {
@@ -3119,6 +3732,12 @@ func formatFloat(value float64) string {
 
 func formatInt(value int) string {
 	return strconv.Itoa(value)
+}
+
+// formatInt64 renders a value that may legitimately be negative, unlike
+// formatInt/formatUint which serve counters and byte gauges.
+func formatInt64(value int64) string {
+	return strconv.FormatInt(value, 10)
 }
 
 func formatUint(value uint64) string {
@@ -3400,7 +4019,7 @@ func (s *Server) applyPower(r *http.Request, serverID, signal string) (string, e
 	}
 	err := s.manager.HandlePower(r.Context(), serverID, signal)
 	if err == nil {
-		return "docker", nil
+		return s.runtimeProvider(), nil
 	}
 	return "", err
 }
@@ -3451,21 +4070,66 @@ func configureWebSocket(conn *websocket.Conn) {
 	})
 }
 
+// isLoopbackRequest reports whether the connection peer is the machine the
+// daemon itself is running on. It reads only the socket address: trusting
+// X-Forwarded-For here would let any caller claim to be localhost and skip the
+// metrics credential.
+func isLoopbackRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	host := r.RemoteAddr
+	if splitHost, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = splitHost
+	}
+	// Zone suffixes ([::1%eth0]) do not change the address being loopback.
+	if percent := strings.IndexByte(host, '%'); percent >= 0 {
+		host = host[:percent]
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/metrics" {
-			expected := "Bearer " + s.metricsToken
-			if s.metricsToken == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(expected)) != 1 {
-				http.Error(w, "authentication required", http.StatusUnauthorized)
-				return
+			// Prometheus normally scrapes the daemon from the same machine, and a
+			// loopback connection cannot have come from anywhere else, so it is
+			// served without a bearer token. Anything that is not loopback keeps
+			// requiring it. Forwarded headers are deliberately not consulted: the
+			// socket peer is the only thing here that cannot be forged by the caller.
+			if !isLoopbackRequest(r) {
+				expected := "Bearer " + s.metricsToken
+				if s.metricsToken == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(expected)) != 1 {
+					http.Error(w, "authentication required", http.StatusUnauthorized)
+					return
+				}
 			}
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Only the exact GET health and readiness routes are public. Metrics
-		// contain operational information and require the same signed
-		// authentication as other API routes.
-		if s.token == "" || (r.Method == http.MethodGet && (r.URL.Path == "/health" || r.URL.Path == "/ready")) || r.URL.Path == "/download/backup" || isScopedTokenRoute(r.URL.Path) || (strings.HasPrefix(r.URL.Path, "/api/v1/transfers/") && r.URL.Path != "/api/v1/transfers/credentials") {
+		// Per-route authentication. Production startup (cmd/daemon/main.go)
+		// refuses to serve without DAEMON_NODE_TOKEN except on a loopback
+		// listener, so an empty s.token here only happens in isolated
+		// development and tests; it bypasses HMAC like before but the
+		// listener is loopback-only.
+		//
+		//   public (no auth):              GET /health, GET /ready
+		//   loopback-or-bearer:             GET /metrics
+		//   JWT backup-download scope:      GET /download/backup (handler validates scope)
+		//   JWT websocket scope:            /servers/{id}/ws/*, /servers/{id}/ws (handler validates scope+binding)
+		//   transfer bearer credential:     /api/v1/transfers/* except /credentials (handlers validate via transferBearer)
+		//   legacy transfer HMAC headers:   POST /api/transfers (handler checks HMAC headers)
+		//   node HMAC (default):            everything else
+		if s.token == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.Method == http.MethodGet && (r.URL.Path == "/health" || r.URL.Path == "/ready") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == "/download/backup" || isScopedTokenRoute(r.URL.Path) || (strings.HasPrefix(r.URL.Path, "/api/v1/transfers/") && r.URL.Path != "/api/v1/transfers/credentials") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -3570,31 +4234,36 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
+// Scoped (JWT-authenticated) routes are the streaming sockets under
+// /servers/{id}/ws/. /servers/{id}/install/ws is deliberately NOT in this set:
+// install progress is control-plane output, so it keeps requiring the panel
+// node HMAC signature like every other command channel.
 func isScopedTokenRoute(path string) bool {
-	return strings.HasPrefix(path, "/servers/") && (strings.Contains(path, "/ws/") || strings.HasSuffix(path, "/install/ws"))
+	return strings.HasPrefix(path, "/servers/") && strings.Contains(path, "/ws/")
 }
 
 func isStreamingUpload(r *http.Request) bool {
-	return r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/files/upload")
+	// Container uploads stream via PUT; host-file uploads via POST. Both authenticate
+	// the request metadata with an empty-body signature so the body is never spooled
+	// before the request is verified.
+	if strings.Contains(r.URL.Path, "/files/upload") {
+		return r.Method == http.MethodPut || r.Method == http.MethodPost
+	}
+	return false
 }
 
 // authenticateWebSocket validates JWT token for WebSocket connections.
 // Token can be provided via query parameter "token" or Authorization header.
+//
+// This is the pre-upgrade probe only: it never spends the ticket. The
+// one-time ticket is spent by redeemWebSocketTicket after the upgrade
+// succeeds, so a replayed ticket is refused even within its expiry window.
 func (s *Server) authenticateWebSocket(w http.ResponseWriter, r *http.Request) (*tokens.Claims, error) {
 	if s.tokenGenerator == nil {
 		return nil, errors.New("token generator not configured")
 	}
 
-	// Try to get token from query parameter first (common for WebSocket connections)
-	tokenStr := r.URL.Query().Get("token")
-	if tokenStr == "" {
-		// Fall back to Authorization header
-		auth := r.Header.Get("Authorization")
-		if strings.HasPrefix(auth, "Bearer ") {
-			tokenStr = strings.TrimPrefix(auth, "Bearer ")
-		}
-	}
-
+	tokenStr := websocketToken(r)
 	if tokenStr == "" {
 		return nil, errors.New("missing token")
 	}
@@ -3604,6 +4273,43 @@ func (s *Server) authenticateWebSocket(w http.ResponseWriter, r *http.Request) (
 		return nil, fmt.Errorf("invalid token: %w", err)
 	}
 
+	return claims, nil
+}
+
+// websocketToken extracts the raw bearer token from a WebSocket request,
+// shared by the pre-upgrade probe (Validate) and the post-upgrade spend
+// (Redeem) so both observe the same credential.
+func websocketToken(r *http.Request) string {
+	// Try to get token from query parameter first (common for WebSocket connections)
+	tokenStr := r.URL.Query().Get("token")
+	if tokenStr == "" {
+		// Fall back to Authorization header
+		auth := r.Header.Get("Authorization")
+		if strings.HasPrefix(auth, "Bearer ") {
+			tokenStr = strings.TrimPrefix(auth, "Bearer ")
+		}
+	}
+	return tokenStr
+}
+
+// redeemWebSocketTicket spends the request's one-time stream ticket. It must
+// run exactly once per connection, after the upgrade succeeds: spending
+// before the upgrade would burn the ticket when the upgrade fails, and never
+// spending leaves the ticket replayable until it expires (the spent-ticket
+// denylist stays empty and dead). A nil store still validates principal and
+// binding without recording the spend.
+func (s *Server) redeemWebSocketTicket(r *http.Request) (*tokens.Claims, error) {
+	if s.tokenGenerator == nil {
+		return nil, errors.New("token generator not configured")
+	}
+	tokenStr := websocketToken(r)
+	if tokenStr == "" {
+		return nil, errors.New("missing token")
+	}
+	claims, err := s.tokenGenerator.Redeem(tokenStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid token: %w", err)
+	}
 	return claims, nil
 }
 
@@ -3727,7 +4433,7 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		diag.EdgeState = string(s.edgeAgent.State())
 	}
 	s.edgeMu.RUnlock()
-	diag.AgentConnected = s.runtime != nil
+	diag.AgentConnected = runtimeAvailable(s.runtime)
 	writeJSON(w, http.StatusOK, diag)
 }
 
@@ -3836,12 +4542,19 @@ type VersionInventory struct {
 }
 
 func (s *Server) handleVersionInventory(w http.ResponseWriter, r *http.Request) {
+	// Capabilities are derived from what this node actually wired up, never a
+	// literal. Advertising "docker" on a Podman/containerd/Kubernetes node is
+	// the phantom-provider bug the panel places with.
+	capabilities := s.systemCapabilities()
+	if len(capabilities) == 0 {
+		capabilities = []string{"files", "stats"}
+	}
 	inv := VersionInventory{
 		BeaconVersion: s.version,
 		GoVersion:     stdruntime.Version(),
 		OS:            stdruntime.GOOS,
 		Architecture:  stdruntime.GOARCH,
-		Capabilities:  []string{"docker", "sftp", "backups", "transfers", "stats", "console", "files", "compose", "build", "edge-agent", "upgrade"},
+		Capabilities:  capabilities,
 		UptimeSeconds: int64(time.Since(s.started).Seconds()),
 		EdgeState:     "unknown",
 	}

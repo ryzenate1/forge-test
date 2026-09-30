@@ -24,11 +24,16 @@ linters:
       locale: US
     gosec:
       excludes:
-        - G104
         - G304
+  # Run from the repo root as `golangci-lint run ./...` or per-module as
+  # `(cd forge/api && golangci-lint run ./...)`. Paths below are relative to
+  # the directory golangci-lint runs from, so anchor both the legacy
+  # `reference/` study checkouts and the in-tree `forge/api/reference/`.
   exclusions:
     rules:
-      - path: reference/
+      - path: (^|/)reference/
+        linters: [errcheck, govet, staticcheck, unused]
+      - path: (^|/)reference-repos/
         linters: [errcheck, govet, staticcheck, unused]
 
 formatters:

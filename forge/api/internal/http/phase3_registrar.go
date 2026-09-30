@@ -1,6 +1,8 @@
 package http
 
 import (
+	"fmt"
+
 	"strings"
 
 	"gamepanel/forge/internal/services/catalog"
@@ -21,16 +23,10 @@ func init() {
 // tolerated: the routes respond 503 instead of crashing startup.
 func registerPhase3CatalogRoutes(v1 fiber.Router, protected fiber.Router, cfg *Config) error {
 	if cfg.Store == nil {
-		if cfg.Logger != nil {
-			cfg.Logger.Warn(phase3RegistrarName + ": store not configured, catalog routes skipped")
-		}
-		return nil
+		return fmt.Errorf("%w: store not configured, catalog routes skipped", ErrPhaseSkipped)
 	}
 	if cfg.DBContainerService == nil || cfg.ComposeService == nil {
-		if cfg.Logger != nil {
-			cfg.Logger.Warn(phase3RegistrarName + ": db container or compose service not configured, catalog routes skipped")
-		}
-		return nil
+		return fmt.Errorf("%w: db container or compose service not configured, catalog routes skipped", ErrPhaseSkipped)
 	}
 
 	svc, err := catalog.New(catalog.Options{
@@ -102,8 +98,13 @@ func catalogRoutes(v1 fiber.Router, protected fiber.Router, cfg *Config, svc *ca
 		}
 		ctx, cancel := longRequestContext()
 		defer cancel()
+		var actorID string
+		if claims, ok := c.Locals("user").(tokenClaims); ok {
+			actorID = claims.Sub
+		}
 		inst, err := svc.Provision(ctx, catalog.ProvisionInput{
 			Kind:          req.Kind,
+			UserID:        actorID,
 			Version:       req.Version,
 			EnvironmentID: req.EnvID,
 			NodeID:        req.NodeID,

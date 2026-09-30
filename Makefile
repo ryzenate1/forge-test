@@ -15,8 +15,10 @@ test: ## Run all tests
 	@set -e; cd forge/web && npm test
 
 build: ## Build all components
-	cd forge/api && go build ./cmd/api && cd ../..
-	cd beacon && go build ./cmd/daemon && cd ../..
+	cd forge/api && go build ./... && cd ../..
+	cd beacon && go build ./... && cd ../..
+	# packages are built once via forge/web's prebuild hook (npm run build:packages);
+	# do not add an explicit call here or every make build compiles them twice.
 	cd forge/web && npm run build && cd ../..
 
 api-test: ## Run only API tests

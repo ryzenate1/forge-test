@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -170,13 +170,7 @@ func (s *Service) HandleNodeOffline(ctx context.Context, nodeID string, payload 
 	}
 
 	var matchingPolicy *Policy
-	for _, sp := range policies {
-		if sp.Enabled {
-			p := fromStorePolicy(sp)
-			matchingPolicy = &p
-			break
-		}
-	}
+	matchingPolicy = selectFailoverPolicy(policies)
 
 	if matchingPolicy == nil || matchingPolicy.Action == FailoverActionNotify || matchingPolicy.Action == "" {
 		s.mu.Lock()
@@ -217,6 +211,15 @@ func (s *Service) HandleNodeOffline(ctx context.Context, nodeID string, payload 
 		}
 	}
 
+	// The incident references the deciding policy, so a synthesized decision
+	// (classifier or built-in default) is persisted first. Recording an
+	// incident with an empty policy ID would leave it unattributable: later
+	// reads could not tell which policy decided the failover.
+	matchingPolicy, err = s.ensurePolicyPersisted(ctx, nodeID, matchingPolicy)
+	if err != nil {
+		return err
+	}
+
 	incident, created, err := s.createIncident(ctx, nodeID, matchingPolicy.ID, reason)
 	if err != nil {
 		return err
@@ -228,6 +231,88 @@ func (s *Service) HandleNodeOffline(ctx context.Context, nodeID string, payload 
 	_, err = s.executeAction(ctx, matchingPolicy, EventNodeFailure, nodeID, "",
 		fmt.Sprintf("node %s offline incident %s: %s", nodeID, incident, reason))
 	return err
+}
+
+// failoverActionPrecedence ranks actions so overlapping enabled policies
+// resolve deterministically: evacuation first, then restart, then notify.
+func failoverActionPrecedence(action FailoverAction) int {
+	switch action {
+	case FailoverActionEvacuate:
+		return 3
+	case FailoverActionRestart:
+		return 2
+	case FailoverActionNotify:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// selectFailoverPolicy evaluates every enabled policy instead of stopping at
+// the first one. The highest-precedence action wins; ties break by earliest
+// creation (store order), then ID, so identical inputs always select alike.
+func selectFailoverPolicy(policies []store.FailoverPolicy) *Policy {
+	var best *Policy
+	for _, sp := range policies {
+		if !sp.Enabled {
+			continue
+		}
+		p := fromStorePolicy(sp)
+		candidate := &p
+		if best == nil {
+			best = candidate
+			continue
+		}
+		candidateRank := failoverActionPrecedence(candidate.Action)
+		bestRank := failoverActionPrecedence(best.Action)
+		if candidateRank > bestRank ||
+			(candidateRank == bestRank &&
+				(candidate.CreatedAt.Before(best.CreatedAt) ||
+					(candidate.CreatedAt.Equal(best.CreatedAt) && candidate.ID < best.ID))) {
+			best = candidate
+		}
+	}
+	return best
+}
+
+// ensurePolicyPersisted gives a synthesized policy (classifier or built-in
+// default action with no stored row) a durable ID before it is referenced by
+// an incident. Callers must use the returned policy: persisting the incident
+// with the original empty ID would record a failover no later read can
+// attribute to the decision that caused it.
+func (s *Service) ensurePolicyPersisted(ctx context.Context, nodeID string, policy *Policy) (*Policy, error) {
+	if policy == nil {
+		return nil, errors.New("failover policy is required")
+	}
+	if policy.ID != "" {
+		return policy, nil
+	}
+	stored := store.FailoverPolicy{
+		Name:             "auto-failover-" + nodeID,
+		NodeID:           nodeID,
+		Enabled:          true,
+		MaxFailures:      policy.MaxFailures,
+		FailureWindowSec: policy.FailureWindowSec,
+		CooldownSec:      policy.CooldownSec,
+		Action:           string(policy.Action),
+	}
+	if stored.MaxFailures == 0 {
+		stored.MaxFailures = 1
+	}
+	if stored.FailureWindowSec == 0 {
+		stored.FailureWindowSec = defaultFailureWindowSec
+	}
+	if stored.CooldownSec == 0 {
+		stored.CooldownSec = defaultCooldownSec
+	}
+	if stored.Action == "" {
+		stored.Action = string(FailoverActionEvacuate)
+	}
+	if err := s.db.CreateFailoverPolicy(ctx, &stored); err != nil {
+		return nil, fmt.Errorf("persist synthesized failover policy: %w", err)
+	}
+	persisted := fromStorePolicy(stored)
+	return &persisted, nil
 }
 
 // hasActiveIncidentLocked checks whether a recent failover incident already exists
@@ -283,7 +368,7 @@ func (s *Service) CreatePolicy(ctx context.Context, policy *Policy) error {
 		if err := s.publisher.Publish(ctx, events.NewEnvelope("failover_policy_created", "failover", "policy", policy.ID, map[string]any{
 			"nodeId": policy.NodeID, "action": policy.Action,
 		})); err != nil {
-			log.Printf("failover: publish policy created event: %v", err)
+			slog.Error("failover: publish policy created event", "error", err)
 		}
 	}
 	return nil
@@ -382,13 +467,7 @@ func (s *Service) RecordFailure(ctx context.Context, nodeID string) (*Event, err
 	}
 
 	var matchingPolicy *Policy
-	for _, sp := range policies {
-		if sp.Enabled {
-			p := fromStorePolicy(sp)
-			matchingPolicy = &p
-			break
-		}
-	}
+	matchingPolicy = selectFailoverPolicy(policies)
 	if matchingPolicy == nil {
 		return nil, nil
 	}
@@ -422,13 +501,7 @@ func (s *Service) HandleServerCrash(ctx context.Context, serverID, nodeID string
 	}
 
 	var matchingPolicy *Policy
-	for _, sp := range policies {
-		if sp.Enabled {
-			p := fromStorePolicy(sp)
-			matchingPolicy = &p
-			break
-		}
-	}
+	matchingPolicy = selectFailoverPolicy(policies)
 	if matchingPolicy == nil {
 		return nil, nil
 	}
@@ -472,7 +545,7 @@ func (s *Service) executeAction(ctx context.Context, policy *Policy, eventType F
 			if err := s.publisher.Publish(ctx, events.NewEnvelope("node_evacuation_triggered", "failover", "node", nodeID, map[string]any{
 				"policyId": policy.ID, "reason": message,
 			})); err != nil {
-				log.Printf("failover: publish evacuation event: %v", err)
+				slog.Error("failover: publish evacuation event", "error", err)
 			}
 		}
 		s.mu.Lock()
@@ -485,7 +558,7 @@ func (s *Service) executeAction(ctx context.Context, policy *Policy, eventType F
 			if err := s.publisher.Publish(ctx, events.NewEnvelope("node_restart_triggered", "failover", "node", nodeID, map[string]any{
 				"policyId": policy.ID, "reason": message,
 			})); err != nil {
-				log.Printf("failover: publish restart event: %v", err)
+				slog.Error("failover: publish restart event", "error", err)
 			}
 		}
 		s.mu.Lock()
@@ -498,7 +571,7 @@ func (s *Service) executeAction(ctx context.Context, policy *Policy, eventType F
 			if err := s.publisher.Publish(ctx, events.NewEnvelope("node_failure_notified", "failover", "node", nodeID, map[string]any{
 				"policyId": policy.ID, "failures": message,
 			})); err != nil {
-				log.Printf("failover: publish notify event: %v", err)
+				slog.Error("failover: publish notify event", "error", err)
 			}
 		}
 		s.mu.Lock()
@@ -512,7 +585,7 @@ func (s *Service) executeAction(ctx context.Context, policy *Policy, eventType F
 			event.Message = message + ": " + err.Error()
 			se := toStoreEvent(event)
 			if createErr := s.db.CreateFailoverEvent(ctx, &se); createErr != nil {
-				log.Printf("failover: create failover event: %v", createErr)
+				slog.Error("failover: create failover event", "error", createErr)
 			}
 			return event, err
 		}

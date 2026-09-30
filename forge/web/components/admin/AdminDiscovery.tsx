@@ -1,8 +1,9 @@
 "use client";
+import { useNodesQuery } from "@/lib/admin/telemetry";
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Globe, Heart, Network, Shield, Trash2, RefreshCw, Server } from "lucide-react";
+import { Activity, AlertTriangle, Globe, Heart, Network, Shield, Trash2, RefreshCw, Server } from "lucide-react";
 import {
   fetchDiscoveryEndpoints,
   fetchDiscoveryServices,
@@ -23,26 +24,46 @@ import {
   addPrivateCIDR,
   removePrivateCIDR,
   type DiscoveryEndpoint,
-  type DiscoveryEndpointSet,
   type DiscoveryEndpointStatus,
-  type NetworkVisibilityView,
   type PolicyView,
 } from "@/lib/api/discovery";
-import { fetchNodes } from "@/lib/api";
+import { ApiError } from "@/lib/api/http";
+import { discoveryStatusTone } from "@/lib/api/status";
 import { useToast } from "@/components/ui/toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import {
-  AdminFormSection, AdminSelect, AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, Pill, SectionHeader,
+  AdminSelect, AdminTabs, Btn, Card, CardHeader, EmptyState, Input, Pill, SectionHeader,
 } from "./admin-ui";
 
 type Tab = "endpoints" | "services" | "visibility" | "policy" | "reachability" | "manage";
 
-const STATUS_COLORS: Record<string, string> = {
-  healthy: "bg-green-500/10 text-green-400",
-  unhealthy: "bg-red-500/10 text-red-400",
-  unknown: "bg-slate-500/10 text-slate-400",
-  draining: "bg-yellow-500/10 text-yellow-400",
-};
+/**
+ * `registerServiceDiscoveryRoutes` (forge/api/internal/http/handlers_servicediscovery.go)
+ * exposes /services, /endpoints[/:id][/status], /resolve, /network/*,
+ * /reachability/* and /reaper/stats. It does NOT expose /policy* nor
+ * /endpoints/:id/heartbeat, and /endpoints/:id/status is registered as PATCH
+ * while `updateDiscoveryEndpointStatus` posts it. A 404/405 from the probe is
+ * therefore "this capability is not wired", not "the policy is empty", so the
+ * controls below stay disabled until the API really answers.
+ */
+const POLICY_UNROUTED = "Editing is disabled: the Forge API does not serve /admin/service-discovery/policy (no route is registered for it), so every change here would fail. The policy shown, if any, is read-only.";
+const HEARTBEAT_UNROUTED = "No POST /admin/service-discovery/endpoints/:id/heartbeat route exists, so the panel cannot touch an endpoint. Liveness comes from the beacon's own heartbeat.";
+const STATUS_UPDATE_UNROUTED = "The API registers /admin/service-discovery/endpoints/:id/status as PATCH while the web client sends POST, so the request is rejected. Change the status from the beacon instead.";
+
+function isUnroutedError(err: unknown): boolean {
+  return err instanceof ApiError && (err.status === 404 || err.status === 405);
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error && err.message ? err.message : "request failed";
+}
+
+// STATUS_COLORS used to live here. It was keyed on raw Tailwind colours and read
+// `STATUS_COLORS[status] ?? ""` at four call sites — and Pill defaults to the
+// neutral chip, so an endpoint health value this table did not know rendered as
+// a confident "inactive" rather than as unread. It also drew `unknown` in plain
+// slate, indistinguishable from a deliberately idle endpoint. discoveryStatusTone
+// keeps unknown in the dashed unknown treatment.
 
 const NETWORK_COLORS: Record<string, string> = {
   public: "bg-cyan-500/10 text-cyan-400",
@@ -50,10 +71,16 @@ const NETWORK_COLORS: Record<string, string> = {
   isolated: "bg-slate-500/10 text-slate-400",
 };
 
+/** An access class the panel does not know is an unread value, not a colourless one. */
+function AccessPill({ access }: { access: string }) {
+  const toneClass = NETWORK_COLORS[access];
+  return toneClass
+    ? <Pill className={toneClass}>{access}</Pill>
+    : <Pill tone="unknown">{access || "unknown"}</Pill>;
+}
+
 export function AdminDiscovery() {
-  const { toast } = useToast();
   const qc = useQueryClient();
-  const [confirm, renderConfirm] = useConfirm();
   const [tab, setTab] = useState<Tab>("endpoints");
   const [filterService, setFilterService] = useState("");
   const [filterNodeId, setFilterNodeId] = useState("");
@@ -66,22 +93,31 @@ export function AdminDiscovery() {
   const servicesQuery = useQuery({ queryKey: ["discovery-services"], queryFn: fetchDiscoveryServices });
   const visibilityQuery = useQuery({ queryKey: ["discovery-visibility"], queryFn: fetchNetworkVisibility });
   const reaperQuery = useQuery({ queryKey: ["discovery-reaper"], queryFn: fetchReaperStats });
-  const policyQuery = useQuery({ queryKey: ["discovery-policy"], queryFn: fetchDiscoveryPolicy });
-  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
+  // Probed only when the tab opens: until the policy routes exist this is a
+  // guaranteed 404 and firing it on every visit to /admin/discovery just turns
+  // a missing capability into background request noise.
+  const policyQuery = useQuery({
+    queryKey: ["discovery-policy"],
+    queryFn: fetchDiscoveryPolicy,
+    enabled: tab === "policy",
+    retry: false,
+  });
 
   const endpoints = useMemo(() => endpointsQuery.data ?? [], [endpointsQuery.data]);
   const services = useMemo(() => servicesQuery.data ?? [], [servicesQuery.data]);
   const visibility = visibilityQuery.data;
   const reaper = reaperQuery.data;
   const policy = policyQuery.data;
+  const policyEditable = policyQuery.isSuccess && !isUnroutedError(policyQuery.error);
+  const policyUnrouted = isUnroutedError(policyQuery.error);
 
   return (
     <div className="space-y-6">
       <SectionHeader
-        title="Networking — Service Discovery"
-        sub="INFRA · Networking advanced: service endpoints, network visibility, beacon liveness and private-network policy. Endpoints self-register via heartbeats and are reaped after 3m TTL."
+        title="Service Discovery"
+        sub="Service endpoints, network visibility, beacon liveness and private-network policy. Endpoints self-register via heartbeats and are reaped after 3m TTL."
         action={
-          <Btn size="sm" tone="ghost" onClick={() => { qc.invalidateQueries({ queryKey: ["discovery-endpoints"] }); qc.invalidateQueries({ queryKey: ["discovery-visibility"] }); qc.invalidateQueries({ queryKey: ["discovery-reaper"] }); }}>
+          <Btn size="sm" tone="ghost" onClick={() => { qc.invalidateQueries({ queryKey: ["discovery-endpoints"] }); qc.invalidateQueries({ queryKey: ["discovery-services"] }); qc.invalidateQueries({ queryKey: ["discovery-visibility"] }); qc.invalidateQueries({ queryKey: ["discovery-reaper"] }); qc.invalidateQueries({ queryKey: ["discovery-policy"] }); }}>
             <RefreshCw size={14} /> Refresh
           </Btn>
         }
@@ -92,7 +128,13 @@ export function AdminDiscovery() {
 
       <div className="rounded-lg border border-amber-500/20 bg-amber-950/10 p-3 text-xs text-amber-200">
         <span className="font-semibold">Beacon liveness:</span> each beacon registers a <code className="rounded bg-white/10 px-1">beacon</code> endpoint on first heartbeat and touches <code>LastHeartbeat</code> every 30s. The stale reaper marks endpoints <span className="font-mono">unhealthy</span> after <code className="rounded bg-white/10 px-1">3m</code> without a touch (draining endpoints skipped). Ensure beacons send <code className="rounded bg-white/10 px-1">endpoints[]</code> liveness in <code className="rounded bg-white/10 px-1">POST /nodes/:id/heartbeat</code>.
-        <span className="ml-2">Reaper: {reaper ? `${reaper.count} reaped, interval ${reaper.interval / 1e9}s, lastRun ${reaper.lastRun ?? "never"}` : "loading…"}</span>
+        {/* A failed reaper query used to render "loading…" indefinitely, which
+            tells the operator to wait for something that is never coming. */}
+        <span className="ml-2">Reaper: {reaper
+          ? `${reaper.count} reaped, interval ${reaper.interval / 1e9}s, lastRun ${reaper.lastRun ?? "never"}`
+          : reaperQuery.isError
+            ? `unavailable — ${(reaperQuery.error as Error)?.message ?? "request failed"}`
+            : "loading…"}</span>
       </div>
 
       <AdminTabs tabs={[
@@ -106,7 +148,7 @@ export function AdminDiscovery() {
 
       {tab === "endpoints" && (
         <Card>
-          <CardHeader title="Endpoints" icon={Server} action={<span className="text-xs text-slate-400">{endpoints.length} total</span>} />
+          <CardHeader title="Endpoints" icon={Server} action={<span className="text-xs text-slate-400">{endpointsQuery.isError ? "count unavailable" : endpointsQuery.isLoading ? "loading…" : `${endpoints.length} total`}</span>} />
           <div className="flex flex-wrap gap-3 p-4 border-b border-white/[0.06]">
             <Input label="Service filter" value={filterService} onChange={setFilterService} placeholder="e.g. beacon, nginx" />
             <Input label="Node filter" value={filterNodeId} onChange={setFilterNodeId} placeholder="node ID" />
@@ -145,6 +187,7 @@ export function AdminDiscovery() {
         <Card>
           <CardHeader title="Services" icon={Globe} />
           {servicesQuery.isLoading ? <div className="p-8 text-center text-sm text-slate-300">Loading…</div>
+            : servicesQuery.isError ? <div className="p-4 text-sm text-red-300">Failed to load services: {errorMessage(servicesQuery.error)}</div>
             : services.length === 0 ? <EmptyState icon={Globe} title="No services" message="No service sets discovered." />
             : (
               <div className="space-y-3 p-4">
@@ -163,7 +206,7 @@ export function AdminDiscovery() {
                             <tr key={e.id} className="border-t border-white/[0.04]">
                               <td className="pr-2 py-1">{e.nodeId}</td>
                               <td className="pr-2 font-mono">{e.address}:{e.port}</td>
-                              <td><Pill className={STATUS_COLORS[e.status] ?? ""}>{e.status}</Pill></td>
+                              <td><Pill tone={discoveryStatusTone(e.status)}>{e.status}</Pill></td>
                               <td>{e.replicaIndex}</td>
                             </tr>
                           ))}
@@ -181,8 +224,9 @@ export function AdminDiscovery() {
         <div className="space-y-4">
           <Card>
             <CardHeader title="Network Visibility" icon={Network} action={<Btn size="sm" tone="ghost" onClick={() => visibilityQuery.refetch()}>Reload</Btn>} />
-            {visibilityQuery.isLoading ? <div className="p-8 text-center text-sm">Loading…</div>
-              : !visibility ? <div className="p-4 text-sm text-amber-300">No data</div>
+            {visibilityQuery.isLoading ? <div className="p-8 text-center text-sm text-slate-300">Loading…</div>
+              : visibilityQuery.isError ? <div className="p-4 text-sm text-red-300">Failed to load network visibility: {errorMessage(visibilityQuery.error)}</div>
+              : !visibility ? <div className="p-4 text-sm text-amber-300">The API returned no visibility report.</div>
               : (
                 <div className="p-4 space-y-3">
                   <div className="flex flex-wrap gap-2 text-xs">
@@ -190,14 +234,14 @@ export function AdminDiscovery() {
                     <Pill tone="green">Healthy: {visibility.healthyCount}</Pill>
                     <Pill tone="red">Unhealthy: {visibility.unhealthyCount}</Pill>
                     <Pill>Nodes: {visibility.nodesCount}</Pill>
-                    <span className="text-slate-500">lastUpdated: {visibility.lastUpdated}</span>
+                    <span className="text-slate-500">lastUpdated: {visibility.lastUpdated || "—"}</span>
                   </div>
                   {visibility.services.length === 0 ? <EmptyState icon={Network} title="No services visible" message="Register an endpoint to see visibility." />
                     : visibility.services.map(svc => (
                       <div key={svc.serviceName} className="rounded-lg border border-white/[0.06] p-3">
                         <div className="flex items-center gap-2">
                           <span className="font-mono text-sm text-white">{svc.serviceName}</span>
-                          <Pill className={NETWORK_COLORS[svc.access] ?? ""}>{svc.access}</Pill>
+                          <AccessPill access={svc.access} />
                           <span className="text-xs text-slate-400">health {svc.healthyCount}/{svc.endpointCount} — nodes {svc.nodes.join(", ") || "—"}</span>
                         </div>
                         <div className="mt-2 overflow-x-auto">
@@ -209,8 +253,8 @@ export function AdminDiscovery() {
                                   <td className="font-mono">{ev.id.slice(0, 8)}…</td>
                                   <td>{ev.nodeId}</td>
                                   <td className="font-mono">{ev.address}:{ev.port} {ev.protocol}</td>
-                                  <td><Pill className={NETWORK_COLORS[ev.network] ?? ""}>{ev.network}</Pill></td>
-                                  <td><Pill className={STATUS_COLORS[ev.status] ?? ""}>{ev.status}</Pill></td>
+                                  <td><AccessPill access={ev.network} /></td>
+                                  <td><Pill tone={discoveryStatusTone(ev.status)}>{ev.status}</Pill></td>
                                   <td className="text-slate-400">{ev.lastSeen ? new Date(ev.lastSeen).toLocaleString() : "—"}</td>
                                 </tr>
                               ))}
@@ -227,7 +271,14 @@ export function AdminDiscovery() {
       )}
 
       {tab === "policy" && (
-        <PolicyCard policy={policy} onRefresh={() => policyQuery.refetch()} />
+        <PolicyCard
+          policy={policy}
+          loading={policyQuery.isLoading}
+          error={policyQuery.isError ? errorMessage(policyQuery.error) : null}
+          unrouted={policyUnrouted}
+          editable={policyEditable}
+          onRefresh={() => policyQuery.refetch()}
+        />
       )}
 
       {tab === "reachability" && (
@@ -238,7 +289,6 @@ export function AdminDiscovery() {
         <DiscoveryManageCard />
       )}
 
-      {renderConfirm()}
     </div>
   );
 }
@@ -249,18 +299,8 @@ function EndpointRow({ ep }: { ep: DiscoveryEndpoint }) {
   const [confirm, renderConfirm] = useConfirm();
   const deleteMut = useMutation({
     mutationFn: () => deleteDiscoveryEndpoint(ep.id),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["discovery-endpoints"] }); toast({ tone: "success", title: "Endpoint removed" }); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["discovery-endpoints"] }); qc.invalidateQueries({ queryKey: ["discovery-services"] }); qc.invalidateQueries({ queryKey: ["discovery-visibility"] }); toast({ tone: "success", title: "Endpoint removed" }); },
     onError: (e: Error) => toast({ tone: "error", title: "Delete failed", message: e.message }),
-  });
-  const hbMut = useMutation({
-    mutationFn: () => heartbeatDiscoveryEndpoint(ep.id),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["discovery-endpoints"] }); toast({ tone: "success", title: "Heartbeat touched" }); },
-    onError: (e: Error) => toast({ tone: "error", title: "Heartbeat failed", message: e.message }),
-  });
-  const statusMut = useMutation({
-    mutationFn: (status: DiscoveryEndpointStatus) => updateDiscoveryEndpointStatus(ep.id, status),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["discovery-endpoints"] }),
-    onError: (e: Error) => toast({ tone: "error", title: "Status update failed", message: e.message }),
   });
   const ageMs = Date.now() - new Date(ep.lastHeartbeat).getTime();
   const ageSec = Math.floor(ageMs / 1000);
@@ -270,11 +310,11 @@ function EndpointRow({ ep }: { ep: DiscoveryEndpoint }) {
       <td className="px-3 py-2 font-mono text-xs text-white">{ep.serviceName}{ep.tenantId ? `/${ep.tenantId}` : ""}</td>
       <td className="px-3 py-2 font-mono text-xs">{ep.address}:{ep.port}/{ep.protocol}</td>
       <td className="px-3 py-2 text-xs">{ep.nodeId.slice(0, 8)}<span className="text-slate-500"> {ep.nodeName}</span></td>
-      <td className="px-3 py-2"><Pill className={STATUS_COLORS[ep.status] ?? ""}>{ep.status}</Pill>{stale && <span className="ml-1 text-[10px] text-amber-300">stale {ageSec}s</span>}</td>
+      <td className="px-3 py-2"><Pill tone={discoveryStatusTone(ep.status)}>{ep.status}</Pill>{stale && <span className="ml-1 text-[10px] text-amber-300">stale {ageSec}s</span>}</td>
       <td className="px-3 py-2 text-xs text-slate-400">{ep.lastHeartbeat ? new Date(ep.lastHeartbeat).toLocaleString() : "—"}</td>
       <td className="px-3 py-2 text-right space-x-1">
-        <Btn size="sm" tone="ghost" disabled={hbMut.isPending} onClick={() => hbMut.mutate()}>Touch</Btn>
-        <Btn size="sm" tone="ghost" disabled={statusMut.isPending} onClick={() => statusMut.mutate(ep.status === "healthy" ? "unhealthy" : "healthy")}>Toggle</Btn>
+        <Btn size="sm" tone="ghost" disabled title={HEARTBEAT_UNROUTED}>Touch</Btn>
+        <Btn size="sm" tone="ghost" disabled title={STATUS_UPDATE_UNROUTED}>Toggle</Btn>
         <Btn size="sm" tone="danger" disabled={deleteMut.isPending} onClick={() => { void (async () => { if (await confirm({ title: `Delete endpoint ${ep.id.slice(0, 8)}?`, description: `${ep.serviceName} @ ${ep.address}:${ep.port}`, danger: true, confirmLabel: "Delete" })) deleteMut.mutate(); })(); }}><Trash2 size={12} /></Btn>
         {renderConfirm()}
       </td>
@@ -283,8 +323,8 @@ function EndpointRow({ ep }: { ep: DiscoveryEndpoint }) {
 }
 
 function NodeViewCard() {
-  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
   const [nodeId, setNodeId] = useState("");
+  const nodesQuery = useNodesQuery();
   const q = useQuery({ queryKey: ["node-view", nodeId], queryFn: () => fetchNodeNetworkView(nodeId), enabled: !!nodeId });
   return (
     <Card>
@@ -301,7 +341,7 @@ function NodeViewCard() {
                 {q.data.endpoints.length > 0 && (
                   <table className="w-full text-xs">
                     <thead><tr className="text-left text-slate-500"><th>ID</th><th>Address</th><th>Status</th></tr></thead>
-                    <tbody>{q.data.endpoints.map(e => <tr key={e.id} className="border-t border-white/[0.04]"><td className="font-mono">{e.id.slice(0, 8)}…</td><td className="font-mono">{e.address}:{e.port}</td><td><Pill className={STATUS_COLORS[e.status] ?? ""}>{e.status}</Pill></td></tr>)}</tbody>
+                    <tbody>{q.data.endpoints.map(e => <tr key={e.id} className="border-t border-white/[0.04]"><td className="font-mono">{e.id.slice(0, 8)}…</td><td className="font-mono">{e.address}:{e.port}</td><td><Pill tone={discoveryStatusTone(e.status)}>{e.status}</Pill></td></tr>)}</tbody>
                   </table>
                 )}
                 {q.data.reachability && q.data.reachability.length > 0 && (
@@ -315,7 +355,14 @@ function NodeViewCard() {
   );
 }
 
-function PolicyCard({ policy, onRefresh }: { policy: PolicyView | undefined; onRefresh: () => void }) {
+function PolicyCard({ policy, loading, error, unrouted, editable, onRefresh }: {
+  policy: PolicyView | undefined;
+  loading: boolean;
+  error: string | null;
+  unrouted: boolean;
+  editable: boolean;
+  onRefresh: () => void | Promise<unknown>;
+}) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const [cidr, setCidr] = useState("");
@@ -345,7 +392,9 @@ function PolicyCard({ policy, onRefresh }: { policy: PolicyView | undefined; onR
     <div className="space-y-4">
       <Card>
         <CardHeader title="Private Network Policy" icon={Shield} action={<Btn size="sm" tone="ghost" onClick={onRefresh}>Reload</Btn>} />
-        {!policy ? <div className="p-8 text-center text-sm">Loading policy…</div> : (
+        {unrouted ? <div className="mx-4 mt-4 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200"><AlertTriangle size={14} className="mt-0.5 shrink-0" /><span>{POLICY_UNROUTED}</span></div> : null}
+        {error && !loading ? <div className="mx-4 mt-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">{error}</div> : null}
+        {loading ? <div className="p-8 text-center text-sm">Loading policy…</div> : !policy ? <div className="p-8 text-center text-sm">Loading policy…</div> : (
           <div className="p-4 space-y-4">
             <div className="rounded-lg border border-purple-500/20 bg-purple-950/10 p-3 text-xs text-purple-200">
               Enforcement: endpoint registration checks <code className="bg-white/10 px-1 rounded">private CIDRs</code> to classify <code>public/private/isolated</code> (see <code>visibility</code>). When a service has an allowlist (via <code>allowedPorts</code>), registration is rejected unless <code>port</code> ∈ allowlist. Firewall sync: allowed ports are reconciled to beacon <code>/host/firewall</code> allow-rules (source = private CIDRs, protocol tcp). Remove the allowlist (revoke all) to return to default-allow.
@@ -354,12 +403,12 @@ function PolicyCard({ policy, onRefresh }: { policy: PolicyView | undefined; onR
               <div className="text-xs font-semibold uppercase tracking-widest text-slate-400">Private CIDRs</div>
               <div className="mt-2 flex flex-wrap gap-2">
                 {(policy.privateCIDRs ?? []).map(c => (
-                  <span key={c} className="inline-flex items-center gap-1 rounded-full bg-purple-500/10 px-2 py-1 text-xs text-purple-300">{c}<button className="ml-1 text-purple-400 hover:text-red-300" onClick={() => rmCidrMut.mutate(c)}>×</button></span>
+                  <span key={c} className="inline-flex items-center gap-1 rounded-full bg-purple-500/10 px-2 py-1 text-xs text-purple-300">{c}<button disabled={!editable} className="ml-1 text-purple-400 hover:text-red-300 disabled:opacity-40" onClick={() => rmCidrMut.mutate(c)}>×</button></span>
                 ))}
               </div>
               <div className="mt-3 flex gap-2">
                 <Input label="Add CIDR" value={cidr} onChange={setCidr} placeholder="10.1.0.0/16" />
-                <div className="pt-6"><Btn size="sm" tone="primary" disabled={!cidr || addCidrMut.isPending} onClick={() => addCidrMut.mutate()}>{addCidrMut.isPending ? "…" : "Add"}</Btn></div>
+                <div className="pt-6"><Btn size="sm" tone="primary" disabled={!cidr || !editable || addCidrMut.isPending} onClick={() => addCidrMut.mutate()}>{addCidrMut.isPending ? "…" : "Add"}</Btn></div>
               </div>
             </div>
             <div>
@@ -369,7 +418,7 @@ function PolicyCard({ policy, onRefresh }: { policy: PolicyView | undefined; onR
                   {Object.entries(policy.allowedPorts).map(([s, ports]) => (
                     <div key={s} className="flex items-center justify-between rounded border border-white/[0.06] p-2 text-xs">
                       <span className="font-mono text-white">{s}</span>
-                      <span className="flex gap-1">{(ports ?? []).map(p => <span key={p} className="rounded bg-white/10 px-1.5 py-0.5">{p} <button className="text-red-300" onClick={() => revokeMut.mutate({ svc: s, port: p })}>×</button></span>)}</span>
+                      <span className="flex gap-1">{(ports ?? []).map(p => <span key={p} className="rounded bg-white/10 px-1.5 py-0.5">{p} <button disabled={!editable} className="text-red-300 disabled:opacity-40" onClick={() => revokeMut.mutate({ svc: s, port: p })}>×</button></span>)}</span>
                     </div>
                   ))}
                 </div>
@@ -377,7 +426,7 @@ function PolicyCard({ policy, onRefresh }: { policy: PolicyView | undefined; onR
               <div className="mt-3 flex gap-2">
                 <Input label="Service" value={svc} onChange={setSvc} placeholder="e.g. mysql" />
                 <Input label="Port" value={port} onChange={setPort} placeholder="3306" type="number" />
-                <div className="pt-6"><Btn size="sm" tone="primary" disabled={!svc || !port || allowMut.isPending} onClick={() => allowMut.mutate()}>{allowMut.isPending ? "…" : "Allow"}</Btn></div>
+                <div className="pt-6"><Btn size="sm" tone="primary" disabled={!svc || !port || !editable || allowMut.isPending} onClick={() => allowMut.mutate()}>{allowMut.isPending ? "…" : "Allow"}</Btn></div>
               </div>
             </div>
             <div className="rounded border border-cyan-500/20 bg-cyan-950/10 p-3 text-xs text-cyan-200">
@@ -392,6 +441,7 @@ function PolicyCard({ policy, onRefresh }: { policy: PolicyView | undefined; onR
 
 function ReachabilityCard() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [source, setSource] = useState("");
   const [target, setTarget] = useState("");
   const [svc, setSvc] = useState("");
@@ -402,6 +452,7 @@ function ReachabilityCard() {
   const sweepMut = useMutation({
     mutationFn: () => sweepReachability(),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["reachability"] }),
+    onError: (err) => toast({ tone: "error", title: "Failed to sweep reachability", message: err instanceof Error ? err.message : "An error occurred" }),
   });
   return (
     <Card>
@@ -432,6 +483,7 @@ function ReachabilityCard() {
 function DiscoveryManageCard() {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const nodesQuery = useNodesQuery();
   const [regService, setRegService] = useState("my-service");
   const [regNode, setRegNode] = useState("");
   const [regAddr, setRegAddr] = useState("10.0.0.1");
@@ -439,7 +491,6 @@ function DiscoveryManageCard() {
   const [fetchId, setFetchId] = useState("");
   const [resolveService, setResolveService] = useState("beacon");
   const [resolveTenant, setResolveTenant] = useState("");
-  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
   const reaperQuery = useQuery({ queryKey: ["discovery-reaper"], queryFn: fetchReaperStats });
 
   const registerMut = useMutation({

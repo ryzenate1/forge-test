@@ -88,18 +88,64 @@ func (m *memRateLimiter) cleanup() {
 	}
 }
 
-// ExtractClientIP uses proxy headers only when the direct peer is a local or
-// private reverse proxy. It takes the right-most forwarded value so a caller-
-// supplied left-most X-Forwarded-For entry cannot rotate rate-limit keys.
+// ExtractClientIP resolves the caller IP with a default-deny trust model: an
+// X-Forwarded-For / X-Real-IP header is honored ONLY when the immediate peer is
+// inside the explicitly configured TRUSTED_PROXIES CIDR / single-IP set. When no
+// trusted proxies are configured the direct peer IP is returned. It takes the
+// right-most forwarded value so a caller-supplied left-most XFF entry cannot
+// rotate rate-limit keys.
 func ExtractClientIP(c *fiber.Ctx) string {
-	peer := strings.TrimSpace(c.IP())
-	peerIP := net.ParseIP(peer)
-	if peerIP == nil || !(peerIP.IsLoopback() || peerIP.IsPrivate() || peerIP.IsUnspecified()) {
-		return peer
+	// c.IP() is deliberately not used to obtain the peer. When the app configures
+	// a proxy header, c.IP() returns an address parsed out of the request itself,
+	// so the value that decides whether proxy headers are trusted would itself be
+	// caller-controlled - a forged XFF entry could present itself as the trusted
+	// proxy and have the rest of that header believed. The socket peer is the
+	// only thing here the caller cannot choose.
+	return resolveClientIP(socketPeerIP(c), c.Get("X-Forwarded-For"), c.Get("X-Real-IP"))
+}
+
+// socketPeerIP returns the IP the connection actually arrived from, or nil when
+// there is no real peer to speak of (a synthetic test connection, for example).
+func socketPeerIP(c *fiber.Ctx) net.IP {
+	if c == nil {
+		return nil
 	}
-	xff := c.Get("X-Forwarded-For")
-	if xff != "" {
-		parts := strings.Split(xff, ",")
+	ctx := c.Context()
+	if ctx == nil {
+		return nil
+	}
+	switch addr := ctx.RemoteAddr().(type) {
+	case *net.TCPAddr:
+		if addr != nil && addr.IP != nil {
+			return addr.IP
+		}
+	case *net.UDPAddr:
+		if addr != nil && addr.IP != nil {
+			return addr.IP
+		}
+	}
+	if ip := ctx.RemoteIP(); ip != nil && !ip.IsUnspecified() {
+		return ip
+	}
+	return nil
+}
+
+// resolveClientIP applies the trust decision to explicit inputs, separated from
+// the transport so the rules can be tested against a named peer instead of a
+// live socket.
+func resolveClientIP(peer net.IP, forwardedFor, realIP string) string {
+	peerStr := ""
+	if peer != nil {
+		peerStr = peer.String()
+	}
+	// Default-deny: private/loopback status alone is never sufficient to trust
+	// proxy headers. isTrustedProxy keeps the "metric" slog.Warn and sync.Once
+	// de-dupe for the unconfigured case.
+	if peer == nil || !isTrustedProxy(peer) {
+		return peerStr
+	}
+	if forwardedFor != "" {
+		parts := strings.Split(forwardedFor, ",")
 		for index := len(parts) - 1; index >= 0; index-- {
 			candidate := strings.TrimSpace(parts[index])
 			if net.ParseIP(candidate) != nil {
@@ -107,11 +153,10 @@ func ExtractClientIP(c *fiber.Ctx) string {
 			}
 		}
 	}
-	xri := c.Get("X-Real-IP")
-	if net.ParseIP(strings.TrimSpace(xri)) != nil {
-		return strings.TrimSpace(xri)
+	if ip := net.ParseIP(strings.TrimSpace(realIP)); ip != nil {
+		return strings.TrimSpace(realIP)
 	}
-	return peer
+	return peerStr
 }
 
 func isTrustedIP(clientIP string, trustedIPs []string) bool {
@@ -149,7 +194,10 @@ func RateLimiter(cfg RateLimitConfig) fiber.Handler {
 			return c.Next()
 		}
 
-		// Build rate limit key based on IP address and path
+		// Build rate limit key based on IP address and path. The tier is part of
+		// the key via cfg.KeyPrefix (see GetRateLimitForEndpoint): tiers must
+		// NOT share a prefix, otherwise every tier draws from one counter and
+		// read traffic burns the auth budget (5/min) and the mutation budget.
 		key := fmt.Sprintf("%s:ratelimit:%s", cfg.KeyPrefix, clientIP)
 		window := time.Duration(cfg.WindowSeconds) * time.Second
 
@@ -231,7 +279,7 @@ func GetRateLimitForEndpoint(endpointType string, redis *redis.Client, failClose
 			Redis:                  redis,
 			WindowSeconds:          60,
 			MaxRequests:            5,
-			KeyPrefix:              "api",
+			KeyPrefix:              "api:auth",
 			FailClosedOnRedisError: failClosedOnRedisError,
 		}
 	case "mutation":
@@ -240,7 +288,7 @@ func GetRateLimitForEndpoint(endpointType string, redis *redis.Client, failClose
 			Redis:                  redis,
 			WindowSeconds:          60,
 			MaxRequests:            30,
-			KeyPrefix:              "api",
+			KeyPrefix:              "api:mutation",
 			FailClosedOnRedisError: failClosedOnRedisError,
 		}
 	case "read":
@@ -249,7 +297,7 @@ func GetRateLimitForEndpoint(endpointType string, redis *redis.Client, failClose
 			Redis:                  redis,
 			WindowSeconds:          60,
 			MaxRequests:            120,
-			KeyPrefix:              "api",
+			KeyPrefix:              "api:read",
 			FailClosedOnRedisError: failClosedOnRedisError,
 		}
 	default:
@@ -258,7 +306,7 @@ func GetRateLimitForEndpoint(endpointType string, redis *redis.Client, failClose
 			Redis:                  redis,
 			WindowSeconds:          60,
 			MaxRequests:            60,
-			KeyPrefix:              "api",
+			KeyPrefix:              "api:default",
 			FailClosedOnRedisError: failClosedOnRedisError,
 		}
 	}

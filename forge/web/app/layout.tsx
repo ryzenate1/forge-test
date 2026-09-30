@@ -3,6 +3,7 @@ import { cookies, headers } from "next/headers";
 import { Providers } from "@/components/providers";
 import { themeScript } from "@/components/theme-provider";
 import { display, mono, sans } from "./fonts";
+import { getDir } from "@/lib/locale-utils";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -21,17 +22,21 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0a0e16",
+  // Literals: metadata is serialised before any stylesheet exists. Tracks
+  // --canvas in both themes (dark: canvas.hexDark #0a0e16) — update together.
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f4f7fb" },
+    { media: "(prefers-color-scheme: dark)", color: "#0a0e16" },
+  ],
 };
-
-const rtlLocales = new Set(["ar", "he", "fa", "ur", "yi"]);
 
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const cookieStore = await cookies();
   const nonce = (await headers()).get("x-csp-nonce") ?? undefined;
   const locale = cookieStore.get("NEXT_LOCALE")?.value ?? "en";
-  const baseLang = locale.split("-")[0];
-  const dir = rtlLocales.has(baseLang) ? "rtl" : "ltr";
+  // Single RTL source: lib/locale-utils (no supported locale is RTL today,
+  // but the helper stays correct if one is added).
+  const dir = getDir(locale);
 
   return (
     <html lang={locale} dir={dir} suppressHydrationWarning>

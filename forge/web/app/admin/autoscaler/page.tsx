@@ -2,10 +2,10 @@
 
 import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useToast } from '@/components/ui/toast';
 import { Activity, AlertTriangle, BarChart3, Plus, Play, Trash2, Zap } from 'lucide-react';
-import { fetchJSON, postJSON, putJSON, deleteJSON } from '@/lib/api';
+import { fetchJSON, postJSON, putJSON, deleteJSON, unwrapList, unwrapData } from '@/lib/api';
 import {
-  AdminPageHeader,
   AdminPageLayout,
   Btn,
   Card,
@@ -15,6 +15,9 @@ import {
   Modal,
   ModalFooter,
   Pill,
+  SectionHeader,
+  AdminLoadingState,
+  AdminErrorState,
 } from '@/components/admin/admin-ui';
 import { useConfirm } from "@/components/ui/confirm-dialog";
 
@@ -55,6 +58,7 @@ const defaultForm = {
 export default function AdminAutoscalerPage() {
   const [confirm, renderConfirm] = useConfirm();
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [search, setSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [editingPolicy, setEditingPolicy] = useState<ScalingPolicy | null>(null);
@@ -62,13 +66,11 @@ export default function AdminAutoscalerPage() {
 
   const policiesQuery = useQuery({
     queryKey: ['admin', 'autoscaler', 'policies'],
-    queryFn: () =>
-      fetchJSON<ScalingPolicy[]>('/admin/autoscaler/policies'),
+    queryFn: async () => unwrapList(await fetchJSON<ScalingPolicy[]>('/admin/autoscaler/policies')),
   });
   const metricsQuery = useQuery({
     queryKey: ['admin', 'autoscaler', 'metrics'],
-    queryFn: () =>
-      fetchJSON<AutoscalerMetrics>('/admin/autoscaler/metrics'),
+    queryFn: async () => unwrapData(await fetchJSON<AutoscalerMetrics>('/admin/autoscaler/metrics')),
   });
 
   const policies = useMemo(() => policiesQuery.data ?? [], [policiesQuery.data]);
@@ -81,6 +83,7 @@ export default function AdminAutoscalerPage() {
       setShowCreate(false);
       setForm(defaultForm);
     },
+    onError: (err) => toast({ tone: 'error', title: 'Failed to create policy', message: err instanceof Error ? err.message : 'An error occurred' }),
   });
 
   const updateMutation = useMutation({
@@ -90,18 +93,21 @@ export default function AdminAutoscalerPage() {
       queryClient.invalidateQueries({ queryKey: ['admin', 'autoscaler', 'policies'] });
       setEditingPolicy(null);
     },
+    onError: (err) => toast({ tone: 'error', title: 'Failed to update policy', message: err instanceof Error ? err.message : 'An error occurred' }),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteJSON(`/admin/autoscaler/policies/${encodeURIComponent(id)}`),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: ['admin', 'autoscaler', 'policies'] }),
+    onError: (err) => toast({ tone: 'error', title: 'Failed to delete policy', message: err instanceof Error ? err.message : 'An error occurred' }),
   });
 
   const evaluateMutation = useMutation({
     mutationFn: (serverId: string) => postJSON(`/admin/autoscaler/evaluate/${encodeURIComponent(serverId)}`),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: ['admin', 'autoscaler', 'metrics'] }),
+    onError: (err) => toast({ tone: 'error', title: 'Failed to evaluate autoscaler', message: err instanceof Error ? err.message : 'An error occurred' }),
   });
 
   const filtered = policies.filter(
@@ -110,9 +116,9 @@ export default function AdminAutoscalerPage() {
 
   return (
     <AdminPageLayout>
-      <AdminPageHeader
-        title="Auto-Scaler"
-        description="Scaling policies that automatically adjust resources based on load thresholds."
+      <SectionHeader
+        title="Workload Autoscaling"
+        sub="Automatic scaling policies for workloads."
         action={
           <Btn tone="primary" onClick={() => setShowCreate(true)}>
             <Plus size={14} /> Create Policy
@@ -120,28 +126,40 @@ export default function AdminAutoscalerPage() {
         }
       />
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card className="p-4">
-          <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-slate-500 mb-1">
-            <BarChart3 size={12} /> Total Policies
+      <Card>
+        <CardHeader title="Autoscaling Overview" icon={BarChart3} />
+        {metricsQuery.isError ? (
+          <div className="p-4">
+            <AdminErrorState
+              message={metricsQuery.error instanceof Error ? metricsQuery.error.message : "Failed to load autoscaler metrics"}
+              retry={() => void metricsQuery.refetch()}
+            />
           </div>
-          <div className="text-2xl font-bold text-slate-100">{policies.length}</div>
-        </Card>
-        <Card className="p-4">
-          <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-slate-500 mb-1">
-            <Zap size={12} /> Scale Up Events
+        ) : (
+        <div className="grid gap-4 md:grid-cols-3">
+          <div className="rounded-xl border border-line bg-overlay-subtle p-4">
+            <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-text-muted mb-1">
+              <BarChart3 size={12} /> Total Policies
+            </div>
+            <div className="text-2xl font-bold text-text">{policies.length}</div>
           </div>
-          <div className="text-2xl font-bold text-emerald-400">
-            {metrics?.scaleUpEventsTotal ?? 0}
+          <div className="rounded-xl border border-line bg-overlay-subtle p-4">
+            <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-text-muted mb-1">
+              <Zap size={12} /> Scale Up Events
+            </div>
+            <div className="text-2xl font-bold text-ok">
+              {metrics?.scaleUpEventsTotal ?? 0}
+            </div>
           </div>
-        </Card>
-        <Card className="p-4">
-          <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-slate-500 mb-1">
-            <AlertTriangle size={12} /> Errors
+          <div className="rounded-xl border border-line bg-overlay-subtle p-4">
+            <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-text-muted mb-1">
+              <AlertTriangle size={12} /> Errors
+            </div>
+            <div className="text-2xl font-bold text-danger">{metrics?.scalingErrorsTotal ?? 0}</div>
           </div>
-          <div className="text-2xl font-bold text-red-400">{metrics?.scalingErrorsTotal ?? 0}</div>
-        </Card>
-      </div>
+        </div>
+        )}
+      </Card>
 
       <Card>
         <CardHeader title="Scaling Policies" icon={Activity} />
@@ -149,14 +167,21 @@ export default function AdminAutoscalerPage() {
           <Input placeholder="Search by Server ID" value={search} onChange={setSearch} />
         </div>
         {policiesQuery.isLoading ? (
-          <div className="p-8 text-center text-sm text-slate-500">Loading policies...</div>
+          <AdminLoadingState label="Loading scaling policies…" />
+        ) : policiesQuery.isError ? (
+          <div className="p-4">
+            <AdminErrorState
+              message={policiesQuery.error instanceof Error ? policiesQuery.error.message : "Failed to load scaling policies"}
+              retry={() => void policiesQuery.refetch()}
+            />
+          </div>
         ) : filtered.length === 0 ? (
           <EmptyState icon={BarChart3} message="No scaling policies configured." />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-white/[0.06] text-left text-[10px] uppercase tracking-widest text-slate-500">
+                <tr className="border-b border-line text-left text-[10px] uppercase tracking-widest text-text-muted">
                   <th className="px-4 py-3">Server ID</th>
                   <th className="px-4 py-3">Memory Range</th>
                   <th className="px-4 py-3">CPU Range</th>
@@ -166,22 +191,22 @@ export default function AdminAutoscalerPage() {
                   <th className="px-4 py-3"></th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-white/[0.04]">
+              <tbody className="divide-y divide-line">
                 {filtered.map((policy) => (
-                  <tr key={policy.id} className="hover:bg-white/[0.02]">
-                    <td className="px-4 py-3 font-mono text-xs font-medium text-slate-200">
+                  <tr key={policy.id} className="hover:bg-overlay-subtle">
+                    <td className="px-4 py-3 font-mono text-xs font-medium text-text">
                       {policy.serverId}
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-400">
+                    <td className="px-4 py-3 text-xs text-text-subtle">
                       {policy.minMemoryMb} MB – {policy.maxMemoryMb} MB
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-400">
+                    <td className="px-4 py-3 text-xs text-text-subtle">
                       {policy.minCpu}% – {policy.maxCpu}%
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-400">
+                    <td className="px-4 py-3 text-xs text-text-subtle">
                       ↑ {policy.scaleUpThreshold * 100}% / ↓ {policy.scaleDownThreshold * 100}%
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-400">{policy.cooldownSeconds}s</td>
+                    <td className="px-4 py-3 text-xs text-text-subtle">{policy.cooldownSeconds}s</td>
                     <td className="px-4 py-3">
                       <Pill tone={policy.enabled ? 'green' : 'neutral'}>
                         {policy.enabled ? 'Enabled' : 'Disabled'}
@@ -282,12 +307,12 @@ function PolicyFormModal({
           onChange={(v) => set('serverId', v)}
           placeholder="e.g. srv_abc123"
         />
-        <label className="flex items-center gap-2 text-sm font-medium text-slate-300 pt-6">
+        <label className="flex items-center gap-2 text-sm font-medium text-text pt-6">
           <input
             type="checkbox"
             checked={form.enabled}
             onChange={(e) => onChange({ ...form, enabled: e.target.checked })}
-            className="rounded border-white/10 bg-[var(--surface-input)]"
+            className="rounded border-line bg-[var(--surface-input)]"
           />
           Enabled
         </label>

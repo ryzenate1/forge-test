@@ -1,37 +1,32 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { cn } from "@/lib/utils";
+import { useCallback, useRef, useState, type ReactNode } from "react";
+import { ForgeConfirmDialog } from "@/components/ui/forge/overlay";
 
 /**
  * ConfirmDialog — the standard confirmation / destructive-action primitive.
  *
- * Accessibility: role="dialog" + aria-modal, dynamic ids via useId (never a
- * hardcoded "dialog-title"), labelled by the title text, described by the
- * optional description. Focus is moved to the cancel button on open, Tab is
- * trapped between the dialog's focusables, and focus is restored to the
- * previously focused element on close.
+ * A thin adapter over {@link ForgeConfirmDialog}, which owns the one focus
+ * trap, scroll lock and Escape/backdrop contract in the app. The props below
+ * are unchanged because ~25 admin pages pass them through {@link useConfirm}.
  *
- * Dismissal: Escape key, backdrop click, or the cancel button. Clicks inside
- * the panel call stopPropagation so they never reach the backdrop handler.
+ * This file used to carry a second, hand-rolled trap. Collapsing it onto the
+ * shared overlay fixed three defects it had accumulated:
  *
- * Props:
- * - open: visibility flag (render is no-op when false)
- * - onClose: called when the dialog is dismissed without confirming
- * - title: dialog heading (used as the aria-labelledby target)
- * - description?: supporting text (aria-describedby)
- * - confirmLabel?: confirm button label (default "Confirm")
- * - cancelLabel?: cancel button label (default "Cancel")
- * - danger?: when true the confirm button is solid brand red and the dialog
- *   reads as destructive; when false the confirm button is neutral
- * - onConfirm: called when the user confirms (dialog closes itself first)
+ *  - Its focus effect listed `onClose` as a dependency. Every call site passes
+ *    an inline arrow, so the trap was rebuilt on each render of the host page,
+ *    restoring focus to the trigger and then stealing it back.
+ *  - The confirm button rendered `ui-button-secondary` unless `danger` was
+ *    set, making it visually identical to Cancel — the operator could not tell
+ *    which button was the affirmative one.
+ *  - Its doc promised a red confirm button for destructive actions and then
+ *    applied the brand-primary class instead.
  *
- * Buttons use the .ui-button primitives (min-h-10) and all colors are tokens.
- *
- * Prefer the useConfirm() hook below — it wraps state + promise resolution:
+ * Usage — prefer the {@link useConfirm} hook, which wraps state and promise
+ * resolution:
  *
  *   const [confirm, renderConfirm] = useConfirm();
- *   if (await confirm({ title: "Delete server?", description: "...", danger: true, confirmLabel: "Delete" })) {
+ *   if (await confirm({ title: "Delete server?", description: "…", danger: true, confirmLabel: "Delete" })) {
  *     deleteServer();
  *   }
  *   return <>{renderConfirm()}</>;
@@ -44,17 +39,9 @@ interface ConfirmDialogProps {
   description?: string;
   confirmLabel?: string;
   cancelLabel?: string;
+  /** Destructive actions get the danger tone and a red confirm button. */
   danger?: boolean;
   onConfirm: () => void;
-}
-
-function getFocusable(root: HTMLElement | null): HTMLElement[] {
-  if (!root) return [];
-  return Array.from(
-    root.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    ),
-  );
 }
 
 export function ConfirmDialog({
@@ -67,92 +54,17 @@ export function ConfirmDialog({
   danger = false,
   onConfirm,
 }: ConfirmDialogProps) {
-  const titleId = useId();
-  const descriptionId = useId();
-  const panelRef = useRef<HTMLDivElement>(null);
-  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-
-    previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
-    document.body.style.overflow = "hidden";
-
-    const panel = panelRef.current;
-    const focusables = getFocusable(panel);
-    (focusables[0] ?? panel)?.focus();
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const elements = getFocusable(panelRef.current);
-      if (elements.length === 0) {
-        event.preventDefault();
-        return;
-      }
-      const first = elements[0];
-      const last = elements[elements.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.body.style.overflow = "";
-      document.removeEventListener("keydown", handleKeyDown);
-      previouslyFocusedRef.current?.focus?.();
-    };
-  }, [open, onClose]);
-
-  if (!open) return null;
-
   return (
-    <div
-      className="ui-dialog-layer"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={description ? descriptionId : undefined}
-        className="ui-dialog"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <h2 id={titleId} className="text-lg font-semibold text-[var(--text)]">
-          {title}
-        </h2>
-        {description ? (
-          <p id={descriptionId} className="mt-1.5 text-sm leading-6 text-[var(--text-subtle)]">
-            {description}
-          </p>
-        ) : null}
-        <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <button type="button" className="ui-button ui-button-secondary" onClick={onClose}>
-            {cancelLabel}
-          </button>
-          <button
-            type="button"
-            className={cn("ui-button", danger ? "ui-button-primary" : "ui-button-secondary")}
-            onClick={onConfirm}
-          >
-            {confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>
+    <ForgeConfirmDialog
+      cancelLabel={cancelLabel}
+      confirmLabel={confirmLabel}
+      description={description}
+      onClose={onClose}
+      onConfirm={onConfirm}
+      open={open}
+      title={title}
+      tone={danger ? "danger" : "info"}
+    />
   );
 }
 
@@ -182,6 +94,11 @@ export function useConfirm(): [(options: ConfirmOptions) => Promise<boolean>, ()
   const resolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
   const confirm = useCallback((next: ConfirmOptions) => {
+    // A second confirm() while one is pending rejects the first: only one
+    // pending confirmation is supported per hook instance, and leaving the
+    // earlier promise hanging would leak an unresolved await.
+    resolverRef.current?.(false);
+    resolverRef.current = null;
     setOptions(next);
     return new Promise<boolean>((resolve) => {
       resolverRef.current = resolve;

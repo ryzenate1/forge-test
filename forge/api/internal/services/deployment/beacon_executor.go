@@ -2,6 +2,7 @@ package deployment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -29,7 +30,10 @@ func WireBeaconExecutor(svc *Service, st *store.Store, cli *daemon.Client) {
 
 // ApplyDeployment syncs the new image into the server's node configuration
 // and starts the workload. The beacon recreates the container from synced
-// configuration, so success means the node will actually run the image.
+// configuration, so success means the node will actually run the image. Each
+// node round-trip carries its own timeout derived from the caller's context:
+// a stuck daemon call fails the step instead of holding the deployment's
+// overall budget hostage.
 func (b *BeaconRuntimeExecutor) ApplyDeployment(ctx context.Context, serverID, image string) error {
 	targetCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -42,21 +46,25 @@ func (b *BeaconRuntimeExecutor) ApplyDeployment(ctx context.Context, serverID, i
 		return fmt.Errorf("load server: %w", err)
 	}
 	config := buildServerConfig(srv, image)
-	if err := b.Daemon.SyncServerConfiguration(ctx, target.NodeURL, target.NodeToken, serverID, config); err != nil {
+	syncCtx, syncCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer syncCancel()
+	if err := b.Daemon.SyncServerConfiguration(syncCtx, target.NodeURL, target.NodeToken, serverID, config); err != nil {
 		return fmt.Errorf("sync configuration to node: %w", err)
 	}
-	if _, err := b.Daemon.SendPower(ctx, target.NodeURL, target.NodeToken, serverID, "start"); err != nil {
+	powerCtx, powerCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer powerCancel()
+	if _, err := b.Daemon.SendPower(powerCtx, target.NodeURL, target.NodeToken, serverID, "start"); err != nil {
 		return fmt.Errorf("start workload on node: %w", err)
 	}
 	return nil
 }
 
-// VerifyRunning asks the node whether the workload is currently observable.
-// Beacon's stats endpoint errors for missing containers, so success confirms
-// the container exists post-provision; combined with SendPower("start")'s
-// own failure semantics inside ApplyDeployment this catches image failures,
-// node outages, and start failures. It cannot distinguish "running" from
-// "exited moments ago" — beacon exposes no state field today.
+// VerifyRunning asks the node whether the workload is actually running. It
+// reads the container's lifecycle state rather than the success of a metrics
+// call: a container that has already exited still answers stats-shaped
+// requests, so the old reading could certify a deployment as running seconds
+// after the process died. A Beacon that exposes no state endpoint cannot
+// confirm anything, which is reported as an error instead of a silent pass.
 func (b *BeaconRuntimeExecutor) VerifyRunning(ctx context.Context, serverID string) (bool, error) {
 	targetCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -64,8 +72,24 @@ func (b *BeaconRuntimeExecutor) VerifyRunning(ctx context.Context, serverID stri
 	if err != nil {
 		return false, fmt.Errorf("resolve node target: %w", err)
 	}
-	if _, err := b.Daemon.Stats(ctx, target.NodeURL, target.NodeToken, serverID); err != nil {
-		return false, fmt.Errorf("node stats: %w", err)
+	stateCtx, stateCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer stateCancel()
+	state, err := b.Daemon.ContainerState(stateCtx, target.NodeURL, target.NodeToken, serverID)
+	if errors.Is(err, daemon.ErrContainerStateUnsupported) {
+		return false, fmt.Errorf("node exposes no container lifecycle state, refusing to report a running workload from telemetry alone")
+	}
+	if err != nil {
+		return false, fmt.Errorf("node container state: %w", err)
+	}
+	if !state.Exists {
+		return false, fmt.Errorf("node reports no container for the workload")
+	}
+	if !state.Running {
+		status := state.Status
+		if status == "" {
+			status = "not running"
+		}
+		return false, fmt.Errorf("node reports container %s", status)
 	}
 	return true, nil
 }

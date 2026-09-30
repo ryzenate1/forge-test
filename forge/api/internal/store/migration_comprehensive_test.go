@@ -98,6 +98,13 @@ func testUpgradeInstallation(t *testing.T, dbType DatabaseType) {
 
 	// First, apply only Batch 1 migrations (001-099)
 	batch1Migrations := getBatch1Migrations(migrationDir)
+	// The record step below INSERTs into schema_migrations, so the table must
+	// exist first — exactly as both production runners create it before
+	// applying anything. Without this the first record fails with
+	// "relation schema_migrations does not exist".
+	if _, err := db.Exec(ctx, getCreateMigrationTableSQL(dbType)); err != nil {
+		t.Fatalf("Failed to create schema_migrations table: %v", err)
+	}
 	for _, migrationFile := range batch1Migrations {
 		data, err := os.ReadFile(filepath.Join(migrationDir, migrationFile))
 		if err != nil {
@@ -208,32 +215,27 @@ func createDisposableDatabase(t *testing.T, dbType DatabaseType) (DatabaseDriver
 		}
 
 	case DatabasePostgres:
-		// For PostgreSQL, we'll use a temporary database name
-		// In a real test environment, you'd need a running PostgreSQL instance
-		// For this test, we'll skip if PostgreSQL is not available
-		cfg := DBConfig{
-			Type:     DatabasePostgres,
-			Host:     "localhost",
-			Port:     5432,
-			User:     "postgres",
-			Password: "postgres",
-			Database: fmt.Sprintf("gamepanel_test_%d", time.Now().Unix()),
-			SSLMode:  "disable",
-		}
+		cfg := postgresTestConfig(fmt.Sprintf("gamepanel_test_%d", time.Now().UnixNano()))
 
 		// Try to create the database
-		connStr := fmt.Sprintf("postgres://%s:%s@%s:%d/postgres?sslmode=disable",
-			cfg.User, cfg.Password, cfg.Host, cfg.Port)
+		connStr := postgresAdminDSN(cfg)
 
 		createDB, err := sql.Open("postgres", connStr)
 		if err != nil {
-			t.Skipf("Skipping PostgreSQL test: %v", err)
+			skipOrFailWithoutPostgres(t, "open admin connection: %v", err)
+			return nil, func() {}
 		}
 		defer createDB.Close()
 
+		if err := createDB.PingContext(context.Background()); err != nil {
+			skipOrFailWithoutPostgres(t, "ping %s:%d: %v", cfg.Host, cfg.Port, err)
+			return nil, func() {}
+		}
+
 		_, err = createDB.Exec(fmt.Sprintf("CREATE DATABASE %s", cfg.Database))
 		if err != nil {
-			t.Skipf("Skipping PostgreSQL test: %v", err)
+			skipOrFailWithoutPostgres(t, "create database %s: %v", cfg.Database, err)
+			return nil, func() {}
 		}
 
 		db, err := NewDatabaseDriver(context.Background(), cfg)
@@ -538,20 +540,51 @@ func insertBatch1TestData(t *testing.T, ctx context.Context, db DatabaseDriver, 
 		t.Fatalf("Failed to insert test node: %v", err)
 	}
 
+	// Create test servers (servers.template_id is NOT NULL with a FK to
+	// server_templates since 001_init, so the template row must exist first)
+	templateID := "00000000-0000-0000-0000-000000000007"
+	_, err = db.Exec(ctx,
+		`INSERT INTO server_templates (id, name, image, startup_command, default_memory_mb) VALUES ($1, $2, $3, $4, $5)`,
+		templateID, "test-template", "nginx:latest", "./start.sh", 1024)
+	if err != nil {
+		t.Fatalf("Failed to insert test server template: %v", err)
+	}
+
+	// servers.egg_id is NOT NULL with a FK to eggs since 043 (backfilled from
+	// template_id, which lives in server_templates, not eggs), so a nest and
+	// an egg row must exist first. The servers_sync_egg_identifiers trigger
+	// (043) additionally requires egg_id and template_id to be IDENTICAL
+	// (canonical unification), so the egg row reuses the template id.
+	nestID := "00000000-0000-0000-0000-000000000008"
+	_, err = db.Exec(ctx,
+		`INSERT INTO nests (id, name, description) VALUES ($1, $2, $3)`,
+		nestID, "test-nest", "upgrade fixture nest")
+	if err != nil {
+		t.Fatalf("Failed to insert test nest: %v", err)
+	}
+	_, err = db.Exec(ctx,
+		`INSERT INTO eggs (id, nest_id, name, description) VALUES ($1, $2, $3, $4)`,
+		templateID, nestID, "test-egg", "upgrade fixture egg")
+	if err != nil {
+		t.Fatalf("Failed to insert test egg: %v", err)
+	}
+
 	// Create test servers
 	serverID := "00000000-0000-0000-0000-000000000003"
 	_, err = db.Exec(ctx,
-		`INSERT INTO servers (id, node_id, owner_id, name, status, memory_mb, cpu_shares, disk_mb, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
-		serverID, nodeID, userID, "test-server", "stopped", 2048, 1024, 10240)
+		`INSERT INTO servers (id, node_id, owner_id, template_id, egg_id, name, status, memory_mb, cpu_shares, disk_mb, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`,
+		serverID, nodeID, userID, templateID, templateID, "test-server", "stopped", 2048, 1024, 10240)
 	if err != nil {
 		t.Fatalf("Failed to insert test server: %v", err)
 	}
 
-	// Create test allocations
+	// Create test allocations (container_port is NOT NULL since 090; the
+	// 144 trigger backfills it from port on hosts that have it, but Batch 1
+	// here stops at 099, so set it explicitly)
 	allocationID := "00000000-0000-0000-0000-000000000004"
 	_, err = db.Exec(ctx,
-		`INSERT INTO allocations (id, node_id, server_id, ip, port, alias, notes, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
-		allocationID, nodeID, serverID, "127.0.0.1", 25565, "default", "")
+		`INSERT INTO allocations (id, node_id, server_id, ip, port, container_port, alias, notes, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+		allocationID, nodeID, serverID, "127.0.0.1", 25565, 25565, "default", "")
 	if err != nil {
 		t.Fatalf("Failed to insert test allocation: %v", err)
 	}

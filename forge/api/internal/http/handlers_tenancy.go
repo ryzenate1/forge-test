@@ -1,6 +1,8 @@
 package http
 
 import (
+	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +13,49 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 )
+
+// tenancyAdminGate is the role test every tenancy write handler applies:
+// organization owners and admins, plus a platform admin regardless of their
+// organization role.
+func tenancyAdminGate(role string, claims tokenClaims) bool {
+	return role == "owner" || role == "admin" || claims.Role == "admin"
+}
+
+// requireProjectAdmin resolves a project's owning organization and reports
+// whether the caller may administer it. It returns a ready-to-return
+// *fiber.Error, or nil when the caller is permitted.
+//
+// This replaces the GetProject → ResolvePermissions → role-check preamble that
+// was repeated verbatim in each project and environment write handler.
+func requireProjectAdmin(ctx context.Context, tenancySvc *tenancy.Service, projectID string, claims tokenClaims) error {
+	project, err := tenancySvc.GetProject(ctx, projectID)
+	if err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "project not found")
+	}
+	if !tenancyAdminGate(tenancySvc.ResolvePermissions(ctx, project.OrgID, claims.Sub, claims.Role), claims) {
+		return fiber.NewError(fiber.StatusForbidden, "insufficient permissions")
+	}
+	return nil
+}
+
+// requireEnvironmentAdmin is requireProjectAdmin for a handler addressed by
+// environment ID.
+//
+// The environment → project → organization walk goes through
+// Store.ResolveEnvContext, which already existed for exactly this purpose. The
+// handlers previously ran `SELECT project_id FROM environments` inline and
+// then made a second call to load the project, so this drops a raw query out
+// of the HTTP layer and a round trip with it.
+func requireEnvironmentAdmin(ctx context.Context, st *store.Store, tenancySvc *tenancy.Service, envID string, claims tokenClaims) error {
+	envCtx, err := st.ResolveEnvContext(ctx, envID)
+	if err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "environment not found")
+	}
+	if !tenancyAdminGate(tenancySvc.ResolvePermissions(ctx, envCtx.Project.OrgID, claims.Sub, claims.Role), claims) {
+		return fiber.NewError(fiber.StatusForbidden, "insufficient permissions")
+	}
+	return nil
+}
 
 func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenancy.Service, envvarSvc *envvars.Service) {
 	if cfg.Store == nil {
@@ -34,6 +79,9 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	})
 
 	protected.Post("/organizations", func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -71,6 +119,9 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	})
 
 	protected.Delete("/organizations/:id", func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -103,6 +154,9 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	})
 
 	protected.Post("/organizations/:id/projects", tenancyOrgAccess(tenancySvc), func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -137,6 +191,9 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	})
 
 	protected.Put("/projects/:id", func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -151,13 +208,8 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		project, err := tenancySvc.GetProject(ctx, c.Params("id"))
-		if err != nil {
-			return fiber.NewError(fiber.StatusNotFound, "project not found")
-		}
-		role := tenancySvc.ResolvePermissions(ctx, project.OrgID, claims.Sub, claims.Role)
-		if role != "owner" && role != "admin" && claims.Role != "admin" {
-			return fiber.NewError(fiber.StatusForbidden, "insufficient permissions")
+		if err := requireProjectAdmin(ctx, tenancySvc, c.Params("id"), claims); err != nil {
+			return err
 		}
 		updated, err := tenancySvc.UpdateProject(ctx, c.Params("id"), tenancy.CreateProjectInput{
 			Name:        strings.TrimSpace(req.Name),
@@ -171,19 +223,17 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	})
 
 	protected.Delete("/projects/:id", func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		project, err := tenancySvc.GetProject(ctx, c.Params("id"))
-		if err != nil {
-			return fiber.NewError(fiber.StatusNotFound, "project not found")
-		}
-		role := tenancySvc.ResolvePermissions(ctx, project.OrgID, claims.Sub, claims.Role)
-		if role != "owner" && role != "admin" && claims.Role != "admin" {
-			return fiber.NewError(fiber.StatusForbidden, "insufficient permissions")
+		if err := requireProjectAdmin(ctx, tenancySvc, c.Params("id"), claims); err != nil {
+			return err
 		}
 		actorID := claims.Sub
 		if err := tenancySvc.DeleteProject(ctx, c.Params("id"), &actorID); err != nil {
@@ -205,7 +255,13 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 		if err != nil {
 			return fiber.NewError(fiber.StatusNotFound, "project not found")
 		}
-		isMember, _ := tenancySvc.UserIsOrgMember(ctx, project.OrgID, claims.Sub)
+		isMember, err := tenancySvc.UserIsOrgMember(ctx, project.OrgID, claims.Sub)
+		if err != nil && claims.Role != "admin" {
+			// Still denies, as before — but a failed membership lookup used to
+			// be indistinguishable from a definite "not a member", which sends
+			// the operator looking at permissions during a database outage.
+			return respondInternalError(c, err)
+		}
 		if !isMember && claims.Role != "admin" {
 			return fiber.NewError(fiber.StatusForbidden, "not a member of this organization")
 		}
@@ -217,19 +273,17 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	})
 
 	protected.Post("/projects/:id/envs", func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		project, err := tenancySvc.GetProject(ctx, c.Params("id"))
-		if err != nil {
-			return fiber.NewError(fiber.StatusNotFound, "project not found")
-		}
-		role := tenancySvc.ResolvePermissions(ctx, project.OrgID, claims.Sub, claims.Role)
-		if role != "owner" && role != "admin" && claims.Role != "admin" {
-			return fiber.NewError(fiber.StatusForbidden, "insufficient permissions")
+		if err := requireProjectAdmin(ctx, tenancySvc, c.Params("id"), claims); err != nil {
+			return err
 		}
 
 		var req struct {
@@ -254,6 +308,9 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	})
 
 	protected.Put("/envs/:id", func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -268,18 +325,8 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		// Resolve project through environment
-		var projectID string
-		if err := cfg.Store.DB().QueryRow(ctx, `SELECT project_id::text FROM environments WHERE id = $1`, c.Params("id")).Scan(&projectID); err != nil {
-			return fiber.NewError(fiber.StatusNotFound, "environment not found")
-		}
-		project, err := tenancySvc.GetProject(ctx, projectID)
-		if err != nil {
-			return fiber.NewError(fiber.StatusNotFound, "project not found")
-		}
-		role := tenancySvc.ResolvePermissions(ctx, project.OrgID, claims.Sub, claims.Role)
-		if role != "owner" && role != "admin" && claims.Role != "admin" {
-			return fiber.NewError(fiber.StatusForbidden, "insufficient permissions")
+		if err := requireEnvironmentAdmin(ctx, cfg.Store, tenancySvc, c.Params("id"), claims); err != nil {
+			return err
 		}
 		env, err := tenancySvc.UpdateEnvironment(ctx, c.Params("id"), tenancy.CreateEnvironmentInput{
 			Name:      strings.TrimSpace(req.Name),
@@ -293,23 +340,17 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	})
 
 	protected.Delete("/envs/:id", func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		var projectID string
-		if err := cfg.Store.DB().QueryRow(ctx, `SELECT project_id::text FROM environments WHERE id = $1`, c.Params("id")).Scan(&projectID); err != nil {
-			return fiber.NewError(fiber.StatusNotFound, "environment not found")
-		}
-		project, err := tenancySvc.GetProject(ctx, projectID)
-		if err != nil {
-			return fiber.NewError(fiber.StatusNotFound, "project not found")
-		}
-		role := tenancySvc.ResolvePermissions(ctx, project.OrgID, claims.Sub, claims.Role)
-		if role != "owner" && role != "admin" && claims.Role != "admin" {
-			return fiber.NewError(fiber.StatusForbidden, "insufficient permissions")
+		if err := requireEnvironmentAdmin(ctx, cfg.Store, tenancySvc, c.Params("id"), claims); err != nil {
+			return err
 		}
 		actorID := claims.Sub
 		if err := tenancySvc.DeleteEnvironment(ctx, c.Params("id"), &actorID); err != nil {
@@ -331,6 +372,9 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	})
 
 	protected.Post("/organizations/:id/members", tenancyOrgAccess(tenancySvc), func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -365,6 +409,9 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	})
 
 	protected.Put("/organizations/:id/members/:userId", tenancyOrgAccess(tenancySvc), func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -394,6 +441,9 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	})
 
 	protected.Delete("/organizations/:id/members/:userId", tenancyOrgAccess(tenancySvc), func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -418,6 +468,9 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	// ---- Organizations PATCH ----
 
 	protected.Patch("/organizations/:id", func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -456,6 +509,9 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	// ---- Invitations ----
 
 	protected.Post("/organizations/:id/invitations", tenancyOrgAccess(tenancySvc), func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -517,10 +573,19 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 		}
 		return c.JSON(fiber.Map{"ok": true})
 	}
-	protected.Post("/invitations/accept", acceptTenancyInvitation)
+	// Only /tenancy/invitations/accept is registered here. A second
+	// registration on /invitations/accept used to sit alongside it, but
+	// registerAuthRoutes claims that path first for *subuser* invitations, and
+	// Fiber resolves overlapping paths in registration order — so this copy
+	// could never run, and a caller posting an organization invitation token
+	// there had it looked up as a subuser token and rejected. The two
+	// invitation kinds live in different tables and must keep different paths.
 	protected.Post("/tenancy/invitations/accept", acceptTenancyInvitation)
 
 	protected.Delete("/organizations/:id/invitations/:invId", tenancyOrgAccess(tenancySvc), func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -550,6 +615,9 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	})
 
 	protected.Put("/organizations/:id/members/:userId/permissions", tenancyOrgAccess(tenancySvc), func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -573,9 +641,8 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	// ---- Environment Variables ----
 
 	protected.Get("/environments/:id/env-vars", func(c *fiber.Ctx) error {
-		_, ok := c.Locals("user").(tokenClaims)
-		if !ok {
-			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
+		if _, err := phase2EnvAccess(c, &cfg); err != nil {
+			return err
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
@@ -587,6 +654,12 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	})
 
 	protected.Post("/environments/:id/env-vars", func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
+		if _, err := phase2EnvAccess(c, &cfg); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -615,7 +688,10 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 		return c.Status(fiber.StatusCreated).JSON(v)
 	})
 
-	protected.Put("/env-vars/:id", func(c *fiber.Ctx) error {
+	protected.Put("/env-vars/:id", envVarAccess(cfg, envvarSvc), func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -639,7 +715,10 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 		return c.JSON(v)
 	})
 
-	protected.Delete("/env-vars/:id", func(c *fiber.Ctx) error {
+	protected.Delete("/env-vars/:id", envVarAccess(cfg, envvarSvc), func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		actorID := ""
 		if claims, ok := c.Locals("user").(tokenClaims); ok {
 			actorID = claims.Sub
@@ -653,23 +732,21 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 	})
 
 	protected.Get("/environments/:id/env-vars/resolved", func(c *fiber.Ctx) error {
+		envCtx, err := phase2EnvAccess(c, &cfg)
+		if err != nil {
+			return err
+		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		var orgID, projectID, serviceID string
-		if err := cfg.Store.DB().QueryRow(ctx, `SELECT project_id::text FROM environments WHERE id = $1`, c.Params("id")).Scan(&projectID); err != nil {
-			return fiber.NewError(fiber.StatusNotFound, "environment not found")
-		}
-		if err := cfg.Store.DB().QueryRow(ctx, `SELECT org_id::text FROM projects WHERE id = $1`, projectID).Scan(&orgID); err != nil {
-			return fiber.NewError(fiber.StatusNotFound, "project not found")
-		}
-		resolved, err := envvarSvc.Resolve(ctx, orgID, projectID, c.Params("id"), serviceID)
+		var serviceID string
+		resolved, err := envvarSvc.Resolve(ctx, envCtx.Org.ID, envCtx.Project.ID, c.Params("id"), serviceID)
 		if err != nil {
 			return respondInternalError(c, err)
 		}
 		return c.JSON(resolved)
 	})
 
-	protected.Get("/env-vars/:id/revisions", func(c *fiber.Ctx) error {
+	protected.Get("/env-vars/:id/revisions", envVarAccess(cfg, envvarSvc), func(c *fiber.Ctx) error {
 		ctx, cancel := requestContext()
 		defer cancel()
 		revisions, err := envvarSvc.Revisions(ctx, c.Params("id"))
@@ -679,7 +756,7 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 		return c.JSON(revisions)
 	})
 
-	protected.Get("/projects/:id/env-vars", func(c *fiber.Ctx) error {
+	protected.Get("/projects/:id/env-vars", projectEnvAccess(cfg), func(c *fiber.Ctx) error {
 		ctx, cancel := requestContext()
 		defer cancel()
 		vars, err := envvarSvc.List(ctx, "project", c.Params("id"))
@@ -689,7 +766,10 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 		return c.JSON(vars)
 	})
 
-	protected.Post("/projects/:id/env-vars", func(c *fiber.Ctx) error {
+	protected.Post("/projects/:id/env-vars", projectEnvAccess(cfg), func(c *fiber.Ctx) error {
+		if err := rejectScopedTenancyWrites(c); err != nil {
+			return err
+		}
 		claims, ok := c.Locals("user").(tokenClaims)
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
@@ -741,7 +821,8 @@ func registerTenancyRoutes(protected fiber.Router, cfg Config, tenancySvc *tenan
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
 		return c.JSON(fiber.Map{
-			"data": servers,
+			// Safe DTOs: never leak transferRunToken or secrets into console payloads.
+			"data": store.ServersToDTO(servers),
 			"meta": fiber.Map{
 				"pagination": fiber.Map{
 					"current":  page,
@@ -760,13 +841,153 @@ func tenancyOrgAccess(tenancySvc *tenancy.Service) fiber.Handler {
 		if !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
 		}
+		// Scoped credentials (API keys / OAuth) carry only servers.* scopes;
+		// tenancy has no delegated scope family, so they are rejected here
+		// rather than silently inheriting the caller's org membership.
+		if scoped, _ := c.Locals("scopedAuth").(bool); scoped {
+			return fiber.NewError(fiber.StatusForbidden, "scoped credentials cannot access organization resources")
+		}
 		if claims.Role == "admin" {
+			// Admins with scoped credentials were already rejected above;
+			// full sessions pass through.
 			return c.Next()
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		isMember, err := tenancySvc.UserIsOrgMember(ctx, c.Params("id"), claims.Sub)
+		// :slug routes (GET /organizations/:slug) carry the slug, not the id.
+		// Reading Params("id") there yields "" and would deny every member.
+		orgParam := c.Params("id")
+		if orgParam == "" {
+			orgParam = c.Params("slug")
+		}
+		if orgParam == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "organization identifier is required")
+		}
+		// When the identifier is a slug, resolve it to the org ID for the
+		// membership check; fail closed when it cannot be resolved.
+		orgID := orgParam
+		if org, err := tenancySvc.GetOrganization(ctx, orgParam); err == nil && org.ID != "" {
+			orgID = org.ID
+		}
+		isMember, err := tenancySvc.UserIsOrgMember(ctx, orgID, claims.Sub)
 		if err != nil || !isMember {
+			// Fall back to checking the raw param (covers ID-vs-slug stores
+			// where GetOrganization resolves differently than membership).
+			if orgID != orgParam {
+				if retry, rerr := tenancySvc.UserIsOrgMember(ctx, orgParam, claims.Sub); rerr == nil && retry {
+					return c.Next()
+				}
+			}
+			return fiber.NewError(fiber.StatusForbidden, "not a member of this organization")
+		}
+		return c.Next()
+	}
+}
+
+// rejectScopedTenancyWrites blocks API-key / OAuth credentials on mutating
+// tenancy routes. Tenancy mutations (create org/project/env, invite, role
+// changes) have no delegated scope family, so scoped creds must not drive
+// them even when the owner also holds a valid key.
+func rejectScopedTenancyWrites(c *fiber.Ctx) error {
+	if scoped, _ := c.Locals("scopedAuth").(bool); scoped {
+		return fiber.NewError(fiber.StatusForbidden, "scoped credentials cannot modify organization resources")
+	}
+	return nil
+}
+
+// projectEnvAccess guards project-scoped env-var routes: the :id identifies a
+// project, so the owning org is resolved and the caller's membership verified.
+// Scopes whose owning org cannot be resolved are denied (fail closed); admins
+// short-circuit. Mirrors the existing envVarAccess / phase2EnvAccess pattern.
+func projectEnvAccess(cfg Config) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		claims, ok := c.Locals("user").(tokenClaims)
+		if !ok {
+			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
+		}
+		if scoped, _ := c.Locals("scopedAuth").(bool); scoped {
+			return fiber.NewError(fiber.StatusForbidden, "scoped credentials cannot access project resources")
+		}
+		if claims.Role == "admin" {
+			return c.Next()
+		}
+		if cfg.Store == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+		}
+		ctx, cancel := requestContext()
+		defer cancel()
+		orgID, err := cfg.Store.GetProjectOrgID(ctx, c.Params("id"))
+		switch {
+		case errors.Is(err, store.ErrProjectNotFound):
+			return fiber.NewError(fiber.StatusNotFound, "project not found")
+		case err != nil:
+			// Fails closed either way, but a database outage should not be
+			// reported to the caller as "this project does not exist".
+			return fiber.NewError(fiber.StatusForbidden, "cannot resolve organization for this project")
+		}
+		member, err := cfg.Store.UserIsOrgMember(ctx, orgID, claims.Sub)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		if !member {
+			return fiber.NewError(fiber.StatusForbidden, "not a member of this organization")
+		}
+		return c.Next()
+	}
+}
+
+// envVarAccess guards routes keyed by an environment-variable id. Unlike the
+// env-scoped routes, the :id here identifies the variable rather than its
+// environment, so the owning organization is resolved from the variable's
+// environment/project/org scope and the caller's membership is verified — the
+// same env→project→org check every sibling route performs. Scopes whose owning
+// org cannot be resolved are denied (fail closed); admins short-circuit.
+func envVarAccess(cfg Config, envvarSvc *envvars.Service) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		claims, ok := c.Locals("user").(tokenClaims)
+		if !ok {
+			return fiber.NewError(fiber.StatusUnauthorized, "missing session")
+		}
+		if scoped, _ := c.Locals("scopedAuth").(bool); scoped {
+			return fiber.NewError(fiber.StatusForbidden, "scoped credentials cannot access env var resources")
+		}
+		if claims.Role == "admin" {
+			return c.Next()
+		}
+		if cfg.Store == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+		}
+		ctx, cancel := requestContext()
+		defer cancel()
+		v, err := envvarSvc.Get(ctx, c.Params("id"))
+		if err != nil {
+			return fiber.NewError(fiber.StatusNotFound, "env var not found")
+		}
+		var orgID string
+		switch {
+		case v.OrgID != nil && *v.OrgID != "":
+			orgID = *v.OrgID
+		case v.EnvironmentID != nil && *v.EnvironmentID != "":
+			envCtx, err := cfg.Store.ResolveEnvContext(ctx, *v.EnvironmentID)
+			if err != nil {
+				return fiber.NewError(fiber.StatusNotFound, "environment not found")
+			}
+			orgID = envCtx.Org.ID
+		case v.ProjectID != nil && *v.ProjectID != "":
+			resolved, err := cfg.Store.GetProjectOrgID(ctx, *v.ProjectID)
+			if err != nil {
+				return fiber.NewError(fiber.StatusNotFound, "project not found")
+			}
+			orgID = resolved
+		}
+		if orgID == "" {
+			return fiber.NewError(fiber.StatusForbidden, "cannot resolve organization for this env var")
+		}
+		member, err := cfg.Store.UserIsOrgMember(ctx, orgID, claims.Sub)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		if !member {
 			return fiber.NewError(fiber.StatusForbidden, "not a member of this organization")
 		}
 		return c.Next()

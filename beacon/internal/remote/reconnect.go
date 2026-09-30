@@ -4,10 +4,27 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
+)
+
+const (
+	// defaultOfflineTimeout is used when a caller does not configure one; a
+	// zero timeout would make the offline ticker panic and the offline check
+	// fire on every tick.
+	defaultOfflineTimeout   = 30 * time.Second
+	heartbeatProbeInterval  = 15 * time.Second
+	minOfflineCheckInterval = time.Second
+	panelProbeTimeout       = 10 * time.Second
+	initialReconnectBackoff = time.Second
+	maxReconnectBackoff     = 5 * time.Minute
+	// circuitBreakerFailures caps how often the loop retries a panel that is
+	// clearly down: after this many consecutive failed round-trips the backoff
+	// is pinned at maxReconnectBackoff until something succeeds.
+	circuitBreakerFailures = 10
 )
 
 type ConnState int32
@@ -40,28 +57,60 @@ type ReconnectClient struct {
 	token          string
 	offlineTimeout time.Duration
 
-	state     int32
-	stopCh    chan struct{}
-	stopped   chan struct{}
-	mu        sync.Mutex
-	lastHb    time.Time
-	onHB      func()
-	attempts  int64
-	startOnce sync.Once
-	stopOnce  sync.Once
-	started   chan struct{}
-	newClient func() Client
+	state   int32
+	stopCh  chan struct{}
+	stopped chan struct{}
+	// stopCtx is done once stopCh closes, so context.AfterFunc can bound an
+	// in-flight probe by shutdown without spawning a watcher per round-trip.
+	stopCtx    context.Context
+	stopCancel context.CancelFunc
+	mu         sync.Mutex
+	lastHb     time.Time
+	onHB       func()
+	attempts   int64
+	startOnce  sync.Once
+	stopOnce   sync.Once
+	started    chan struct{}
+	newClient  func() Client
+	// Circuit breaker: consecutive failed round-trips. Reset on any success.
+	consecutiveFails int
+	// lastErr is the panel's own explanation for the most recent failed
+	// round-trip. It is kept so the reason survives into Stats(): a node whose
+	// credential was deleted fails for one specific reason, and an operator
+	// reading "state: reconnecting" with no cause cannot tell that apart from a
+	// network fault.
+	lastErr    string
+	permanent  bool
+	permanentSince time.Time
+}
+
+// idleCloser is implemented by the concrete panel clients. The reconnect loop
+// replaces the whole client on every successful reconnect and throws the
+// candidate away on every failed one; each of them owns an http.Transport with
+// its own idle connection pool and read-loop goroutines. Retiring them without
+// releasing those connections leaks a pool per reconnect until the idle timeout
+// happens to expire. It is deliberately not part of the Client interface — the
+// loop must keep working for clients that do not implement it.
+type idleCloser interface{ CloseIdle() }
+
+func closeIdle(client Client) {
+	if closer, ok := client.(idleCloser); ok {
+		closer.CloseIdle()
+	}
 }
 
 func NewReconnectClient(panelURL, token string, offlineTimeout time.Duration) *ReconnectClient {
+	stopCtx, stopCancel := context.WithCancel(context.Background())
 	return &ReconnectClient{
 		inner:          NewClient(panelURL, token),
 		panelURL:       panelURL,
 		token:          token,
-		offlineTimeout: offlineTimeout,
+		offlineTimeout: normalizeOfflineTimeout(offlineTimeout),
 		state:          int32(StateDisconnected),
 		stopCh:         make(chan struct{}),
 		stopped:        make(chan struct{}),
+		stopCtx:        stopCtx,
+		stopCancel:     stopCancel,
 		started:        make(chan struct{}),
 		newClient:      func() Client { return NewClient(panelURL, token) },
 	}
@@ -71,12 +120,31 @@ func NewReconnectClientWithClient(inner Client, reconnect func() Client, offline
 	if reconnect == nil {
 		reconnect = func() Client { return inner }
 	}
+	stopCtx, stopCancel := context.WithCancel(context.Background())
 	client := &ReconnectClient{
-		inner: inner, offlineTimeout: offlineTimeout,
+		inner: inner, offlineTimeout: normalizeOfflineTimeout(offlineTimeout),
 		state: int32(StateDisconnected), stopCh: make(chan struct{}),
-		stopped: make(chan struct{}), started: make(chan struct{}), newClient: reconnect,
+		stopped: make(chan struct{}), stopCtx: stopCtx, stopCancel: stopCancel,
+		started: make(chan struct{}), newClient: reconnect,
 	}
 	return client
+}
+
+// normalizeOfflineTimeout keeps a misconfigured (zero, negative or absurdly
+// small) timeout from panicking the offline ticker or busy-looping it.
+func normalizeOfflineTimeout(value time.Duration) time.Duration {
+	if value < minOfflineCheckInterval*2 {
+		return defaultOfflineTimeout
+	}
+	return value
+}
+
+func (rc *ReconnectClient) offlineCheckInterval() time.Duration {
+	interval := rc.offlineTimeout / 2
+	if interval < minOfflineCheckInterval {
+		return minOfflineCheckInterval
+	}
+	return interval
 }
 
 func (rc *ReconnectClient) Inner() Client {
@@ -97,19 +165,24 @@ func (rc *ReconnectClient) Start(ctx context.Context) {
 
 func (rc *ReconnectClient) run(ctx context.Context) {
 	defer close(rc.stopped)
-	atomic.StoreInt32(&rc.state, int32(StateConnected))
-	rc.mu.Lock()
-	rc.lastHb = time.Now()
-	rc.mu.Unlock()
 
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(heartbeatProbeInterval)
 	defer ticker.Stop()
-
-	offlineCheck := time.NewTicker(rc.offlineTimeout / 2)
+	offlineCheck := time.NewTicker(rc.offlineCheckInterval())
 	defer offlineCheck.Stop()
 
-	backoff := 1 * time.Second
-	maxBackoff := 5 * time.Minute
+	backoff := initialReconnectBackoff
+
+	// The channel is only healthy once a round-trip has proved it. Marking
+	// StateConnected before the first probe would let a node that cannot reach
+	// the panel advertise itself as healthy.
+	atomic.StoreInt32(&rc.state, int32(StateConnecting))
+	if err := rc.probe(ctx); err != nil {
+		atomic.StoreInt32(&rc.state, int32(StateDisconnected))
+		log.Print("[reconnect] panel unreachable at startup, retrying in the background")
+	} else {
+		rc.markConnected()
+	}
 
 	for {
 		select {
@@ -120,56 +193,159 @@ func (rc *ReconnectClient) run(ctx context.Context) {
 			atomic.StoreInt32(&rc.state, int32(StateDisconnected))
 			return
 		case <-ticker.C:
-			rc.mu.Lock()
-			rc.lastHb = time.Now()
-			if rc.onHB != nil {
-				rc.onHB()
+			if err := rc.probe(ctx); err != nil {
+				// One failed round-trip is a blip, not an outage: the heartbeat
+				// clock simply stops advancing and the offline detector below
+				// decides when the link is really gone.
+				continue
 			}
-			rc.mu.Unlock()
+			rc.markConnected()
+			backoff = initialReconnectBackoff
 		case <-offlineCheck.C:
-			rc.mu.Lock()
-			last := rc.lastHb
-			rc.mu.Unlock()
-			if !last.IsZero() && time.Since(last) > rc.offlineTimeout {
-				cur := ConnState(atomic.LoadInt32(&rc.state))
-				if cur == StateConnected || cur == StateReconnecting {
-					atomic.StoreInt32(&rc.state, int32(StateReconnecting))
-					atomic.AddInt64(&rc.attempts, 1)
-					log.Printf("[reconnect] offline detected, reconnecting (attempt %d)...", atomic.LoadInt64(&rc.attempts))
-				}
-				backoff = rc.doReconnect(ctx, backoff, maxBackoff)
+			if !rc.linkExpired() {
+				continue
+			}
+			if ConnState(atomic.LoadInt32(&rc.state)) != StateReconnecting {
+				atomic.StoreInt32(&rc.state, int32(StateReconnecting))
+				log.Printf("[reconnect] no panel round-trip for %v, reconnecting", rc.offlineTimeout)
+			}
+			var ok bool
+			backoff, ok = rc.doReconnect(ctx, backoff)
+			if ok {
+				backoff = initialReconnectBackoff
 			}
 		}
 	}
 }
 
-func (rc *ReconnectClient) doReconnect(ctx context.Context, backoff, maxBackoff time.Duration) time.Duration {
-	select {
-	case <-time.After(backoff):
-	case <-ctx.Done():
-		return backoff
-	case <-rc.stopCh:
-		return backoff
-	}
+// probe performs one cheap authenticated panel round-trip through the current
+// inner client. Any error means the link is not provably healthy; only success
+// may advance the heartbeat clock.
+func (rc *ReconnectClient) probe(ctx context.Context) error {
+	probeCtx, cancel := rc.probeContext(ctx, panelProbeTimeout)
+	defer cancel()
+	return rc.roundTrip(probeCtx, rc.Inner())
+}
 
+// roundTrip executes a probe against a specific client and keeps the failure
+// bookkeeping, so an outage is reported on transition rather than on every tick.
+func (rc *ReconnectClient) roundTrip(ctx context.Context, c Client) error {
+	if c == nil {
+		return errors.New("no panel client")
+	}
+	_, err := c.GetServers(ctx, 1)
+	if err == nil {
+		return nil
+	}
+	atomic.AddInt64(&rc.attempts, 1)
 	rc.mu.Lock()
-	rc.inner = rc.newClient()
+	rc.consecutiveFails++
+	fails := rc.consecutiveFails
+	rc.mu.Unlock()
+	if fails == 1 || fails%circuitBreakerFailures == 0 {
+		log.Printf("[reconnect] panel round-trip failed (%d consecutive): %v", fails, err)
+	}
+	return err
+}
+
+// markConnected records a proven-healthy link: the attempt counters reset and a
+// link that had been down says so once, rather than on every subsequent beat.
+func (rc *ReconnectClient) markConnected() {
+	rc.mu.Lock()
+	recovered := rc.consecutiveFails
+	rc.consecutiveFails = 0
 	rc.lastHb = time.Now()
+	onHB := rc.onHB
 	rc.mu.Unlock()
 
 	atomic.StoreInt32(&rc.state, int32(StateConnected))
-	log.Printf("[reconnect] reconnected successfully")
-
-	nextBackoff := time.Duration(float64(backoff) * 2.0)
-	if nextBackoff > maxBackoff {
-		nextBackoff = maxBackoff
+	if recovered > 0 {
+		log.Printf("[reconnect] panel reachable again after %d failed round-trip(s)", recovered)
 	}
-	jitter := secureDurationJitter(nextBackoff / 4)
-	return nextBackoff - nextBackoff/8 + jitter
+	if onHB != nil {
+		onHB()
+	}
+}
+
+// linkExpired reports whether the last proven round-trip is older than the
+// offline timeout. A link that never succeeded has no reading to age: unknown
+// is not connected.
+func (rc *ReconnectClient) linkExpired() bool {
+	rc.mu.Lock()
+	last := rc.lastHb
+	rc.mu.Unlock()
+	return last.IsZero() || time.Since(last) > rc.offlineTimeout
+}
+
+// probeContext bounds a round-trip by the parent context, the probe timeout and
+// Stop(), so no probe can outlive shutdown.
+//
+// Shutdown cancels stopCtx alongside closing stopCh, so context.AfterFunc can
+// watch shutdown directly instead of spawning a watcher goroutine per probe.
+// The returned CancelFunc stops that watch as well as the timeout, and is safe
+// to call more than once.
+func (rc *ReconnectClient) probeContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	stopWatch := context.AfterFunc(rc.stopCtx, cancel)
+	return probeCtx, func() {
+		stopWatch()
+		cancel()
+	}
+}
+
+// doReconnect waits out the current backoff, then proves a freshly built client
+// can round-trip before promoting it. It returns the next backoff and whether
+// the link is healthy again.
+func (rc *ReconnectClient) doReconnect(ctx context.Context, backoff time.Duration) (time.Duration, bool) {
+	if !waitOrCancelled(ctx, rc.stopCh, backoff) {
+		return backoff, false
+	}
+
+	candidate := rc.newClient()
+	probeCtx, cancel := rc.probeContext(ctx, panelProbeTimeout)
+	err := rc.roundTrip(probeCtx, candidate)
+	cancel()
+	if err != nil {
+		rc.mu.Lock()
+		fails := rc.consecutiveFails
+		rc.mu.Unlock()
+		next := backoff * 2
+		// Circuit breaker: past the threshold, stop hammering a panel that is
+		// clearly down and hold at the cap until a round-trip succeeds.
+		if fails >= circuitBreakerFailures || next > maxReconnectBackoff {
+			next = maxReconnectBackoff
+		}
+		jitter := secureDurationJitter(next / 4)
+		return next - next/8 + jitter, false
+	}
+
+	rc.mu.Lock()
+	rc.inner = candidate
+	rc.mu.Unlock()
+	rc.markConnected()
+	return initialReconnectBackoff, true
+}
+
+// waitOrCancelled sleeps for d unless ctx is cancelled or stopCh closes first.
+// It reports whether the full delay elapsed.
+func waitOrCancelled(ctx context.Context, stopCh <-chan struct{}, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-stopCh:
+		return false
+	}
 }
 
 func (rc *ReconnectClient) Stop() {
-	rc.stopOnce.Do(func() { close(rc.stopCh) })
+	rc.stopOnce.Do(func() {
+		close(rc.stopCh)
+		rc.stopCancel()
+	})
 	select {
 	case <-rc.started:
 		select {

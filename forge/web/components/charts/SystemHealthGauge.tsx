@@ -1,15 +1,17 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
 import { Activity } from "lucide-react";
 import { Card, CardHeader } from "@/components/admin/admin-ui";
-import { getSystemInfo } from "@/lib/api/monitoring";
+import { chart } from "@/lib/design-tokens";
+import { useMonitoringSummaryQuery, summaryIsTrustworthy, useNodesQuery, useServersQuery } from "@/lib/admin/telemetry";
 
 export function SystemHealthGauge() {
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ["system-health"],
-    queryFn: getSystemInfo,
-    refetchInterval: 30_000,
+  const { data, isLoading, isError } = useMonitoringSummaryQuery();
+  const nodesQuery = useNodesQuery();
+  const serversQuery = useServersQuery();
+  const trustworthy = summaryIsTrustworthy(data, {
+    nodeCount: nodesQuery.data?.length,
+    serverCount: serversQuery.data?.length,
   });
 
   if (isLoading) {
@@ -32,15 +34,24 @@ export function SystemHealthGauge() {
     );
   }
 
+  if (!trustworthy) {
+    return (
+      <Card>
+        <CardHeader title="System Health" icon={Activity} />
+        <div className="p-6 text-center text-xs text-text-muted">Summary unavailable — observability not reporting.</div>
+      </Card>
+    );
+  }
+
   const nodeCount = data?.nodes?.length ?? 0;
   const healthyNodes = data?.nodes?.filter((n) => n.cpuPercent < 90 && n.memoryPercent < 90 && n.diskPercent < 90).length ?? 0;
   const healthScore = nodeCount > 0 ? Math.round((healthyNodes / nodeCount) * 100) : 0;
   const unacknowledged = data?.unacknowledgedAlerts ?? 0;
 
   const getColor = () => {
-    if (healthScore >= 90) return { stroke: "#10b981", text: "text-emerald-400", label: "Healthy" };
-    if (healthScore >= 70) return { stroke: "#f59e0b", text: "text-amber-400", label: "Degraded" };
-    return { stroke: "#ef4444", text: "text-red-400", label: "Critical" };
+    if (healthScore >= 90) return { stroke: chart.success, text: "text-emerald-400", label: "Healthy" };
+    if (healthScore >= 70) return { stroke: chart.warning, text: "text-amber-400", label: "Degraded" };
+    return { stroke: chart.dangerBright, text: "text-red-400", label: "Critical" };
   };
 
   const color = getColor();
@@ -53,7 +64,7 @@ export function SystemHealthGauge() {
       <div className="flex flex-col items-center p-6">
         <div className="relative h-32 w-32">
           <svg className="h-full w-full -rotate-90" viewBox="0 0 120 120">
-            <circle cx="60" cy="60" r="54" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="8" />
+            <circle cx="60" cy="60" r="54" fill="none" stroke={chart.grid} strokeWidth="8" />
             <circle
               cx="60"
               cy="60"

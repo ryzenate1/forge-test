@@ -50,12 +50,12 @@ export function DBContainerCreateModal({ onClose, onCreated, defaultServerId }: 
   });
 
   return (
-    <Modal title={<span className="text-base font-semibold text-slate-100">Create Database Container</span>} onClose={onClose} wide>
-      <div className="space-y-6">
+    <Modal title="Create Database Container" onClose={onClose} wide>
+      <div className="space-y-4">
 
         {/* Engine Type Selection */}
         <div>
-          <label className="mb-3 block text-xs font-semibold uppercase tracking-wider text-slate-400">Engine Type</label>
+          <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Engine Type</label>
           <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-5">
             {(Object.entries(engineMeta) as [DBContainerEngine, typeof engineMeta[DBContainerEngine]][]).map(([value, meta]) => {
               const Icon = meta.icon;
@@ -73,7 +73,7 @@ export function DBContainerCreateModal({ onClose, onCreated, defaultServerId }: 
                   }}
                   className={cn(
                     "group relative flex flex-col items-center gap-1.5 rounded-xl border px-3 py-3 text-center transition-all duration-150",
-                     "outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60",
+                     "outline-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--brand)_60%,transparent)]",
                     active
                       ? "border-slate-600 bg-slate-800/60 shadow-sm"
                       : "border-white/[0.06] bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]"
@@ -83,7 +83,7 @@ export function DBContainerCreateModal({ onClose, onCreated, defaultServerId }: 
                   <span className={cn("text-xs font-medium leading-tight", active ? "text-slate-100" : "text-slate-400 group-hover:text-slate-300")}>
                     {meta.label}
                   </span>
-                  {active && <span className="absolute -right-1 -top-1 h-3 w-3 rounded-full bg-[var(--brand)] ring-2 ring-[#0d1117]" />}
+                  {active && <span className="absolute -right-1 -top-1 h-3 w-3 rounded-full bg-[var(--brand)] ring-2 ring-[var(--surface-input)]" />}
                 </button>
               );
             })}
@@ -97,21 +97,21 @@ export function DBContainerCreateModal({ onClose, onCreated, defaultServerId }: 
             <input
               type="text"
               placeholder="leave blank for standalone"
-              className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15"
+              className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[color-mix(in_srgb,var(--brand)_70%,transparent)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--brand)_15%,transparent)]"
               value={serverId}
               onChange={(e) => setServerId(e.target.value)}
             />
           </div>
-          <p className="mt-1 text-[11px] text-slate-500">Wires <code className="font-mono">POST /databases/provision?serverId=</code>. Defaults to standalone on backend if omitted.</p>
+          <p className="mt-1 text-xs text-slate-400">Wires <code className="font-mono">POST /databases/provision?serverId=</code>. Defaults to standalone on backend if omitted.</p>
         </div>
 
         {/* Version + Resources row */}
-        <div className="grid gap-5 sm:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-3">
           {/* Version */}
           <div>
             <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Version</label>
             <select
-              className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] px-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15"
+              className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] px-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[color-mix(in_srgb,var(--brand)_70%,transparent)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--brand)_15%,transparent)]"
               value={version}
               onChange={(e) => setVersion(e.target.value)}
             >
@@ -137,13 +137,13 @@ export function DBContainerCreateModal({ onClose, onCreated, defaultServerId }: 
                 min={64}
                 max={65536}
                 step={64}
-                className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15 [&::-webkit-inner-spin-button]:appearance-none"
+                className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[color-mix(in_srgb,var(--brand)_70%,transparent)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--brand)_15%,transparent)] [&::-webkit-inner-spin-button]:appearance-none"
                 value={memoryMb}
                 onChange={(e) => setMemoryMb(e.target.value)}
                 placeholder="256"
               />
             </div>
-            <p className="mt-1 text-[11px] text-slate-500">Min 64 MB. Leave empty for default (256 MB).</p>
+            <p className="mt-1 text-xs text-slate-400">Min 64 MB. Leave empty for default (256 MB).</p>
           </div>
 
           {/* CPU Shares */}
@@ -158,13 +158,13 @@ export function DBContainerCreateModal({ onClose, onCreated, defaultServerId }: 
                 min={0}
                 max={1024}
                 step={1}
-                className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[var(--brand)]/70 focus:ring-2 focus:ring-[var(--brand)]/15 [&::-webkit-inner-spin-button]:appearance-none"
+                className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface)] pl-9 pr-3 text-sm text-slate-100 shadow-inner shadow-black/10 outline-none transition hover:border-white/20 focus:border-[color-mix(in_srgb,var(--brand)_70%,transparent)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--brand)_15%,transparent)] [&::-webkit-inner-spin-button]:appearance-none"
                 value={cpuShares}
                 onChange={(e) => setCpuShares(e.target.value)}
                 placeholder="0"
               />
             </div>
-            <p className="mt-1 text-[11px] text-slate-500">Relative CPU weight. Default (0) = 1024 shares.</p>
+            <p className="mt-1 text-xs text-slate-400">Relative CPU weight. Default (0) = 1024 shares.</p>
           </div>
         </div>
 
@@ -183,7 +183,7 @@ export function DBContainerCreateModal({ onClose, onCreated, defaultServerId }: 
 
         {/* Error */}
         {createMut.isError && (
-          <div className="flex items-start gap-2.5 rounded-lg border border-red-500/20 bg-red-950/10 p-3.5 text-sm text-red-200">
+          <div className="flex items-start gap-2.5 rounded-lg border border-red-500/20 bg-red-950/10 p-3.5 text-sm text-red-300">
             <span>{createMut.error?.message || "An unexpected error occurred."}</span>
           </div>
         )}

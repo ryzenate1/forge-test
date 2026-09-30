@@ -4,11 +4,14 @@ import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowLeft, ChevronRight, Copy, Cpu, Download, FileCode, Plus, Settings, Tag, Terminal, Trash2,
+  Copy, Cpu, Download, FileCode, Plus, Settings, Tag, Terminal, Trash2,
 } from "lucide-react";
 import { type ApiEgg, fetchNest, fetchEggs, createEgg, updateEgg, deleteEgg } from "@/lib/api";
 import { AdminPageLayout, Btn, Card, CardHeader, EmptyState, Input, Modal, ModalFooter, SectionHeader, Textarea } from "@/components/admin/admin-ui";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { useToast } from "@/components/ui/toast";
+import { useBreadcrumbLabel } from "@/lib/nav/breadcrumb-context";
+import { adminPageGuides } from "@/components/admin/admin-page-guides";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -37,17 +40,18 @@ function EggCard({
 }) {
   const primaryImage = dockerImageLines(egg.dockerImages)[0] ?? egg.dockerImage;
   return (
-    <div className="group rounded-xl border border-white/[0.06] bg-[var(--surface)] p-4 transition hover:border-white/[0.12] hover:bg-[var(--surface-raised)] sm:p-5">
+    <div className="group rounded-xl border border-line bg-[var(--surface)] p-4 transition hover:border-line-strong hover:bg-[var(--surface-raised)] sm:p-5">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1 space-y-1.5">
-          <h3 className="truncate text-base font-semibold text-slate-100">{egg.name}</h3>
+          <h3 className="truncate text-base font-semibold text-text">{egg.name}</h3>
           {egg.description && (
-            <p className="line-clamp-2 text-sm leading-relaxed text-slate-500">{egg.description}</p>
+            <p className="line-clamp-2 text-sm leading-relaxed text-text-muted">{egg.description}</p>
           )}
         </div>
         <button
+          aria-label={`Manage variables for ${egg.name}`}
           onClick={onVariables}
-          className="shrink-0 rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-400 opacity-0 transition hover:border-sky-400/40 hover:bg-sky-500/10 hover:text-sky-400 group-hover:opacity-100"
+          className="shrink-0 rounded-lg border border-line bg-overlay-subtle p-2 text-text-subtle opacity-100 transition hover:border-info-line hover:bg-info-subtle hover:text-info sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
           title="Manage variables"
         >
           <Settings size={14} />
@@ -56,26 +60,26 @@ function EggCard({
 
       <div className="mt-3 flex flex-wrap gap-1.5">
         {primaryImage && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] text-slate-500">
+          <span className="inline-flex items-center gap-1 rounded-md bg-overlay px-2 py-0.5 font-mono text-[10px] text-text-muted">
             <Cpu size={10} /> {primaryImage}
           </span>
         )}
         {egg.startup && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] text-slate-500">
+          <span className="inline-flex items-center gap-1 rounded-md bg-overlay px-2 py-0.5 font-mono text-[10px] text-text-muted">
             <Terminal size={10} /> {egg.startup.length > 30 ? egg.startup.slice(0, 30) + "\u2026" : egg.startup}
           </span>
         )}
       </div>
 
-      <div className="mt-4 flex items-center gap-1.5 border-t border-white/[0.06] pt-3">
+      <div className="mt-4 flex items-center gap-1.5 border-t border-line pt-3">
         <Btn size="sm" tone="ghost" onClick={onVariables}>
           <FileCode size={12} /> Variables
         </Btn>
         <div className="ml-auto flex items-center gap-0.5">
-          <Btn size="sm" tone="ghost" onClick={onEdit}><Settings size={12} /></Btn>
-          <Btn size="sm" tone="ghost" onClick={onClone}><Copy size={12} /></Btn>
-          <Btn size="sm" tone="ghost" onClick={onExport}><Download size={12} /></Btn>
-          <Btn size="sm" tone="danger" onClick={onDelete}><Trash2 size={12} /></Btn>
+          <Btn size="sm" tone="ghost" ariaLabel={`Edit ${egg.name}`} onClick={onEdit}><Settings size={12} /></Btn>
+          <Btn size="sm" tone="ghost" ariaLabel={`Clone ${egg.name}`} onClick={onClone}><Copy size={12} /></Btn>
+          <Btn size="sm" tone="ghost" ariaLabel={`Export ${egg.name}`} onClick={onExport}><Download size={12} /></Btn>
+          <Btn size="sm" tone="danger" ariaLabel={`Delete ${egg.name}`} onClick={onDelete}><Trash2 size={12} /></Btn>
         </div>
       </div>
     </div>
@@ -84,6 +88,7 @@ function EggCard({
 
 export default function NestEggsPage() {
   const [confirm, renderConfirm] = useConfirm();
+  const { toast } = useToast();
   const params = useParams();
   const router = useRouter();
   const nestId = params.nestId as string;
@@ -92,12 +97,17 @@ export default function NestEggsPage() {
   const nestQuery = useQuery({ queryKey: ["nest", nestId], queryFn: () => fetchNest(nestId) });
   const eggsQuery = useQuery({ queryKey: ["eggs", nestId], queryFn: () => fetchEggs(nestId) });
   const nest = nestQuery.data;
+
+  // One breadcrumb trail, rendered by the shell. This names the dynamic
+  // segment so it reads as the resource rather than an opaque id.
+  useBreadcrumbLabel(nestId, nest?.name ?? null);
   const eggs = eggsQuery.data ?? [];
   const isLoading = eggsQuery.isLoading;
   const isError = eggsQuery.isError;
   const error = eggsQuery.error;
 
   const [eggModal, setEggModal] = useState<null | "create" | ApiEgg>(null);
+  const [search, setSearch] = useState("");
 
   const [eggName, setEggName] = useState("");
   const [eggDesc, setEggDesc] = useState("");
@@ -108,6 +118,7 @@ export default function NestEggsPage() {
   const [eggInstallScript, setEggInstallScript] = useState("");
   const [eggInstallContainer, setEggInstallContainer] = useState("alpine:3.21");
   const [eggInstallEntry, setEggInstallEntry] = useState("sh");
+  const visibleEggs = eggs.filter((egg) => `${egg.name} ${egg.description ?? ""}`.toLowerCase().includes(search.toLowerCase()));
 
   const resetEggForm = () => {
     setEggName(""); setEggDesc(""); setEggImages("eclipse-temurin:21-jdk");
@@ -140,6 +151,7 @@ export default function NestEggsPage() {
       installScript: eggInstallScript, installContainer: eggInstallContainer.trim(), installEntrypoint: eggInstallEntry.trim(),
     }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["eggs", nestId] }); qc.invalidateQueries({ queryKey: ["nests"] }); setEggModal(null); },
+    onError: (err) => toast({ tone: "error", title: "Failed to create egg", message: err instanceof Error ? err.message : "An error occurred" }),
   });
 
   const updateEggMut = useMutation({
@@ -151,11 +163,13 @@ export default function NestEggsPage() {
       installScript: eggInstallScript, installContainer: eggInstallContainer.trim(), installEntrypoint: eggInstallEntry.trim(),
     }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["eggs", nestId] }); qc.invalidateQueries({ queryKey: ["nests"] }); setEggModal(null); },
+    onError: (err) => toast({ tone: "error", title: "Failed to update egg", message: err instanceof Error ? err.message : "An error occurred" }),
   });
 
   const deleteEggMut = useMutation({
     mutationFn: deleteEgg,
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["eggs", nestId] }); qc.invalidateQueries({ queryKey: ["nests"] }); },
+    onError: (err) => toast({ tone: "error", title: "Failed to delete egg", message: err instanceof Error ? err.message : "An error occurred" }),
   });
 
   const cloneEggMut = useMutation({
@@ -170,6 +184,7 @@ export default function NestEggsPage() {
       });
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["eggs", nestId] }),
+    onError: (err) => toast({ tone: "error", title: "Failed to clone egg", message: err instanceof Error ? err.message : "An error occurred" }),
   });
 
   const exportEgg = (egg: ApiEgg) => {
@@ -188,63 +203,49 @@ export default function NestEggsPage() {
 
   return (
     <AdminPageLayout>
-      <nav className="flex items-center gap-1.5 text-xs text-slate-500">
-        <button onClick={() => router.push("/admin/nests")} className="transition hover:text-slate-300" type="button">Nests</button>
-        <ChevronRight size={12} className="text-slate-600" />
-        <span className="text-slate-300">{nest?.name ?? "Nest"}</span>
-        <ChevronRight size={12} className="text-slate-600" />
-        <span className="text-slate-400">Eggs</span>
-      </nav>
-
       <SectionHeader
         title={nest ? `Eggs: ${nest.name}` : "Eggs"}
         sub="Service definitions that define game server behavior."
+        info={adminPageGuides.eggs}
+        backAction={() => router.push("/admin/nests")}
+        backLabel="Nests"
         action={
           <div className="flex flex-wrap items-center gap-2">
-            <Btn tone="ghost" onClick={() => router.push("/admin/nests")}>
-              <ArrowLeft size={14} /> Back to Nests
-            </Btn>
-            <Btn tone="subtle" onClick={() => router.push(`/admin/templates?nestId=${nestId}`)}>
+            <Btn tone="subtle" onClick={() => router.push(`/admin/compatibility-templates?nestId=${nestId}`)}>
               Browse Templates →
             </Btn>
-            <Btn onClick={openEggCreate}><Plus size={14} /> New Egg</Btn>
+            <Btn tone="primary" onClick={openEggCreate}><Plus size={14} /> New Egg</Btn>
           </div>
         }
       />
 
       <Card>
         <CardHeader
-          title={`${eggs.length} egg${eggs.length === 1 ? "" : "s"}`}
+          title={isLoading || isError ? "Eggs" : `${visibleEggs.length} egg${visibleEggs.length === 1 ? "" : "s"}`}
           icon={Tag}
-          action={
-            eggs.length > 0 ? (
-              <Btn size="sm" tone="subtle" onClick={() => router.push(`/admin/templates?nestId=${nestId}`)}>
-                Browse Templates →
-              </Btn>
-            ) : undefined
-          }
         />
+        <div className="mb-4 max-w-md"><Input label="Search eggs" value={search} onChange={setSearch} placeholder="Search by name or description" /></div>
 
         {isLoading ? (
-          <div className="p-8 text-center text-sm text-slate-500">Loading eggs\u2026</div>
+          <div className="p-8 text-center text-sm text-text-muted">{"Loading eggs\u2026"}</div>
         ) : isError ? (
           <div className="p-4">
-            <div className="flex items-start justify-between gap-4 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-200">
+            <div className="flex items-start justify-between gap-4 rounded-lg border border-danger-line bg-danger-subtle p-3 text-sm text-danger">
               <span>Could not load eggs: {error?.message ?? "Unknown error"}</span>
               <Btn size="sm" tone="ghost" onClick={() => void eggsQuery.refetch()}>Retry</Btn>
             </div>
           </div>
-        ) : eggs.length === 0 ? (
+        ) : visibleEggs.length === 0 ? (
           <div className="p-8">
-            <EmptyState icon={Tag} message="No eggs in this nest." title="Empty Nest" sub="Create a new egg from scratch or import one from our template gallery." />
+            <EmptyState icon={Tag} message={search ? "Try a different name or description." : "No eggs in this nest."} title={search ? "No matching eggs" : "Empty Nest"} sub={search ? undefined : "Create a new egg from scratch or import one from Compatibility Templates."} />
             <div className="mt-4 flex justify-center gap-3">
               <Btn onClick={openEggCreate}><Plus size={14} /> New Egg</Btn>
-              <Btn tone="subtle" onClick={() => router.push(`/admin/templates?nestId=${nestId}`)}>Browse Templates →</Btn>
+              <Btn tone="subtle" onClick={() => router.push(`/admin/compatibility-templates?nestId=${nestId}`)}>Browse Templates →</Btn>
             </div>
           </div>
         ) : (
           <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3">
-            {eggs.map((egg) => (
+            {visibleEggs.map((egg) => (
               <EggCard
                 key={egg.id}
                 egg={egg}

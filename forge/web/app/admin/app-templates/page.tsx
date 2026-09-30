@@ -1,11 +1,12 @@
 "use client";
+import { adminPageGuides } from "@/components/admin/admin-page-guides";
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
-  ArrowLeft, Plus, Pencil, Trash2, Layers,
+  Plus, Pencil, Trash2, Layers,
 } from "lucide-react";
-import { Btn, Card, CardHeader, Input, SectionHeader, Pill, cn, Modal } from "@/components/admin/admin-ui";
+import { AdminPageLayout, AdminSelect, Btn, Card, CardHeader, EmptyState, Input, SectionHeader, Pill, Textarea, cn, Modal, ModalFooter } from "@/components/admin/admin-ui";
 import { type AppType, type AppTemplate, type AppPort } from "@/lib/api/apps";
 import { DEFAULT_APP_TEMPLATES, loadUserTemplates, saveUserTemplates, getAllTemplates } from "@/lib/app-templates-data";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -55,6 +56,7 @@ function formToTemplate(form: FormData): AppTemplate {
     type: form.type,
     image: form.type === "image" ? form.image : undefined,
     gitUrl: form.type === "git" ? form.gitUrl : undefined,
+    gitBranch: form.type === "git" ? form.gitBranch : undefined,
     composeContent: form.type === "compose" ? form.composeContent : undefined,
     defaultPorts: ports,
     defaultEnvVars: envVars,
@@ -69,7 +71,7 @@ function templateToForm(tpl: AppTemplate): FormData {
     type: tpl.type,
     image: tpl.image ?? "",
     gitUrl: tpl.gitUrl ?? "",
-    gitBranch: tpl.defaultResources.cpu,
+    gitBranch: tpl.gitBranch ?? "main",
     composeContent: tpl.composeContent ?? "",
     ports: tpl.defaultPorts.map((p) => `${p.hostPort}:${p.containerPort}`).join(", "),
     envVars: Object.entries(tpl.defaultEnvVars).map(([k, v]) => `${k}=${v}`).join(", "),
@@ -91,6 +93,7 @@ function typeLabel(t: AppType): string {
 export default function AppTemplatesPage() {
   const router = useRouter();
   const [confirm, renderConfirm] = useConfirm();
+  const [search, setSearch] = useState("");
   const [templates, setTemplates] = useState<AppTemplate[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -115,6 +118,12 @@ export default function AppTemplatesPage() {
   };
 
   const save = () => {
+    if (!form.name.trim()) return;
+    if (
+      (form.type === "image" && !form.image.trim()) ||
+      (form.type === "git" && !form.gitUrl.trim()) ||
+      (form.type === "compose" && !form.composeContent.trim())
+    ) return;
     const users = loadUserTemplates();
     const tpl = formToTemplate(form);
     if (editingId) {
@@ -140,34 +149,45 @@ export default function AppTemplatesPage() {
     refresh();
   };
 
+  const visibleTemplates = templates.filter((template) => `${template.name} ${template.description}`.toLowerCase().includes(search.toLowerCase()));
+  const sourceMissing =
+    (form.type === "image" && !form.image.trim()) ||
+    (form.type === "git" && !form.gitUrl.trim()) ||
+    (form.type === "compose" && !form.composeContent.trim());
+
   const isDefault = (id: string) => DEFAULT_APP_TEMPLATES.some((t) => t.id === id);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6 px-1 sm:px-0">
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <Btn tone="ghost" size="sm" onClick={() => router.push("/admin/apps")}>
-            <ArrowLeft size={14} />
+    <AdminPageLayout>
+      <SectionHeader
+        info={adminPageGuides.appTemplates}
+        title="App Templates"
+        sub="Application deployment templates for the Create Application wizard"
+        backAction={() => router.push("/admin/apps")}
+        backLabel="Apps"
+        action={
+          <Btn tone="primary" onClick={openCreate}>
+            <Plus size={14} />
+            New Template
           </Btn>
-          <SectionHeader title="App Templates" sub="Manage templates for the Create Application wizard" />
-        </div>
-        <Btn tone="primary" onClick={openCreate}>
-          <Plus size={14} />
-          New Template
-        </Btn>
-      </div>
+        }
+      />
 
       <Card>
-        <CardHeader title={`${templates.length} templates`} icon={Layers} />
+        <CardHeader title={`${visibleTemplates.length} templates`} icon={Layers} />
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+          <div className="w-full max-w-md"><Input label="Search app templates" value={search} onChange={setSearch} placeholder="Search by name or description" /></div>
+          <p className="text-xs text-text-subtle">Custom templates are saved in this browser.</p>
+        </div>
         <div className="grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-3">
-          {templates.map((tpl) => (
+          {visibleTemplates.map((tpl) => (
             <div
               key={tpl.id}
               className={cn(
-                "rounded-xl border p-4 text-left",
+                "flex min-h-48 flex-col rounded-xl border p-5 text-left",
                 isDefault(tpl.id)
-                  ? "border-white/[0.08] bg-white/[0.02]"
-                  : "border-[#dc2626]/20 bg-[var(--brand)]/[0.02]",
+                  ? "border-line bg-overlay-subtle"
+                  : "border-[color-mix(in_srgb,var(--brand)_20%,transparent)] bg-[color-mix(in_srgb,var(--brand)_2%,transparent)]",
               )}
             >
               <div className="flex items-start justify-between gap-2">
@@ -178,14 +198,16 @@ export default function AppTemplatesPage() {
                   <div className="flex gap-1">
                     <button
                       type="button"
-                      className="rounded p-1 text-slate-500 transition hover:bg-white/[0.06] hover:text-white"
+                      className="rounded p-1 text-text-muted transition hover:bg-overlay-subtle hover:text-text"
+                      aria-label={`Edit ${tpl.name}`}
                       onClick={() => openEdit(tpl)}
                     >
                       <Pencil size={12} />
                     </button>
                     <button
                       type="button"
-                      className="rounded p-1 text-slate-500 transition hover:bg-white/[0.06] hover:text-red-400"
+                      className="rounded p-1 text-text-muted transition hover:bg-overlay-subtle hover:text-danger"
+                      aria-label={`Delete ${tpl.name}`}
                       onClick={() => remove(tpl.id)}
                     >
                       <Trash2 size={12} />
@@ -193,25 +215,23 @@ export default function AppTemplatesPage() {
                   </div>
                 )}
               </div>
-              <p className="mt-2 font-semibold text-slate-200 text-sm">{tpl.name}</p>
-              <p className="mt-1 text-xs text-slate-500 line-clamp-2">{tpl.description}</p>
+              <p className="mt-2 font-semibold text-text text-sm">{tpl.name}</p>
+              <p className="mt-1 text-xs text-text-muted line-clamp-2">{tpl.description}</p>
               {tpl.image && (
-                <p className="mt-2 text-[10px] font-mono text-slate-600 truncate">{tpl.image}</p>
+                <p className="mt-2 text-xs font-mono text-text-muted truncate">{tpl.image}</p>
               )}
               {tpl.gitUrl && (
-                <p className="mt-2 text-[10px] font-mono text-slate-600 truncate">{tpl.gitUrl}</p>
+                <p className="mt-2 text-xs font-mono text-text-muted truncate">{tpl.gitUrl}</p>
               )}
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                <span className="text-[10px] text-slate-600">
+              <div className="mt-auto flex flex-wrap gap-1.5 border-t border-line pt-4">
+                <span className="text-xs text-text-muted">
                   {tpl.defaultResources.cpu} CPU / {tpl.defaultResources.memory} MiB
                 </span>
               </div>
             </div>
           ))}
-          {templates.length === 0 && (
-            <div className="col-span-full py-12 text-center text-sm text-slate-500">
-              No templates yet. Create your first template to get started.
-            </div>
+          {visibleTemplates.length === 0 && (
+            <div className="col-span-full"><EmptyState icon={Layers} title={search ? "No matching templates" : "No templates yet"} message={search ? "Try a different name or description." : "Create your first application template to get started."} /></div>
           )}
         </div>
       </Card>
@@ -223,26 +243,13 @@ export default function AppTemplatesPage() {
               <div className="sm:col-span-2">
                 <Input label="Name" value={form.name} onChange={(v) => setForm((f) => ({ ...f, name: v }))} placeholder="My Template" required />
               </div>
-              <div className="sm:col-span-2">
-                <label className="mb-1.5 block text-sm font-medium text-slate-300">Description</label>
-                <input
-                  className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3.5 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
-                  value={form.description}
-                  onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-                  placeholder="Brief description of this template"
-                />
-              </div>
+              <div className="sm:col-span-2"><Textarea label="Description" value={form.description} onChange={(value) => setForm((f) => ({ ...f, description: value }))} placeholder="Brief description of this template" rows={3} /></div>
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-300">Type</label>
-                <select
-                  className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 text-sm text-slate-100 outline-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
-                  value={form.type}
-                  onChange={(e) => setForm((f) => ({ ...f, type: e.target.value as AppType }))}
-                >
-                  <option value="image">Docker Image</option>
-                  <option value="git">Git Repository</option>
-                  <option value="compose">Docker Compose</option>
-                </select>
+                <AdminSelect label="Type" value={form.type} onChange={(value) => setForm((f) => ({ ...f, type: value as AppType }))} options={[
+                  { value: "image", label: "Docker Image" },
+                  { value: "git", label: "Git Repository" },
+                  { value: "compose", label: "Docker Compose" },
+                ]} />
               </div>
             </div>
 
@@ -258,15 +265,7 @@ export default function AppTemplatesPage() {
               </div>
             )}
             {form.type === "compose" && (
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-300">Compose YAML</label>
-                <textarea
-                  className="h-40 w-full rounded-lg border border-white/10 bg-[var(--surface-input)] p-3 font-mono text-xs text-slate-100 outline-none resize-none transition hover:border-white/20 focus:border-red-400/70 focus:ring-2 focus:ring-red-500/15"
-                  value={form.composeContent}
-                  onChange={(e) => setForm((f) => ({ ...f, composeContent: e.target.value }))}
-                  placeholder={`services:\n  web:\n    image: nginx:latest\n    ports:\n      - "8080:80"`}
-                />
-              </div>
+              <Textarea label="Compose YAML" value={form.composeContent} onChange={(value) => setForm((f) => ({ ...f, composeContent: value }))} placeholder={`services:\n  web:\n    image: nginx:latest\n    ports:\n      - "8080:80"`} rows={10} />
             )}
 
             <div className="grid gap-4 sm:grid-cols-3">
@@ -278,14 +277,12 @@ export default function AppTemplatesPage() {
             <Input label="Ports (host:container, comma-separated)" value={form.ports} onChange={(v) => setForm((f) => ({ ...f, ports: v }))} placeholder="8080:80, 3000:3000" />
             <Input label="Env Vars (KEY=value, comma-separated)" value={form.envVars} onChange={(v) => setForm((f) => ({ ...f, envVars: v }))} placeholder="NODE_ENV=production, PORT=3000" />
 
-            <div className="flex justify-end gap-2 border-t border-white/[0.06] pt-4">
-              <Btn tone="ghost" onClick={() => setShowModal(false)}>Cancel</Btn>
-              <Btn tone="primary" onClick={save} disabled={!form.name.trim()}>Save Template</Btn>
-            </div>
+            {sourceMissing ? <p role="alert" className="text-xs text-warn">Add the required source for this template type before saving.</p> : null}
+            <ModalFooter onCancel={() => setShowModal(false)} onConfirm={save} confirmLabel="Save Template" disabled={!form.name.trim() || sourceMissing} />
           </div>
         </Modal>
       )}
       {renderConfirm()}
-    </div>
+    </AdminPageLayout>
   );
 }

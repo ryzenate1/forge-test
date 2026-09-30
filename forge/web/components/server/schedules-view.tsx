@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Archive, ChevronDown, ChevronUp, Clock, Pencil, Play, Plus, Terminal, Trash2 } from "lucide-react";
+import { Archive, ChevronDown, ChevronUp, Clock, Pencil, Play, Plus, Terminal, Trash2, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ApiSchedule, type ApiScheduleTask, type ApiServer,
@@ -139,7 +139,7 @@ export function SchedulesView({ server }: { server?: ApiServer }) {
   const createMut = useMutation({ mutationFn: (draft: ScheduleDraft) => createServerSchedule(serverId, draft), onSuccess: () => { setCreateDraft(defaultSchedule); setStatus("Schedule created."); refresh(); }, onError: (error) => setStatus(message(error, "Create failed.")) });
   const updateMut = useMutation({ mutationFn: ({ id, draft }: { id: string; draft: Partial<ScheduleDraft> }) => updateServerSchedule(serverId, id, draft), onSuccess: () => { setEditingSchedule(null); setStatus("Schedule updated."); refresh(); }, onError: (error) => setStatus(message(error, "Update failed.")) });
   const deleteMut = useMutation({ mutationFn: (id: string) => deleteServerSchedule(serverId, id), onSuccess: () => { setDeleteScheduleConfirm(null); refresh(); }, onError: (error) => { setDeleteScheduleConfirm(null); setStatus(message(error, "Delete failed.")); } });
-  const runMut = useMutation({ mutationFn: (id: string) => runServerSchedule(serverId, id), onSuccess: (_, id) => { setHistory(id); setStatus("Schedule run queued."); void qc.invalidateQueries({ queryKey: ["server-schedule-runs", serverId, id] }); }, onError: (error) => setStatus(message(error, "Run failed.")) });
+  const runMut = useMutation({ mutationFn: async (id: string) => { const result = await runServerSchedule(serverId, id); if (!result.ok) throw new Error("The server reported the schedule run did not complete."); return result; }, onSuccess: (_, id) => { setHistory(id); setStatus("Schedule run queued."); void qc.invalidateQueries({ queryKey: ["server-schedule-runs", serverId, id] }); }, onError: (error) => setStatus(message(error, "Run failed.")) });
   const taskMut = useMutation({ mutationFn: ({ target, draft }: { target: { scheduleId: string; taskId?: string }; draft: TaskDraft }) => { if (draft.action === "backup" && server?.backupLimit === 0) throw new Error("Backup tasks are unavailable because this server has no backup slots."); return target.taskId ? updateServerScheduleTask(serverId, target.scheduleId, target.taskId, { ...draft, payload: taskPayload(draft), value: undefined }) : createServerScheduleTask(serverId, target.scheduleId, { ...draft, payload: taskPayload(draft) }); }, onSuccess: () => { setTaskTarget(null); setStatus("Task saved."); refresh(); }, onError: (error) => setStatus(message(error, "Task update failed.")) });
   const removeTaskMut = useMutation({ mutationFn: ({ scheduleId, taskId }: { scheduleId: string; taskId: string }) => deleteServerScheduleTask(serverId, scheduleId, taskId), onSuccess: () => { setDeleteTaskConfirm(null); refresh(); }, onError: (error) => { setDeleteTaskConfirm(null); setStatus(message(error, "Task delete failed.")); } });
   const reorderMut = useMutation({ mutationFn: async ({ scheduleId, tasks, index, direction }: { scheduleId: string; tasks: ApiScheduleTask[]; index: number; direction: -1 | 1 }) => { const ordered = [...tasks].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0)); const other = ordered[index + direction]; const current = ordered[index]; if (!current || !other) return; await updateServerScheduleTask(serverId, scheduleId, current.id, { sequence: other.sequence }); await updateServerScheduleTask(serverId, scheduleId, other.id, { sequence: current.sequence }); }, onSuccess: refresh, onError: (error) => setStatus(message(error, "Task reorder failed.")) });
@@ -259,12 +259,17 @@ export function SchedulesView({ server }: { server?: ApiServer }) {
 
     {deleteScheduleConfirm && (
       <div className="ui-dialog-layer" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget && !deleteMut.isPending) setDeleteScheduleConfirm(null); }}>
-        <div className="ui-dialog" role="dialog" aria-modal="true">
-          <h3 className="text-base font-semibold text-slate-100">Delete schedule <span className="font-mono text-red-300">{deleteScheduleConfirm}</span>?</h3>
-          <p className="mt-2 text-sm leading-6 text-slate-400">This action cannot be undone. Tasks in this schedule will stop running.</p>
-          <div className="mt-5 flex justify-end gap-2 border-t border-white/[0.06] pt-4">
+        <div className="ui-dialog" role="dialog" aria-modal="true" aria-label="Delete schedule">
+          <div className="ui-dialog-header">
+            <div className="min-w-0">
+              <h2 className="ui-dialog-title">Delete schedule <span className="font-mono text-red-300">{deleteScheduleConfirm}</span>?</h2>
+              <p className="ui-dialog-description">This action cannot be undone. Tasks in this schedule will stop running.</p>
+            </div>
+            <button aria-label="Close dialog" className="ui-icon-button shrink-0" disabled={deleteMut.isPending} onClick={() => setDeleteScheduleConfirm(null)} type="button"><X size={16} /></button>
+          </div>
+          <div className="flex flex-col-reverse gap-2 border-t border-[var(--line)] bg-white/[0.015] px-6 py-4 sm:flex-row sm:justify-end">
             <button className="ui-button ui-button-ghost" disabled={deleteMut.isPending} onClick={() => setDeleteScheduleConfirm(null)} type="button">Cancel</button>
-            <button className="ui-button ui-button-danger" disabled={deleteMut.isPending} onClick={() => deleteMut.mutate(deleteScheduleConfirm)} type="button">{deleteMut.isPending ? "Deleting&hellip;" : "Delete schedule"}</button>
+            <button className="ui-button ui-button-danger" disabled={deleteMut.isPending} onClick={() => deleteMut.mutate(deleteScheduleConfirm)} type="button">{deleteMut.isPending ? "Deleting…" : "Delete schedule"}</button>
           </div>
         </div>
       </div>
@@ -272,12 +277,17 @@ export function SchedulesView({ server }: { server?: ApiServer }) {
 
     {deleteTaskConfirm && (
       <div className="ui-dialog-layer" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget && !removeTaskMut.isPending) setDeleteTaskConfirm(null); }}>
-        <div className="ui-dialog" role="dialog" aria-modal="true">
-          <h3 className="text-base font-semibold text-slate-100">Delete task <span className="font-mono text-red-300">#{deleteTaskConfirm.seq}</span>?</h3>
-          <p className="mt-2 text-sm leading-6 text-slate-400">Remove this task from the schedule. Other tasks are not affected.</p>
-          <div className="mt-5 flex justify-end gap-2 border-t border-white/[0.06] pt-4">
+        <div className="ui-dialog" role="dialog" aria-modal="true" aria-label="Delete task">
+          <div className="ui-dialog-header">
+            <div className="min-w-0">
+              <h2 className="ui-dialog-title">Delete task <span className="font-mono text-red-300">#{deleteTaskConfirm.seq}</span>?</h2>
+              <p className="ui-dialog-description">Remove this task from the schedule. Other tasks are not affected.</p>
+            </div>
+            <button aria-label="Close dialog" className="ui-icon-button shrink-0" disabled={removeTaskMut.isPending} onClick={() => setDeleteTaskConfirm(null)} type="button"><X size={16} /></button>
+          </div>
+          <div className="flex flex-col-reverse gap-2 border-t border-[var(--line)] bg-white/[0.015] px-6 py-4 sm:flex-row sm:justify-end">
             <button className="ui-button ui-button-ghost" disabled={removeTaskMut.isPending} onClick={() => setDeleteTaskConfirm(null)} type="button">Cancel</button>
-            <button className="ui-button ui-button-danger" disabled={removeTaskMut.isPending} onClick={() => removeTaskMut.mutate({ scheduleId: deleteTaskConfirm.scheduleId, taskId: deleteTaskConfirm.taskId })} type="button">{removeTaskMut.isPending ? "Deleting&hellip;" : "Delete task"}</button>
+            <button className="ui-button ui-button-danger" disabled={removeTaskMut.isPending} onClick={() => removeTaskMut.mutate({ scheduleId: deleteTaskConfirm.scheduleId, taskId: deleteTaskConfirm.taskId })} type="button">{removeTaskMut.isPending ? "Deleting…" : "Delete task"}</button>
           </div>
         </div>
       </div>

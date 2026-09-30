@@ -5,17 +5,24 @@ export * from './api/auth';
 export * from './api/mounts';
 export * from './api/files';
 export {
-  listBackupProviders, listBackupPolicies, createBackupPolicy, deleteBackupPolicy, triggerBackup, cleanupExpiredBackups, lockBackupPolicy, unlockBackupPolicy,
+  listBackupProviders, listBackupPolicies, createBackupPolicy, deleteBackupPolicy, triggerBackup, cleanupServerBackups, lockBackupPolicy, unlockBackupPolicy,
   type BackupPolicy, type BackupPolicyConfig, type BackupProvider, type BackupProvidersResponse, type BackupPoliciesResponse,
 } from './api/backup';
+export * from './api/backup-engine';
 export * from './api/types';
+// The status vocabulary. Exported here so `@/lib/api` cannot resolve
+// `statusTone` to anything but the canonical one.
+export * from './api/status';
 export * from './api/apps';
 export * from './api/app-store';
 export * from './api/compose';
+export * from './api/compose-templates';
 export * from './api/notifications';
 export * from './api/monitoring';
 export * from './api/acme';
 export * from './api/docker';
+export * from './api/incus';
+export * from './api/nomad';
 export * from './api/env-vars';
 export * from './api/deployments';
 export {
@@ -24,6 +31,11 @@ export {
   listGitProviderRepos, listGitProviderBranches,
   type GitCredential, type GitProviderToken,
 } from './api/git-admin';
+export {
+  listGitDeployments, listGitDeploymentHooks, triggerGitDeployment,
+  createGitDeploymentHook, deleteGitDeploymentHook,
+  type GitDeployment, type GitDeploymentHook,
+} from './api/git-deployments';
 export * from './api/host-files';
 export {
   fetchOrganizations, fetchProjects, fetchEnvironments, fetchTeamMembers,
@@ -33,15 +45,75 @@ export {
 } from './api/tenancy';
 export * from './api/retry-client';
 export * from './api/dns';
+export * from './api/vault-provider';
 export * from './api/firewall';
 export * from './api/builds';
 export * from './api/cron-jobs';
+export * from './api/scheduled-tasks';
+export * from './api/tags';
+export * from './api/use-current-user';
+// Resource limits are re-exported by name rather than with `export *`
+// because ./api/resource-limits and ./api/servers both define `scaleProcess`
+// (different endpoints, same verb). A star export would make the barrel's
+// `scaleProcess` ambiguous, so callers who want the app-process variant import
+// it straight from ./api/resource-limits.
+export {
+  suggestedProcessTypes,
+  NANO_CORES_PER_CORE,
+  BYTES_PER_MB,
+  MAX_REPLICAS,
+  fetchProcessConfigs,
+  upsertProcessConfig,
+  deleteProcessConfig,
+  fetchAppHealthStatus,
+  previewComposeRender,
+  applyComposeRender,
+  fetchServerResourceLimits,
+  fetchServerHealth,
+  reportServerHealth,
+  formatCpuLimit,
+  formatMemoryLimit,
+  secondsToDuration,
+  coresToNanoCores,
+  mbToBytes,
+  nanoCoresToCores,
+  bytesToMegabytes,
+  type HealthCheckType,
+  type HealthStatus,
+  type ProcessConfig,
+  type ApplicationRef,
+  type ProcessConfigInput,
+  type ComposePresence,
+  type ProcessListResponse,
+  type UpsertProcessResponse,
+  type ScaleProcessResponse,
+  type HealthObservation,
+  type ProcessHealthState,
+  type RollbackDecision,
+  type HealthStatusResponse,
+  type AppliedProcess,
+  type SkippedProcess,
+  type ComposeRenderResponse,
+  type ComposeRenderOptions,
+  type ServerResourceLimitsResponse,
+  type ServerHealthResponse,
+} from './api/resource-limits';
 export * from './api/database-containers';
 export * from './api/database-services';
 export * from './api/preview-deployments';
 export * from './api/source-deployments';
 export * from './api/domains';
+export * from './api/netbird';
 export * from './api/rateLimits';
+export * from './api/registries';
+export { fetchPublicPanelSettings } from './api/panel-settings';
+export { fetchSetupStatus, runSetup } from './api/setup';
+export {
+  fetchPlugins, fetchMarketplacePlugins, fetchDiscoveredPlugins, fetchPluginHooks,
+  importPluginFromURL, importPluginFile, installPlugin, togglePluginLifecycle,
+  updatePlugin, updatePluginSettings, deletePlugin,
+  type PluginMarketplaceItem, type PluginDiscoverItem, type PluginInstallInput,
+} from './api/plugins';
 
 import type {
   ApiUser, ApiServer, ApiNode, ApiAllocationNode, ApiAllocation, ApiDatabase, ApiBackup,
@@ -66,11 +138,12 @@ import type {
   CreateEggInput, UpdateEggInput, SocialProvider,
   ApiEndpoint, ApiEndpointDiagnostics, ApiEndpointInventorySummary, ApiEndpointHealthRecord, ApiEndpointAccessPolicy, ApiEndpointNodeMember,
 } from './api/types';
-import { API_BASE_URL, getErrorMessage, requestJSON } from './api/http';
-export { API_BASE_URL } from './api/http';
-import type { PaginationMeta as PaginationMetadata } from '@forge/shared-types';
+import { getApiBaseUrl, buildWebSocketUrl, requestJSON, requestBlob, requestText, ApiError, postJSON } from './api/http';
+export { API_BASE_URL, getApiBaseUrl, requestJSON, requestBlob, requestText, fetchJSON, postJSON, putJSON, patchJSON, deleteJSON, postMultipartJSON, requestVoid, unwrapList, unwrapData, unwrapNullableData } from './api/http';
+import type { PaginationMeta as PaginationMetadata, PaginatedResponse } from '@forge/shared-types';
+import { getTotalPages } from './api/servers';
 
-export type { PaginationMeta as PaginationMetadata } from '@forge/shared-types';
+export type { PaginationMeta as PaginationMetadata, PaginatedEnvelope, PaginatedResponse } from '@forge/shared-types';
 
 // Functions below this line are NOT yet available in the modular API files
 // and are provided here for backward compatibility until they are migrated.
@@ -107,9 +180,13 @@ export type {
 // from the API client configuration instead of the browser origin: web and API
 // deployments may be hosted on different origins.
 export function getBeaconAPIURL(): string {
-  if (/^https?:\/\//i.test(API_BASE_URL)) return API_BASE_URL.replace(/\/$/, "");
-  if (typeof window !== "undefined") return new URL(API_BASE_URL, window.location.origin).toString().replace(/\/$/, "");
-  return "";
+  const base = getApiBaseUrl();
+  if (/^https?:\/\//i.test(base)) return base.replace(/\/$/, "");
+  if (typeof window !== "undefined") return new URL(base, window.location.origin).toString().replace(/\/$/, "");
+  // SSR has no origin to resolve a relative base against. Return the
+  // same-origin base itself so server-rendered links stay relative instead of
+  // collapsing to an empty string; callers resolve it in the browser.
+  return base || "/api/v1";
 }
 
 /**
@@ -123,16 +200,18 @@ async function apiFetch<T>(
 ): Promise<T> {
   const body: unknown = await requestJSON<unknown>(path, options);
 
-  // Admin list routes may use { data: [...] }, while older routes return the
-  // array directly. Preserve envelopes only for callers that expose metadata.
-  if (!preserveDataArrayEnvelope && isDataArrayEnvelope(body)) {
+  // List routes variously return a bare array or `{ data: [...] }`, and
+  // single-object routes return the object or `{ data: obj }`. Unwrap either
+  // envelope so legacy callers always see the payload. Callers that expose
+  // pagination metadata opt out via `preserveDataArrayEnvelope`.
+  if (!preserveDataArrayEnvelope && isDataEnvelope(body)) {
     return body.data as T;
   }
   return body as T;
 }
 
-function isDataArrayEnvelope(value: unknown): value is { data: unknown[] } {
-  return typeof value === "object" && value !== null && Array.isArray((value as { data?: unknown }).data);
+function isDataEnvelope(value: unknown): value is { data: unknown } {
+  return typeof value === "object" && value !== null && "data" in (value as Record<string, unknown>);
 }
 
 /**
@@ -146,114 +225,27 @@ export { ApiError } from './api/http';
 
 // No mock fallbacks -- all data comes from the real backend API
 
-export async function fetchPublicPanelSettings(): Promise<ApiPublicPanelSettings> {
-  const response = await fetch(`${API_BASE_URL}/panel/settings/public`, {
-    headers: { Accept: "application/json" },
-    credentials: "include",
-  });
-  if (!response.ok) {
-    throw new Error(`Panel settings request failed with ${response.status}`);
-  }
-  return response.json() as Promise<ApiPublicPanelSettings>;
-}
+// Public panel settings, the first-run setup wizard and bearer-token
+// verification live in their own domain modules (`lib/api/panel-settings.ts`,
+// `lib/api/setup.ts`, `lib/api/auth.ts`) so every request goes through the
+// canonical primitive in `lib/api/http.ts` — CSRF signing, cookie credentials
+// and the 401 session-expiry signal are never re-implemented here.
 
-export async function fetchSetupStatus(): Promise<ApiSetupStatus> {
-  const response = await fetch(`${API_BASE_URL}/setup/status`, {
-    headers: { Accept: "application/json" },
-    credentials: "include",
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!response.ok) {
-    const errorMessage = await getErrorMessage(response, "Setup status request failed with");
-    throw new Error(errorMessage);
-  }
-  return response.json() as Promise<ApiSetupStatus>;
-}
-
-export async function runSetup(
-  req: ApiSetupRequest,
-): Promise<{ ok: boolean; userId: string; email: string }> {
-  const response = await fetch(`${API_BASE_URL}/setup`, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(req),
-    credentials: "include",
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Setup failed (${response.status}): ${body}`);
-  }
-  return response.json() as Promise<{ ok: boolean; userId: string; email: string }>;
-}
-
-export async function fetchJSON<T>(path: string): Promise<T> {
-  return apiFetch<T>(path);
-}
-
-export async function postJSON<T>(path: string, body?: unknown): Promise<T> {
-  return apiFetch<T>(path, {
-    method: "POST",
-    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-}
-
-export async function putJSON<T>(path: string, body?: unknown): Promise<T> {
-  return apiFetch<T>(path, {
-    method: "PUT",
-    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-}
-
-export async function patchJSON<T>(path: string, body: unknown): Promise<T> {
-  return apiFetch<T>(path, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-export async function deleteJSON<T = void>(path: string, body?: unknown): Promise<T> {
-  const options: RequestInit = {
-    method: "DELETE",
-  };
-  if (body) {
-    options.headers = { "Content-Type": "application/json" };
-    options.body = JSON.stringify(body);
-  }
-  return apiFetch<T>(path, options);
-}
+// fetchJSON/postJSON/putJSON/patchJSON/deleteJSON are canonical in
+// `./api/http` and re-exported from the barrel above. Do not re-implement
+// them here — a second client would diverge on CSRF, credentials and timeouts.
 
 export function serverWebSocketURL(
   serverId: string,
   stream: "stats" | "logs" | "console" | "install" | "backup",
 ): string {
-  const protocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
-  const wsBase = API_BASE_URL.replace(/^https?:/, protocol);
   // Beacon canonical path for install is /servers/:id/install/ws; panel normalizes
   // to /servers/:id/ws/install + legacy alias /servers/:id/install/ws both proxied
   // via realtimeProxy (stream=install) — keep normalized URL for ticket flow.
-  if (stream === "install") return `${wsBase}/servers/${encodeURIComponent(serverId)}/ws/install`;
-  return `${wsBase}/servers/${encodeURIComponent(serverId)}/ws/${stream}`;
-}
-
-export async function verifyBearerToken(token: string): Promise<ApiUser> {
-  const response = await fetch(`${API_BASE_URL}/auth/me`, {
-    headers: {
-      Accept: "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    credentials: "include",
-  });
-  if (!response.ok) {
-    const errorMessage = await getErrorMessage(response, "Token verification failed with");
-    throw new Error(errorMessage);
-  }
-  return response.json() as Promise<ApiUser>;
+  // The URL must be absolute (see buildWebSocketUrl): relative bases fail in
+  // `new WebSocket`, and SSR without a window falls back to the relative path.
+  if (stream === "install") return buildWebSocketUrl(`/servers/${encodeURIComponent(serverId)}/ws/install`);
+  return buildWebSocketUrl(`/servers/${encodeURIComponent(serverId)}/ws/${stream}`);
 }
 
 export async function fetchUsers(): Promise<ApiUser[]> {
@@ -276,18 +268,34 @@ export async function fetchNodesPage(
   return Array.isArray(response) ? { data: response } : response;
 }
 
-export async function fetchAllNodes(): Promise<ApiNode[]> {
+export async function fetchAllNodes(opts?: { signal?: AbortSignal; concurrency?: number }): Promise<ApiNode[]> {
+  opts?.signal?.throwIfAborted?.();
   const firstPage = await fetchNodesPage();
   const pagination = firstPage.meta?.pagination;
-  if (!pagination || pagination.total <= 1) {
+  const totalPages = getTotalPages(pagination);
+  if (totalPages <= 1) {
     return firstPage.data ?? [];
   }
-  const remainingPages = await Promise.all(
-    Array.from({ length: pagination.total - 1 }, (_, index) => fetchNodesPage(index + 2)),
+  // Bounded fan-out (default 5): a 50-page fleet must not open 49 sockets at
+  // once. A failed page fails loudly — never a silent partial list.
+  const concurrency = opts?.concurrency ?? 5;
+  const pages = Array.from({ length: totalPages - 1 }, (_, index) => index + 2);
+  const results: PaginatedResponse<ApiNode>[] = new Array(pages.length);
+  let next = 0;
+  const workers = Array.from(
+    { length: Math.max(1, Math.min(concurrency, pages.length)) },
+    async () => {
+      while (next < pages.length) {
+        opts?.signal?.throwIfAborted?.();
+        const slot = next++;
+        results[slot] = await fetchNodesPage(pages[slot]);
+      }
+    },
   );
+  await Promise.all(workers);
   return [
     ...firstPage.data,
-    ...remainingPages.flatMap((response) => response.data ?? []),
+    ...results.flatMap((response) => response.data ?? []),
   ];
 }
 
@@ -405,68 +413,19 @@ export async function fetchDatabaseHost(id: string): Promise<ApiDatabaseHost> {
   return apiFetch<ApiDatabaseHost>(`/database-hosts/${encodeURIComponent(id)}`);
 }
 
-export type PaginatedResponse<T> = {
-  data: T[];
-  meta?: {
-    pagination?: PaginationMetadata;
-  };
-};
+// PaginatedResponse/PaginatedEnvelope are canonical in @forge/shared-types
+// (re-exported from the barrel above). Do not redefine them here.
 
-export function getTotalPages(meta?: { per_page?: number; total_records?: number; total_pages?: number; total?: number; current?: number; count?: number } | PaginationMetadata): number {
-  if (!meta) return 1;
-  const perPage = (meta as { per_page?: number }).per_page;
-  const totalRecords = (meta as { total_records?: number }).total_records;
-  if (typeof perPage === "number" && typeof totalRecords === "number" && perPage > 0) {
-    return Math.max(1, Math.ceil(totalRecords / perPage));
-  }
-  const totalPages = (meta as { total_pages?: number }).total_pages;
-  if (typeof totalPages === "number" && totalPages > 0) return totalPages;
-  const total = (meta as { total?: number }).total;
-  if (typeof total === "number" && total > 0) {
-    // If per_page also available, derive pages, else treat total as pages
-    if (typeof perPage === "number" && perPage > 0) return Math.max(1, Math.ceil(total / perPage));
-    return total;
-  }
-  return 1;
-}
+// `getTotalPages` is canonical in `./api/servers` (single implementation —
+// a previous revision kept this copy and `pageCountOf` side by side and they
+// diverged). Re-exported here so `@/lib/api` callers keep working.
+export { getTotalPages } from './api/servers';
 
-/** Fetch one server page and retain the response pagination metadata. */
-export async function fetchServersPage(
-  page = 1,
-  perPage = 100,
-): Promise<PaginatedResponse<ApiServer>> {
-  const response = await apiFetch<ApiServer[] | PaginatedResponse<ApiServer>>(
-    `/servers?page=${page}&per_page=${perPage}`,
-    {},
-    true,
-  );
-  return Array.isArray(response) ? { data: response } : response;
-}
-
-/** Fetch every server page so aggregate views are not limited to the API default page size. */
-export async function fetchAllServers(): Promise<ApiServer[]> {
-  const firstPage = await fetchServersPage();
-  const pagination = firstPage.meta?.pagination;
-  if (!pagination || pagination.total <= 1) {
-    return firstPage.data ?? [];
-  }
-
-  const remainingPages = await Promise.all(
-    Array.from({ length: pagination.total - 1 }, (_, index) => fetchServersPage(index + 2)),
-  );
-  return [
-    ...firstPage.data,
-    ...remainingPages.flatMap((response) => response.data ?? []),
-  ];
-}
-
-/**
- * Backward-compatible array API. It now includes every server rather than only
- * the API's default page, which keeps aggregate consumers complete.
- */
-export async function fetchServers(): Promise<ApiServer[]> {
-  return fetchAllServers();
-}
+// Server listing is canonical in `./api/servers` (re-exported from the barrel
+// above). Do not re-implement pagination here — `fetchServers` already walks
+// every page and `fetchAllServers`/`fetchServersPage` are backward-compatible
+// aliases defined there.
+export { fetchServersPage, fetchAllServers, fetchServers } from './api/servers';
 
 export async function fetchTemplates(): Promise<ApiEgg[]> {
   return apiFetch<ApiEgg[]>("/eggs");
@@ -597,14 +556,7 @@ export async function fetchServerStats(serverId: string): Promise<ApiStats> {
 }
 
 export async function fetchServerLogs(serverId: string): Promise<string> {
-  const response = await fetch(`${API_BASE_URL}/servers/${encodeURIComponent(serverId)}/logs`, {
-    headers: { Accept: "application/json" },
-    credentials: "include",
-  });
-  if (!response.ok) {
-    throw new Error(`Logs request failed with ${response.status}`);
-  }
-  return response.text();
+  return requestText(`/servers/${encodeURIComponent(serverId)}/logs`);
 }
 
 export async function fetchDatabaseHosts(): Promise<ApiDatabaseHost[]> {
@@ -795,6 +747,18 @@ export async function fetchAdminActivity(filter: AdminActivityFilter = {}): Prom
   return apiFetch<AdminActivityPage>(`/admin/activity${adminActivityQuery(filter)}`);
 }
 
+export type ActivityStats = {
+  totalEvents?: number;
+  eventsToday?: number;
+  eventsThisHour?: number;
+  uniqueActors?: number;
+  byLevel?: Record<string, number>;
+};
+
+export async function fetchActivityStats(): Promise<ActivityStats> {
+  return apiFetch<ActivityStats>("/admin/activity/stats");
+}
+
 export async function fetchAdminAudit(): Promise<ApiAdminAuditEvent[]> {
   return apiFetch<ApiAdminAuditEvent[]>("/admin/audit");
 }
@@ -802,15 +766,9 @@ export async function fetchAdminAudit(): Promise<ApiAdminAuditEvent[]> {
 export async function exportAdminActivity(format: "csv" | "json", filter: AdminActivityFilter = {}): Promise<Blob> {
   const query = new URLSearchParams(adminActivityQuery(filter).slice(1));
   query.set("format", format);
-  const response = await fetch(`${API_BASE_URL}/admin/activity/export?${query.toString()}`, {
+  return requestBlob(`/admin/activity/export?${query.toString()}`, {
     headers: { Accept: format === "csv" ? "text/csv" : "application/json" },
-    credentials: "include",
   });
-  if (!response.ok) {
-    const errorMessage = await getErrorMessage(response, "Activity export failed with");
-    throw new Error(errorMessage);
-  }
-  return response.blob();
 }
 
 export async function fetchPermissions(): Promise<Record<string, Record<string, string>>> {
@@ -917,6 +875,10 @@ export async function connectServerWebSocket(
   stream: "console" | "stats" | "logs" | "install" | "backup",
 ): Promise<WebSocket> {
   const ticketResponse = await fetchWSTicket(serverId, stream);
+  // The ticket is a short-lived (60s) single-use credential minted for this
+  // stream — it is the only thing that may appear in the WS query string.
+  // The session JWT is never used here: browsers cannot attach cookies or
+  // Authorization headers to a cross-origin WebSocket upgrade.
   // Normalized panel route for install is /ws/install; legacy alias /install/ws also valid
   const url = serverWebSocketURL(serverId, stream) + `?token=${encodeURIComponent(ticketResponse.token)}`;
   return new WebSocket(url);
@@ -984,23 +946,9 @@ export async function removeUserRoles(
   });
 }
 
-export async function fetchPlugins(): Promise<ApiPlugin[]> {
-  return apiFetch<ApiPlugin[]>("/admin/plugins");
-}
-
-export async function importPluginFromURL(url: string): Promise<ApiPlugin> {
-  return apiFetch<ApiPlugin>("/admin/plugins/import/url", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url }),
-  });
-}
-
-export async function deletePlugin(id: string): Promise<void> {
-  await apiFetch<void>(`/admin/plugins/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
-}
+// Plugin (integrations) requests are served by `lib/api/plugins.ts`, which is
+// re-exported from the barrel above; the multipart manifest import lives there
+// too, so no ad-hoc upload remains in the admin component.
 
 export async function fetchMyOAuthClients(): Promise<ApiOAuthClient[]> {
   return apiFetch<ApiOAuthClient[]>("/account/oauth-clients");
@@ -1067,7 +1015,7 @@ export async function retryWebhookDelivery(
   webhookId: string,
   deliveryId: string,
 ): Promise<{ ok: boolean }> {
-  return postJSON(
+  return postJSON<{ ok: boolean }>(
     `/webhooks/${encodeURIComponent(webhookId)}/deliveries/${encodeURIComponent(deliveryId)}/retry`,
   );
 }
@@ -1461,8 +1409,11 @@ export async function fetchServerTransferStatus(
     return await apiFetch<ApiLegacyTransferStatus>(
       `/servers/${encodeURIComponent(serverId)}/transfer`,
     );
-  } catch {
-    return null;
+  } catch (error) {
+    // 404 means no transfer record — every other status (401/403/5xx,
+    // network failure) is real and must surface to the caller.
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
   }
 }
 

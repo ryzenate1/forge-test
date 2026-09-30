@@ -1,4 +1,5 @@
 "use client";
+import { adminPageGuides } from "@/components/admin/admin-page-guides";
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -36,6 +37,8 @@ export function AdminNestsEggs() {
   const nestsRefetch = nestsQuery.refetch;
 
  const [selectedNest, setSelectedNest] = useState<ApiNest | null>(null);
+ const [nestSearch, setNestSearch] = useState("");
+ const [eggSearch, setEggSearch] = useState("");
  const [nestModal, setNestModal] = useState<null | "create" | ApiNest>(null);
  const [eggModal, setEggModal] = useState<null | "create" | ApiEgg>(null);
   const [importExportModal, setImportExportModal] = useState(false);
@@ -68,18 +71,23 @@ export function AdminNestsEggs() {
   const eggsError = eggsQuery.isError;
   const eggsErrorObj = eggsQuery.error;
   const eggsRefetch = eggsQuery.refetch;
+  const visibleNests = nests.filter((nest) => `${nest.name} ${nest.description ?? ""}`.toLowerCase().includes(nestSearch.toLowerCase()));
+  const visibleEggs = eggs.filter((egg) => `${egg.name} ${egg.description ?? ""}`.toLowerCase().includes(eggSearch.toLowerCase()));
 
  const createNestMut = useMutation({
  mutationFn: () => createNest({ name: nestName.trim(), description: nestDesc.trim() }),
  onSuccess: () => { qc.invalidateQueries({ queryKey: ["nests"] }); setNestModal(null); setNestName(""); setNestDesc(""); },
+ onError: (err) => toast({ tone: "error", title: "Failed to create nest", message: err instanceof Error ? err.message : "An error occurred" }),
  });
  const updateNestMut = useMutation({
  mutationFn: (id: string) => updateNest(id, { name: nestName.trim(), description: nestDesc.trim() }),
  onSuccess: () => { qc.invalidateQueries({ queryKey: ["nests"] }); setNestModal(null); },
+ onError: (err) => toast({ tone: "error", title: "Failed to update nest", message: err instanceof Error ? err.message : "An error occurred" }),
  });
  const deleteNestMut = useMutation({
  mutationFn: (id: string) => deleteNest(id),
- onSuccess: () => { qc.invalidateQueries({ queryKey: ["nests"] }); if (selectedNest) setSelectedNest(null); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["nests"] }); setDeleteNestTarget(null); if (selectedNest) setSelectedNest(null); },
+ onError: (err) => toast({ tone: "error", title: "Failed to delete nest", message: err instanceof Error ? err.message : "An error occurred" }),
  });
    const createEggMut = useMutation({
     mutationFn: (importData?: Parameters<typeof createEgg>[0]) => createEgg(importData || {
@@ -94,6 +102,7 @@ export function AdminNestsEggs() {
       installEntrypoint: eggInstallEntry.trim(),
     }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["eggs", selectedNest?.id] }); qc.invalidateQueries({ queryKey: ["nests"] }); setEggModal(null); resetEggForm(); },
+    onError: (err) => toast({ tone: "error", title: "Failed to create egg", message: err instanceof Error ? err.message : "An error occurred" }),
   });
  const updateEggMut = useMutation({
  mutationFn: (id: string) => updateEgg(id, {
@@ -107,10 +116,12 @@ export function AdminNestsEggs() {
  installEntrypoint: eggInstallEntry.trim(),
  }),
   onSuccess: () => { qc.invalidateQueries({ queryKey: ["eggs", selectedNest?.id] }); qc.invalidateQueries({ queryKey: ["nests"] }); setEggModal(null); },
+  onError: (err) => toast({ tone: "error", title: "Failed to update egg", message: err instanceof Error ? err.message : "An error occurred" }),
   });
   const deleteEggMut = useMutation({
   mutationFn: deleteEgg,
-  onSuccess: () => { qc.invalidateQueries({ queryKey: ["eggs", selectedNest?.id] }); qc.invalidateQueries({ queryKey: ["nests"] }); },
+  onSuccess: () => { qc.invalidateQueries({ queryKey: ["eggs", selectedNest?.id] }); qc.invalidateQueries({ queryKey: ["nests"] }); setDeleteEggTarget(null); },
+  onError: (err) => toast({ tone: "error", title: "Failed to delete egg", message: err instanceof Error ? err.message : "An error occurred" }),
   });
   const cloneEggMut = useMutation({
  mutationFn: (egg: ApiEgg) => {
@@ -128,6 +139,7 @@ export function AdminNestsEggs() {
    });
  }, 
   onSuccess: () => { qc.invalidateQueries({ queryKey: ["eggs", selectedNest?.id] }); qc.invalidateQueries({ queryKey: ["nests"] }); },
+  onError: (err) => toast({ tone: "error", title: "Failed to clone egg", message: err instanceof Error ? err.message : "An error occurred" }),
   });
 
  const exportEgg = (egg: ApiEgg) => {
@@ -223,10 +235,11 @@ export function AdminNestsEggs() {
 
 
  return (
- <div>
+ <div className="space-y-5">
  <SectionHeader
- title="Nests & Eggs"
- sub="Game server definitions."
+        info={adminPageGuides.nests}
+ title="Service Definitions"
+ sub="Reusable game-server blueprints. A nest groups related games; an egg is one runnable definition inside it."
  action={<Btn onClick={openNestCreate}><Plus size={14} /> New Nest</Btn>}
  />
 
@@ -234,14 +247,15 @@ export function AdminNestsEggs() {
  {/* Nests sidebar */}
  <Card>
  <CardHeader title="Nests" icon={Box} />
+ <div className="mb-3"><Input label="Search nests" value={nestSearch} onChange={setNestSearch} placeholder="Search service families" /></div>
   {isLoading ? (
-  <div className="py-8 text-center text-sm text-slate-500">Loading</div>
-  ) : nestsError ? <div className="p-4"><div className="flex items-start justify-between gap-4 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-200"><span>Could not load nests: {nestsErrorObj?.message}</span><Btn size="sm" tone="ghost" onClick={() => void nestsRefetch()}>Retry</Btn></div></div>
-   : nests.length === 0 ? (
- <EmptyState icon={Box} message="No nests yet." />
+  <div className="py-8 text-center text-sm text-text-muted">Loading</div>
+  ) : nestsError ? <div className="p-4"><div className="flex items-start justify-between gap-4 rounded-lg border border-danger-line bg-danger-subtle p-3 text-sm text-danger"><span>Could not load nests: {nestsErrorObj?.message}</span><Btn size="sm" tone="ghost" onClick={() => void nestsRefetch()}>Retry</Btn></div></div>
+   : visibleNests.length === 0 ? (
+ <EmptyState icon={Box} title={nestSearch ? "No matching nests" : "No nests yet"} message={nestSearch ? "Try a different name or description." : "Create a nest to group related game-server definitions."} />
  ) : (
-  <ul className="divide-y divide-white/[0.04]">
-  {Array.isArray(nests) && nests.map((nest) => {
+  <ul className="divide-y divide-line">
+  {visibleNests.map((nest) => {
  const eggCount = nest.eggCount ?? nest.eggs ?? 0;
  const isSelected = selectedNest?.id === nest.id;
  return (
@@ -249,23 +263,23 @@ export function AdminNestsEggs() {
     key={nest.id}
     className={cn(
       "group flex items-center transition cursor-pointer",
-      "hover:bg-white/[0.03]",
-      isSelected && "border-l-2 border-[#dc2626] bg-[var(--brand)]/10",
+      "hover:bg-overlay",
+      isSelected && "border-l-2 border-[var(--brand)] bg-[color-mix(in_srgb,var(--brand)_10%,transparent)]",
     )}
   >
   <button
   aria-pressed={isSelected}
-  className="min-w-0 flex-1 rounded-md px-4 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/40"
-  onClick={() => setSelectedNest(nest)}
+  className="min-w-0 flex-1 rounded-md px-4 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]"
+  onClick={() => { setSelectedNest(nest); setEggSearch(""); }}
   type="button"
   >
-  <p className="truncate text-sm font-medium text-slate-200">{nest.name}</p>
-  <p className="text-xs text-slate-500">{eggCount} egg{eggCount !== 1 ? "s" : ""}</p>
+  <p className="truncate text-sm font-medium text-text">{nest.name}</p>
+  <p className="text-xs text-text-muted">{eggCount} egg{eggCount !== 1 ? "s" : ""}</p>
   </button>
-   <div aria-label={`${nest.name} actions`} className="flex shrink-0 items-center gap-1 px-4 opacity-0 transition-opacity group-hover:opacity-100" role="group">
-   <button aria-label={`Open ${nest.name}`} className="rounded p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-sky-400" onClick={(e) => { e.stopPropagation(); router.push(`/admin/nests/${nest.id}/eggs`); }} type="button"><ExternalLink size={12} /></button>
-   <button aria-label={`Edit ${nest.name}`} className="rounded p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-200" onClick={(e) => { e.stopPropagation(); openNestEdit(nest); }} type="button"><Settings size={12} /></button>
-   <button aria-label={`Delete ${nest.name}`} className="rounded p-1.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-red-400" onClick={(e) => { e.stopPropagation(); setDeleteNestTarget(nest); }} type="button"><Trash2 size={12} /></button>
+   <div aria-label={`${nest.name} actions`} className="flex shrink-0 items-center gap-1 px-4 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100" role="group">
+   <button aria-label={`Open ${nest.name}`} className="rounded p-1.5 text-text-muted transition-colors hover:bg-overlay-strong hover:text-info" onClick={(e) => { e.stopPropagation(); router.push(`/admin/nests/${nest.id}/eggs`); }} type="button"><ExternalLink size={12} /></button>
+   <button aria-label={`Edit ${nest.name}`} className="rounded p-1.5 text-text-muted transition-colors hover:bg-overlay-strong hover:text-text" onClick={(e) => { e.stopPropagation(); openNestEdit(nest); }} type="button"><Settings size={12} /></button>
+   <button aria-label={`Delete ${nest.name}`} className="rounded p-1.5 text-text-muted transition-colors hover:bg-overlay-strong hover:text-danger" onClick={(e) => { e.stopPropagation(); setDeleteNestTarget(nest); }} type="button"><Trash2 size={12} /></button>
    </div>
   </li>
  );
@@ -276,30 +290,31 @@ export function AdminNestsEggs() {
 
  {/* Eggs panel */}
  <Card>
- <div className="flex items-center justify-between border-b border-white/[0.06] bg-[var(--surface-input)] px-4 h-11">
- <span className="text-xs font-semibold uppercase tracking-widest text-slate-400">
+ <div className="flex items-center justify-between border-b border-line bg-[var(--surface-input)] px-4 h-11">
+ <span className="text-xs font-semibold uppercase tracking-widest text-text-subtle">
  {selectedNest ? `Eggs: ${selectedNest.name}` : "Select a nest"}
  </span>
-  {selectedNest ? (
+ {selectedNest ? (
   <div className="flex items-center gap-2">
-    <Btn size="sm" tone="subtle" onClick={() => router.push(`/admin/templates?nestId=${selectedNest.id}`)}>Browse Templates →</Btn>
+    <Btn size="sm" tone="subtle" onClick={() => router.push(`/admin/compatibility-templates?nestId=${selectedNest.id}`)}>Browse Templates →</Btn>
     <Btn size="sm" onClick={() => setImportExportModal(true)}><Upload size={12} /> Import/Export</Btn>
     <Btn size="sm" onClick={openEggCreate}><Plus size={12} /> New Egg</Btn>
-  </div>
-  ) : null}
  </div>
+ ) : null}
+ </div>
+ {selectedNest ? <div className="border-b border-line p-4"><Input label="Search eggs" value={eggSearch} onChange={setEggSearch} placeholder={`Search ${selectedNest.name} definitions`} /></div> : null}
  {!selectedNest ? (
  <EmptyState icon={ChevronRight} message="Select a nest on the left to see its eggs." />
   ) : eggsLoading ? (
-  <div className="py-10 text-center text-sm text-slate-500">Loading</div>
+  <div className="py-10 text-center text-sm text-text-muted">Loading</div>
   ) : eggsError ? (
-  <div className="p-4"><div className="flex items-start justify-between gap-4 rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-200"><span>Could not load eggs: {eggsErrorObj?.message}</span><Btn size="sm" tone="ghost" onClick={() => void eggsRefetch()}>Retry</Btn></div></div>
-  ) : eggs.length === 0 ? (
- <EmptyState icon={Tag} message="No eggs in this nest. Create one." />
+  <div className="p-4"><div className="flex items-start justify-between gap-4 rounded-lg border border-danger-line bg-danger-subtle p-3 text-sm text-danger"><span>Could not load eggs: {eggsErrorObj?.message}</span><Btn size="sm" tone="ghost" onClick={() => void eggsRefetch()}>Retry</Btn></div></div>
+  ) : visibleEggs.length === 0 ? (
+ <EmptyState icon={Tag} title={eggSearch ? "No matching eggs" : "No eggs yet"} message={eggSearch ? "Try a different name or description." : "Create an egg or import one from Compatibility Templates."} />
  ) : (
- <table className="w-full text-sm">
+ <div className="overflow-x-auto"><table className="w-full text-sm">
  <thead>
- <tr className="border-b border-white/[0.06] text-left text-xs text-slate-500 uppercase tracking-wider">
+ <tr className="border-b border-line text-left text-xs text-text-muted uppercase tracking-wider">
   <th className="px-4 py-3">Name</th>
   <th className="px-4 py-3">Docker image(s)</th>
   <th className="px-4 py-3">Startup</th>
@@ -307,18 +322,18 @@ export function AdminNestsEggs() {
   <th className="px-4 py-3" />
  </tr>
  </thead>
- <tbody className="divide-y divide-white/[0.04]">
-  {Array.isArray(eggs) && eggs.map((egg) => (
- <tr key={egg.id} className="hover:bg-white/[0.02]">
+ <tbody className="divide-y divide-line">
+  {visibleEggs.map((egg) => (
+ <tr key={egg.id} className="hover:bg-overlay-subtle">
   <td className="px-4 py-3">
-  <p className="font-medium text-slate-200">{egg.name}</p>
-  <p className="text-xs text-slate-500">{egg.description}</p>
+  <p className="font-medium text-text">{egg.name}</p>
+  <p className="text-xs text-text-muted">{egg.description}</p>
   </td>
-  <td className="px-4 py-3 font-mono text-xs text-slate-400 max-w-[180px] truncate">
+  <td className="px-4 py-3 font-mono text-xs text-text-subtle max-w-[180px] truncate">
   {dockerImageLines(egg.dockerImages)[0] ?? egg.dockerImage ?? "-"}
   </td>
-  <td className="px-4 py-3 font-mono text-xs text-slate-400 max-w-[160px] truncate">
-  {egg.startup || <span className="text-slate-600">-</span>}
+  <td className="px-4 py-3 font-mono text-xs text-text-subtle max-w-[160px] truncate">
+  {egg.startup || <span className="text-text-muted">-</span>}
   </td>
   <td className="px-4 py-3">
   <Btn size="sm" tone="ghost" onClick={() => router.push(`/admin/nests/${selectedNest!.id}/eggs/${egg.id}/variables`)}>
@@ -336,7 +351,7 @@ export function AdminNestsEggs() {
  </tr>
  ))}
  </tbody>
- </table>
+ </table></div>
  )}
  </Card>
  </div>
@@ -344,10 +359,12 @@ export function AdminNestsEggs() {
  {/* Nest modal */}
   {nestModal !== null ? (
   <Modal title={nestModal === "create" ? "Create Nest" : "Edit Nest"} onClose={() => setNestModal(null)}>
+  <div className="space-y-4">
   <AdminFormSection title="Nest Details">
   <Input label="Name" value={nestName} onChange={setNestName} placeholder="Minecraft" />
   <Input label="Description" value={nestDesc} onChange={setNestDesc} placeholder="Games based on Minecraft" />
   </AdminFormSection>
+  </div>
   <ModalFooter
  onCancel={() => setNestModal(null)}
  onConfirm={() => nestModal === "create" ? createNestMut.mutate() : updateNestMut.mutate((nestModal as ApiNest).id)}
@@ -399,11 +416,11 @@ export function AdminNestsEggs() {
   <Modal title="Import/Export Egg" onClose={() => setImportExportModal(false)} wide>
   <div className="space-y-4">
   <div>
-  <h4 className="text-sm font-semibold text-slate-200 mb-2">Export Egg</h4>
-  <p className="text-xs text-slate-400 mb-3">Click the download icon next to any egg in the table to export its configuration as JSON.</p>
+  <h4 className="text-sm font-semibold text-text mb-2">Export Egg</h4>
+  <p className="text-xs text-text-subtle mb-3">Click the download icon next to any egg in the table to export its configuration as JSON.</p>
   </div>
-  <div className="border-t border-white/[0.06] pt-4">
-  <h4 className="text-sm font-semibold text-slate-200 mb-2">Import Egg</h4>
+  <div className="border-t border-line pt-4">
+  <h4 className="text-sm font-semibold text-text mb-2">Import Egg</h4>
   <Textarea 
   label="Paste egg JSON configuration" 
   value={importJson} 

@@ -6,11 +6,48 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+// vaultResolverMu guards vaultResolver, an optional hook that lets a higher
+// layer (the vaultprovider service) resolve external secret-store references
+// while the control plane builds a deployment environment, without importing
+// that package into the store layer (which would be an import cycle). It is
+// nil by default, in which case resolution is bit-identical to a build without
+// the Vault feature.
+var (
+	vaultResolverMu sync.RWMutex
+	vaultResolver   func(ctx context.Context, value string) (string, bool, error)
+)
+
+// SetVaultResolver registers a resolver consulted for every plaintext
+// environment-variable value in ResolveEnvironmentVariables. The hook returns
+// (resolved, isReference, error): isReference is false when the value is not a
+// Vault reference and should be passed through unchanged; when it is true, the
+// resolved secret (or a fail-closed error) is used instead. Pass nil to clear a
+// previously registered resolver.
+func (s *Store) SetVaultResolver(fn func(ctx context.Context, value string) (string, bool, error)) {
+	vaultResolverMu.Lock()
+	vaultResolver = fn
+	vaultResolverMu.Unlock()
+}
+
+// resolveVaultReference invokes the registered resolver, if any. When no
+// resolver is configured it reports ("", false, nil) so callers pass the value
+// through untouched. A resolve error is never swallowed.
+func resolveVaultReference(ctx context.Context, value string) (string, bool, error) {
+	vaultResolverMu.RLock()
+	hook := vaultResolver
+	vaultResolverMu.RUnlock()
+	if hook == nil {
+		return "", false, nil
+	}
+	return hook(ctx, value)
+}
 
 type EnvironmentVariable struct {
 	ID             string    `json:"id"`
@@ -118,22 +155,36 @@ func (s *Store) CreateEnvironmentVariable(ctx context.Context, req CreateEnvVarR
 	}
 	scope := normalizeScope(req.Scope)
 
-	var encrypted string
-	if req.Value != "" {
-		var err error
-		encrypted, err = s.encryptSecret(req.Value, secretAAD("environment_variables", uuid.NewString(), key))
-		if err != nil && !errors.Is(err, ErrSecretEncryptionUnavailable) {
-			return EnvironmentVariable{}, err
-		}
-	}
-
 	id := uuid.NewString()
 	now := time.Now().UTC()
+
+	// Canonical AAD: bound to the env-var row's stable primary key (id) plus its
+	// immutable key, so it can be recomputed identically in Update and Resolve.
+	aad := secretAAD("environment_variables", id, key)
+
+	var stored string
+	if req.Value != "" {
+		enc, err := s.encryptSecret(req.Value, aad)
+		if err != nil {
+			if !errors.Is(err, ErrSecretEncryptionUnavailable) {
+				return EnvironmentVariable{}, err
+			}
+			// Encryption is unavailable. Fail closed for sensitive values rather
+			// than persist an empty secret that only looks like a successful write;
+			// non-sensitive values may fall back to plaintext storage.
+			if req.IsSensitive {
+				return EnvironmentVariable{}, err
+			}
+			stored = req.Value
+		} else {
+			stored = enc
+		}
+	}
 
 	if _, err := s.db.Exec(ctx, `
 		INSERT INTO environment_variables (id, org_id, project_id, environment_id, service_id, scope, key, value_encrypted, is_sensitive, version, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10, $10)
-	`, id, req.OrgID, req.ProjectID, req.EnvironmentID, req.ServiceID, scope, key, encrypted, req.IsSensitive, now); err != nil {
+	`, id, req.OrgID, req.ProjectID, req.EnvironmentID, req.ServiceID, scope, key, stored, req.IsSensitive, now); err != nil {
 		if pgErr := isUniqueViolation(err); pgErr != nil {
 			return EnvironmentVariable{}, fmt.Errorf("variable with key %q already exists in this scope", key)
 		}
@@ -141,7 +192,7 @@ func (s *Store) CreateEnvironmentVariable(ctx context.Context, req CreateEnvVarR
 	}
 
 	_ = s.AppendAudit(ctx, actorID, "env_var created", "environment_variable", &id, fmt.Sprintf(`{"key":"%s","scope":"%s"}`, key, scope))
-	return EnvironmentVariable{ID: id, OrgID: req.OrgID, ProjectID: req.ProjectID, EnvironmentID: req.EnvironmentID, ServiceID: req.ServiceID, Scope: scope, Key: key, ValueEncrypted: encrypted, IsSensitive: req.IsSensitive, Version: 1, CreatedAt: now, UpdatedAt: now}, nil
+	return EnvironmentVariable{ID: id, OrgID: req.OrgID, ProjectID: req.ProjectID, EnvironmentID: req.EnvironmentID, ServiceID: req.ServiceID, Scope: scope, Key: key, ValueEncrypted: stored, IsSensitive: req.IsSensitive, Version: 1, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func (s *Store) GetEnvironmentVariable(ctx context.Context, id string) (EnvironmentVariable, error) {
@@ -189,12 +240,25 @@ func (s *Store) UpdateEnvironmentVariable(ctx context.Context, id string, req Up
 	now := time.Now().UTC()
 	version := existing.Version + 1
 
-	var encrypted string
+	// An empty req.Value means "leave the stored secret unchanged": preserve the
+	// existing envelope so a PUT that only flips is_sensitive cannot destroy it.
+	stored := existing.ValueEncrypted
 	if req.Value != "" {
-		var encErr error
-		encrypted, encErr = s.encryptSecret(req.Value, secretAAD("environment_variables", id, existing.Key))
-		if encErr != nil && !errors.Is(encErr, ErrSecretEncryptionUnavailable) {
-			return EnvironmentVariable{}, encErr
+		// Re-encrypt with the same canonical AAD Resolve reads with (row id + key).
+		// existing.ID is used rather than the caller-supplied id: Postgres normalises
+		// uuid text (case, braces), and Resolve recomputes the AAD from id::text, so
+		// only the DB-returned form is guaranteed byte-identical at read time.
+		enc, encErr := s.encryptSecret(req.Value, secretAAD("environment_variables", existing.ID, existing.Key))
+		if encErr != nil {
+			if !errors.Is(encErr, ErrSecretEncryptionUnavailable) {
+				return EnvironmentVariable{}, encErr
+			}
+			if req.IsSensitive {
+				return EnvironmentVariable{}, encErr
+			}
+			stored = req.Value
+		} else {
+			stored = enc
 		}
 	}
 
@@ -212,7 +276,7 @@ func (s *Store) UpdateEnvironmentVariable(ctx context.Context, id string, req Up
 	}
 
 	upsert := `UPDATE environment_variables SET value_encrypted = $1, is_sensitive = $2, version = $3, updated_at = $4 WHERE id = $5 AND deleted_at IS NULL`
-	if _, err := tx.Exec(ctx, upsert, encrypted, req.IsSensitive, version, now, id); err != nil {
+	if _, err := tx.Exec(ctx, upsert, stored, req.IsSensitive, version, now, id); err != nil {
 		return EnvironmentVariable{}, err
 	}
 
@@ -256,7 +320,7 @@ func (s *Store) ResolveEnvironmentVariables(ctx context.Context, orgID, projectI
 			continue
 		}
 		rows, err := s.db.Query(ctx, fmt.Sprintf(`
-			SELECT key, value_encrypted
+			SELECT id::text, key, value_encrypted
 			FROM environment_variables
 			WHERE %s = $1 AND scope = $2 AND deleted_at IS NULL
 			ORDER BY key ASC
@@ -265,16 +329,40 @@ func (s *Store) ResolveEnvironmentVariables(ctx context.Context, orgID, projectI
 			return nil, err
 		}
 		for rows.Next() {
-			var key, encrypted string
-			if err := rows.Scan(&key, &encrypted); err != nil {
+			var rowID, key, encrypted string
+			if err := rows.Scan(&rowID, &key, &encrypted); err != nil {
 				rows.Close()
 				return nil, err
 			}
-			if encrypted != "" {
-				plain, decErr := s.decryptSecret(encrypted, "", secretAAD("environment_variables", fmt.Sprintf("%s:%s", r.scope, r.id), key))
-				if decErr == nil {
-					result[key] = plain
+			if encrypted == "" {
+				continue
+			}
+			// Canonical AAD: env-var row id + key, matching Create and Update.
+			if strings.HasPrefix(encrypted, "forge:v1:") {
+				plain, decErr := s.decryptSecret(encrypted, "", secretAAD("environment_variables", rowID, key))
+				if decErr != nil {
+					// An incomplete secret set is never reported as success.
+					rows.Close()
+					return nil, decErr
 				}
+				result[key] = plain
+			} else {
+				// Plaintext fallback stored when encryption was unavailable for a
+				// non-sensitive value at write time. This is also the single seam
+				// where an external secret-store (Vault) reference is detected and
+				// resolved live. When no resolver is configured, or the value is
+				// not a reference, it passes through unchanged (bit-identical to
+				// prior behavior).
+				if resolved, isRef, refErr := resolveVaultReference(ctx, encrypted); isRef {
+					if refErr != nil {
+						// An unresolvable reference is never reported as success.
+						rows.Close()
+						return nil, refErr
+					}
+					result[key] = resolved
+					continue
+				}
+				result[key] = encrypted
 			}
 		}
 		rows.Close()

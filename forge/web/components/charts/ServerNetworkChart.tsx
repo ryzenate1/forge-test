@@ -3,8 +3,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Network } from "lucide-react";
+import { queryKeys } from "@/lib/api/query-keys";
 import { getNodeMetrics, type MetricPeriod, type NodeMetrics } from "@/lib/api/monitoring";
 import { Card, CardHeader } from "@/components/admin/admin-ui";
+import { chart } from "@/lib/design-tokens";
 import { SpinnerPage } from "@/components/shared";
 
 interface ServerNetworkChartProps {
@@ -42,7 +44,7 @@ function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: 
 
 export function ServerNetworkChart({ nodeId, height = 300, period = "1h" }: ServerNetworkChartProps) {
   const { data, isLoading, isError } = useQuery({
-    queryKey: ["network-chart", nodeId, period],
+    queryKey: queryKeys.monitoring.history(nodeId ?? "all", period),
     queryFn: () => getNodeMetrics({ nodeId, period }),
     refetchInterval: 30_000,
   });
@@ -95,24 +97,24 @@ export function ServerNetworkChart({ nodeId, height = 300, period = "1h" }: Serv
             <AreaChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
               <defs>
                 <linearGradient id="rxGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+                  <stop offset="5%" stopColor={chart.networkIn} stopOpacity={0.3} />
+                  <stop offset="95%" stopColor={chart.networkIn} stopOpacity={0} />
                 </linearGradient>
                 <linearGradient id="txGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#06b6d4" stopOpacity={0} />
+                  <stop offset="5%" stopColor={chart.networkOut} stopOpacity={0.3} />
+                  <stop offset="95%" stopColor={chart.networkOut} stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
               <XAxis
                 dataKey="timestamp"
-                tick={{ fill: "#64748b", fontSize: 11 }}
+                tick={{ fill: chart.axis, fontSize: 11 }}
                 tickLine={false}
                 axisLine={false}
                 tickFormatter={(v) => new Date(v).toLocaleTimeString()}
               />
               <YAxis
-                tick={{ fill: "#64748b", fontSize: 11 }}
+                tick={{ fill: chart.axis, fontSize: 11 }}
                 tickLine={false}
                 axisLine={false}
                 tickFormatter={(v) => formatBytes(v)}
@@ -122,21 +124,21 @@ export function ServerNetworkChart({ nodeId, height = 300, period = "1h" }: Serv
               <Area
                 type="monotone"
                 dataKey="rx"
-                stroke="#8b5cf6"
+                stroke={chart.networkIn}
                 strokeWidth={2}
                 fill="url(#rxGradient)"
                 dot={false}
-                activeDot={{ r: 4, fill: "#8b5cf6" }}
+                activeDot={{ r: 4, fill: chart.networkIn }}
                 name="RX"
               />
               <Area
                 type="monotone"
                 dataKey="tx"
-                stroke="#06b6d4"
+                stroke={chart.networkOut}
                 strokeWidth={2}
                 fill="url(#txGradient)"
                 dot={false}
-                activeDot={{ r: 4, fill: "#06b6d4" }}
+                activeDot={{ r: 4, fill: chart.networkOut }}
                 name="TX"
               />
             </AreaChart>

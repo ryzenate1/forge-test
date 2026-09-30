@@ -393,12 +393,6 @@ func (p *CaddyReverseProxy) SetUpstreamHealth(ctx context.Context, ruleID string
 	}
 	p.mu.Unlock()
 
-	if healthy {
-		slog.Info("caddy upstream marked healthy", "ruleID", ruleID, "target", targetDial)
-	} else {
-		slog.Warn("caddy upstream marked unhealthy", "ruleID", ruleID, "target", targetDial)
-	}
-
 	addr := p.adminAddr
 	if addr == "" {
 		addr = "localhost:2019"
@@ -406,8 +400,10 @@ func (p *CaddyReverseProxy) SetUpstreamHealth(ctx context.Context, ruleID string
 
 	configJSON, err := p.getRunningConfig(ctx, addr)
 	if err != nil {
-		slog.Warn("caddy not reachable for upstream health update", "error", err)
-		return nil
+		// Surface gateway reachability: the desired health state is kept in
+		// p.healthStatus above so a later probe retries, but the caller must
+		// see the failure instead of a silent success.
+		return fmt.Errorf("caddy admin unreachable for upstream health update rule %s target %s: %w", ruleID, targetDial, err)
 	}
 
 	var cfg map[string]any
@@ -420,7 +416,28 @@ func (p *CaddyReverseProxy) SetUpstreamHealth(ctx context.Context, ruleID string
 		return nil
 	}
 
-	return p.applyConfig(ctx, addr, cfg)
+	if err := p.applyConfig(ctx, addr, cfg); err != nil {
+		return fmt.Errorf("apply upstream health update rule %s target %s: %w", ruleID, targetDial, err)
+	}
+	// Log only after the gateway accepted the change; logging before the
+	// admin round-trip reported health transitions that never happened.
+	if healthy {
+		slog.Info("caddy upstream marked healthy", "ruleID", ruleID, "target", targetDial)
+	} else {
+		slog.Warn("caddy upstream marked unhealthy", "ruleID", ruleID, "target", targetDial)
+	}
+	return nil
+}
+
+// caddyRouteMatchesRule reports whether a running-config route belongs to the
+// given routing rule. Route IDs are "gamepanel-<ruleID>" or
+// "gamepanel-<ruleID>-group"; a substring match would also hit siblings such
+// as "abc" inside "abc-v2".
+func caddyRouteMatchesRule(routeID, ruleID string) bool {
+	if routeID == "gamepanel-"+ruleID || routeID == "gamepanel-"+ruleID+"-group" {
+		return true
+	}
+	return false
 }
 
 func (p *CaddyReverseProxy) modifyCaddyUpstream(cfg map[string]any, ruleID, targetDial string, healthy bool) bool {
@@ -454,7 +471,7 @@ func (p *CaddyReverseProxy) modifyCaddyUpstream(cfg map[string]any, ruleID, targ
 				continue
 			}
 			rid, _ := route["@id"].(string)
-			if rid == "" || !strings.Contains(rid, ruleID) {
+			if rid == "" || !caddyRouteMatchesRule(rid, ruleID) {
 				continue
 			}
 			if p.modifyUpstreamsInRoute(route, targetDial, healthy) {
@@ -484,6 +501,7 @@ func (p *CaddyReverseProxy) modifyUpstreamsInRoute(route map[string]any, targetD
 			continue
 		}
 		var newUpstreams []any
+		alreadyPresent := false
 		for _, uRaw := range upstreamsRaw {
 			u, _ := uRaw.(map[string]any)
 			if u == nil {
@@ -496,11 +514,17 @@ func (p *CaddyReverseProxy) modifyUpstreamsInRoute(route map[string]any, targetD
 					modified = true
 					continue
 				}
-			} else {
-				newUpstreams = append(newUpstreams, u)
+				// Healthy re-add must preserve the stored entry (weight and
+				// any other fields) and stay idempotent: record presence and
+				// keep the single existing entry instead of appending a bare
+				// {"dial": ...} duplicate on every flap.
+				alreadyPresent = true
+				newUpstreams = append(newUpstreams, uRaw)
+				continue
 			}
+			newUpstreams = append(newUpstreams, u)
 		}
-		if healthy {
+		if healthy && !alreadyPresent {
 			newUpstreams = append(newUpstreams, map[string]any{
 				"dial": targetDial,
 			})
@@ -620,6 +644,25 @@ func (p *CaddyReverseProxy) updateRoutesAtomic(ctx context.Context, rules []*Rou
 	}
 
 	routes := p.buildRoutes(rules, policies)
+
+	// F-NET-01 no-wipe guard: an empty desired route set (no rules at all, or only
+	// disabled/withdrawn ones) must never replace a populated live gamepanel
+	// server. POST /config/ is a full document replace, so it would drop every
+	// proxied domain and its ACME-managed TLS. Refuse to apply unless the live
+	// state can be verified as already holding no gamepanel routes.
+	if len(routes) == 0 {
+		liveRoutes, err := p.liveGamePanelRouteCount(ctx, addr)
+		if err != nil {
+			return fmt.Errorf("no-wipe guard: cannot verify live gateway routes: %w", err)
+		}
+		if liveRoutes > 0 {
+			return fmt.Errorf("no-wipe guard: refusing to apply empty route set over %d live gamepanel route(s)", liveRoutes)
+		}
+		slog.Info("caddy: empty desired route set and no live gamepanel routes; skipping apply",
+			"rules", len(rules))
+		return nil
+	}
+
 	serverConfig := p.buildServerConfig(routes, policies)
 
 	body, err := json.Marshal(serverConfig)
@@ -645,6 +688,40 @@ func (p *CaddyReverseProxy) updateRoutesAtomic(ctx context.Context, rules []*Rou
 	}
 
 	return nil
+}
+
+// liveGamePanelRouteCount reports how many routes the running Caddy config holds in
+// the gamepanel server. A read/parse failure is returned as an error so callers fail
+// closed instead of assuming the gateway is already empty.
+func (p *CaddyReverseProxy) liveGamePanelRouteCount(ctx context.Context, addr string) (int, error) {
+	configJSON, err := p.getRunningConfig(ctx, addr)
+	if err != nil {
+		return 0, err
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal(configJSON, &cfg); err != nil {
+		return 0, fmt.Errorf("parse running config: %w", err)
+	}
+
+	apps, _ := cfg["apps"].(map[string]any)
+	if apps == nil {
+		return 0, nil
+	}
+	httpCfg, _ := apps["http"].(map[string]any)
+	if httpCfg == nil {
+		return 0, nil
+	}
+	servers, _ := httpCfg["servers"].(map[string]any)
+	if servers == nil {
+		return 0, nil
+	}
+	srv, _ := servers["gamepanel"].(map[string]any)
+	if srv == nil {
+		return 0, nil
+	}
+	routes, _ := srv["routes"].([]any)
+	return len(routes), nil
 }
 
 func (p *CaddyReverseProxy) buildServerConfig(routes []map[string]any, policies map[string]*TrafficPolicy) map[string]any {

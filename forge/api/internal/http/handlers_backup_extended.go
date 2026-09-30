@@ -93,6 +93,12 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		if err := c.BodyParser(&body); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 		}
+		if err := store.ValidateBackupPolicyInterval(body.Interval); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		if err := store.ValidateBackupPolicyStorage(body.Storage); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
 		policy := &store.BackupPolicy{
 			ServerID:            c.Params("id"),
 			Interval:            body.Interval,
@@ -140,17 +146,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		return c.JSON(fiber.Map{"ok": true, "locked": false})
 	})
 
-	protected.Post("/servers/:id/backups/cleanup", mutationLimiter, requireRole("admin"), requireAdminScope("backups.write"), func(c *fiber.Ctx) error {
-		ctx, cancel := requestContext()
-		defer cancel()
-		count, err := svc.CleanupExpiredBackups(ctx)
-		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
-		}
-		return c.JSON(fiber.Map{"ok": true, "cleaned": count})
-	})
-
-	protected.Get("/backup/providers", requireRole("admin"), func(c *fiber.Ctx) error {
+	protected.Get("/backup/providers", requireRole("admin"), requireAdminScope("backups.read"), func(c *fiber.Ctx) error {
 		providers := backup.RegisteredProviders()
 		return c.JSON(fiber.Map{"providers": providers})
 	})
@@ -167,7 +163,24 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		return claims.Sub, nil
 	}
 
-	adminBackups.Get("/configs", func(c *fiber.Ctx) error {
+	// Retention sweep across every backup policy in the installation. This used
+	// to be registered on POST /servers/:id/backups/cleanup, which was wrong
+	// twice over: the handler ignores :id and deletes expired backups for all
+	// servers, and handlers_servers.go already claims that path for the real
+	// per-server cleanup — so in registration order this copy could never run.
+	// The scheduler calls the same service method (schedule_runner.go), this is
+	// the manual trigger for it.
+	adminBackups.Post("/cleanup", mutationLimiter, requireAdminScope("backups.write"), func(c *fiber.Ctx) error {
+		ctx, cancel := requestContext()
+		defer cancel()
+		count, err := svc.CleanupExpiredBackups(ctx)
+		if err != nil {
+			return respondInternalError(c, err)
+		}
+		return c.JSON(fiber.Map{"ok": true, "cleaned": count})
+	})
+
+	adminBackups.Get("/configs", requireAdminScope("backups.read"), func(c *fiber.Ctx) error {
 		configs, _, err := adminSvc.ListBackupConfigs(c.UserContext(), backup.BackupConfigFilter{
 			Page: c.QueryInt("page", 1), PerPage: c.QueryInt("perPage", 200),
 		})
@@ -176,7 +189,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		}
 		return c.JSON(configs)
 	})
-	adminBackups.Post("/configs", mutationLimiter, func(c *fiber.Ctx) error {
+	adminBackups.Post("/configs", mutationLimiter, requireAdminScope("backups.write"), func(c *fiber.Ctx) error {
 		var request backup.CreateBackupConfigRequest
 		if err := c.BodyParser(&request); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
@@ -191,14 +204,14 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		}
 		return c.Status(fiber.StatusCreated).JSON(config)
 	})
-	adminBackups.Get("/configs/:id", func(c *fiber.Ctx) error {
+	adminBackups.Get("/configs/:id", requireAdminScope("backups.read"), func(c *fiber.Ctx) error {
 		config, err := adminSvc.GetBackupConfig(c.UserContext(), c.Params("id"))
 		if err != nil {
 			return fiber.NewError(fiber.StatusNotFound, "backup configuration not found")
 		}
 		return c.JSON(config)
 	})
-	adminBackups.Patch("/configs/:id", mutationLimiter, func(c *fiber.Ctx) error {
+	adminBackups.Patch("/configs/:id", mutationLimiter, requireAdminScope("backups.write"), func(c *fiber.Ctx) error {
 		var request backup.UpdateBackupConfigRequest
 		if err := c.BodyParser(&request); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
@@ -213,7 +226,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		}
 		return c.JSON(config)
 	})
-	adminBackups.Delete("/configs/:id", mutationLimiter, func(c *fiber.Ctx) error {
+	adminBackups.Delete("/configs/:id", mutationLimiter, requireAdminScope("backups.write"), func(c *fiber.Ctx) error {
 		actor, err := userID(c)
 		if err != nil {
 			return err
@@ -223,7 +236,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		}
 		return c.SendStatus(fiber.StatusNoContent)
 	})
-	adminBackups.Post("/configs/:id/execute", mutationLimiter, func(c *fiber.Ctx) error {
+	adminBackups.Post("/configs/:id/execute", mutationLimiter, requireAdminScope("backups.write"), func(c *fiber.Ctx) error {
 		actor, err := userID(c)
 		if err != nil {
 			return err
@@ -235,7 +248,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		return c.Status(fiber.StatusAccepted).JSON(job)
 	})
 
-	adminBackups.Get("/jobs", func(c *fiber.Ctx) error {
+	adminBackups.Get("/jobs", requireAdminScope("backups.read"), func(c *fiber.Ctx) error {
 		jobs, _, err := adminSvc.ListBackupJobs(c.UserContext(), backup.JobFilter{
 			Page: c.QueryInt("page", 1), PerPage: c.QueryInt("perPage", 200),
 		})
@@ -244,7 +257,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		}
 		return c.JSON(jobs)
 	})
-	adminBackups.Post("/jobs", mutationLimiter, func(c *fiber.Ctx) error {
+	adminBackups.Post("/jobs", mutationLimiter, requireAdminScope("backups.write"), func(c *fiber.Ctx) error {
 		var request backup.CreateBackupJobRequest
 		if err := c.BodyParser(&request); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
@@ -266,7 +279,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		}
 		return c.Status(fiber.StatusCreated).JSON(completed)
 	})
-	adminBackups.Post("/jobs/:id/cancel", mutationLimiter, func(c *fiber.Ctx) error {
+	adminBackups.Post("/jobs/:id/cancel", mutationLimiter, requireAdminScope("backups.write"), func(c *fiber.Ctx) error {
 		actor, err := userID(c)
 		if err != nil {
 			return err
@@ -276,7 +289,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		}
 		return c.SendStatus(fiber.StatusNoContent)
 	})
-	adminBackups.Delete("/jobs/:id", mutationLimiter, func(c *fiber.Ctx) error {
+	adminBackups.Delete("/jobs/:id", mutationLimiter, requireAdminScope("backups.write"), func(c *fiber.Ctx) error {
 		actor, err := userID(c)
 		if err != nil {
 			return err
@@ -287,7 +300,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 
-	adminBackups.Get("/artifacts", func(c *fiber.Ctx) error {
+	adminBackups.Get("/artifacts", requireAdminScope("backups.read"), func(c *fiber.Ctx) error {
 		artifacts, _, err := adminSvc.ListBackupArtifacts(c.UserContext(), backup.ArtifactFilter{
 			Page: c.QueryInt("page", 1), PerPage: c.QueryInt("perPage", 200),
 		})
@@ -296,7 +309,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		}
 		return c.JSON(artifacts)
 	})
-	adminBackups.Delete("/artifacts/:id", mutationLimiter, func(c *fiber.Ctx) error {
+	adminBackups.Delete("/artifacts/:id", mutationLimiter, requireAdminScope("backups.write"), func(c *fiber.Ctx) error {
 		actor, err := userID(c)
 		if err != nil {
 			return err
@@ -306,7 +319,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		}
 		return c.SendStatus(fiber.StatusNoContent)
 	})
-	adminBackups.Post("/artifacts/:id/lock", mutationLimiter, func(c *fiber.Ctx) error {
+	adminBackups.Post("/artifacts/:id/lock", mutationLimiter, requireAdminScope("backups.write"), func(c *fiber.Ctx) error {
 		var request struct {
 			Reason string `json:"reason"`
 		}
@@ -325,7 +338,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		}
 		return c.SendStatus(fiber.StatusNoContent)
 	})
-	adminBackups.Post("/artifacts/:id/unlock", mutationLimiter, func(c *fiber.Ctx) error {
+	adminBackups.Post("/artifacts/:id/unlock", mutationLimiter, requireAdminScope("backups.write"), func(c *fiber.Ctx) error {
 		actor, err := userID(c)
 		if err != nil {
 			return err
@@ -335,7 +348,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		}
 		return c.SendStatus(fiber.StatusNoContent)
 	})
-	adminBackups.Get("/artifacts/:id/download", func(c *fiber.Ctx) error {
+	adminBackups.Get("/artifacts/:id/download", requireAdminScope("backups.read"), func(c *fiber.Ctx) error {
 		artifact, err := adminSvc.GetBackupArtifact(c.UserContext(), c.Params("id"))
 		if err != nil {
 			return fiber.NewError(fiber.StatusNotFound, "backup artifact not found")
@@ -348,7 +361,16 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		return c.SendStream(reader)
 	})
 
-	adminBackups.Get("/restores", func(c *fiber.Ctx) error {
+	// Re-hash a stored artifact against its recorded digest so an operator can
+	// confirm integrity independently of the auto-check on creation.
+	adminBackups.Post("/artifacts/:id/verify", mutationLimiter, requireAdminScope("backups.write"), func(c *fiber.Ctx) error {
+		if err := adminSvc.VerifyBackupArtifact(c.UserContext(), c.Params("id")); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		return c.JSON(fiber.Map{"ok": true, "verified": true})
+	})
+
+	adminBackups.Get("/restores", requireAdminScope("backups.read"), func(c *fiber.Ctx) error {
 		restores, _, err := adminSvc.ListRestores(c.UserContext(), backup.RestoreFilter{
 			Page: c.QueryInt("page", 1), PerPage: c.QueryInt("perPage", 200),
 		})
@@ -357,7 +379,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		}
 		return c.JSON(restores)
 	})
-	adminBackups.Post("/restore", mutationLimiter, func(c *fiber.Ctx) error {
+	adminBackups.Post("/restore", mutationLimiter, requireAdminScope("backups.write"), func(c *fiber.Ctx) error {
 		var request backup.CreateRestoreRequest
 		if err := c.BodyParser(&request); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
@@ -379,7 +401,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		}
 		return c.Status(fiber.StatusCreated).JSON(completed)
 	})
-	adminBackups.Delete("/restores/:id", mutationLimiter, func(c *fiber.Ctx) error {
+	adminBackups.Delete("/restores/:id", mutationLimiter, requireAdminScope("backups.write"), func(c *fiber.Ctx) error {
 		actor, err := userID(c)
 		if err != nil {
 			return err
@@ -390,7 +412,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 
-	adminBackups.Get("/storage-providers", func(c *fiber.Ctx) error {
+	adminBackups.Get("/storage-providers", requireAdminScope("backups.read"), func(c *fiber.Ctx) error {
 		if providerInitErr != nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, providerInitErr.Error())
 		}
@@ -408,7 +430,7 @@ func registerBackupRoutes(protected fiber.Router, cfg Config, svc *backup.Servic
 		return c.JSON(providers)
 	})
 
-	adminBackups.Get("/status", func(c *fiber.Ctx) error {
+	adminBackups.Get("/status", requireAdminScope("backups.read"), func(c *fiber.Ctx) error {
 		configs, _, configErr := adminSvc.ListBackupConfigs(c.UserContext(), backup.BackupConfigFilter{PerPage: 200})
 		jobs, _, jobErr := adminSvc.ListBackupJobs(c.UserContext(), backup.JobFilter{PerPage: 200})
 		artifacts, _, artifactErr := adminSvc.ListBackupArtifacts(c.UserContext(), backup.ArtifactFilter{PerPage: 200})

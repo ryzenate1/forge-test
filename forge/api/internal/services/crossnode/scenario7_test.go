@@ -85,6 +85,11 @@ func TestScenario7_CrossNodeRoutingEndToEnd(t *testing.T) {
 	t.Run("Unhealthy targets are removed", func(t *testing.T) {
 		health := NewHealthFilter(2, 30*time.Second)
 
+		// Only backends with a recorded healthy result pass the filter, so
+		// the survivors must have proven healthy first.
+		health.RecordSuccess("node-1.internal", 8080)
+		health.RecordSuccess("node-3.internal", 8080)
+
 		// Mark node-2 as unhealthy
 		health.RecordFailure("node-2.internal", 8080, "connection refused")
 		health.RecordFailure("node-2.internal", 8080, "connection refused")
@@ -111,6 +116,10 @@ func TestScenario7_CrossNodeRoutingEndToEnd(t *testing.T) {
 
 	t.Run("Recovered targets return", func(t *testing.T) {
 		health := NewHealthFilter(2, 30*time.Second)
+
+		// node-1 proves healthy up front; only recorded-healthy backends
+		// pass the filter.
+		health.RecordSuccess("node-1.internal", 8080)
 
 		// Mark node-2 as unhealthy
 		health.RecordFailure("node-2.internal", 8080, "connection refused")
@@ -240,33 +249,52 @@ func TestScenario7_CrossNodeRoutingEndToEnd(t *testing.T) {
 		defer admin.Close()
 
 		proxy := trafficmanager.NewTraefikReverseProxy(dir, strings.TrimPrefix(admin.URL, "http://"))
-		resolver := NewResolver(nil)
 		health := NewHealthFilter(2, 30*time.Second)
-		syncer := NewIngressSynchronizer(proxy, resolver, health)
+		// The synchronizer only counts backends with a recorded healthy result;
+		// unknown backends are skipped, not assumed.
+		health.RecordSuccess("localhost", 8080)
+		health.RecordSuccess("localhost", 8081)
+		syncer := NewIngressSynchronizer(proxy, health)
 
 		rules := []*trafficmanager.RoutingRule{
 			{ID: "test-1", Domain: "test.com", Path: "/", TargetPort: 8080, TargetHost: "localhost", Enabled: true},
 			{ID: "test-2", Domain: "test.com", Path: "/api", TargetPort: 8081, TargetHost: "localhost", Enabled: true},
 		}
+		syncer.SetReconciler(&stubRuleSource{rules: rules}, &stubReconciler{})
 
-		syncer.SetRules(rules)
-
-		err := syncer.Sync(context.Background())
+		result, err := syncer.Sync(context.Background())
 		if err != nil {
 			t.Fatalf("Sync failed: %v", err)
 		}
+		if result.Groups != 2 {
+			t.Fatalf("expected 2 route groups observed, got %d", result.Groups)
+		}
 
-		// Get route generation records
 		records := syncer.RouteGenerationRecords()
 		if len(records) != 2 {
 			t.Fatalf("expected 2 route generation records, got %d", len(records))
 		}
 
-		// Verify we can retrieve specific records
+		seen := make(map[string]bool, len(records))
 		for _, rec := range records {
-			_, ok := syncer.GetRouteGenerationRecord(rec.GroupID)
-			if !ok {
-				t.Fatalf("expected to find route generation record for %s", rec.GroupID)
+			if rec.GroupID == "" {
+				t.Fatal("route generation record must carry a group id")
+			}
+			if seen[rec.GroupID] {
+				t.Fatalf("duplicate group id %s", rec.GroupID)
+			}
+			seen[rec.GroupID] = true
+			if rec.BackendCount != 1 {
+				t.Fatalf("expected one backend for %s, got %d", rec.GroupID, rec.BackendCount)
+			}
+		}
+
+		// Observation must be repeatable: the same rule set has to produce the same
+		// records, otherwise the admin view shuffles on every poll.
+		repeat := syncer.RouteGenerationRecords()
+		for i := range records {
+			if records[i].GroupID != repeat[i].GroupID {
+				t.Fatalf("route generation records are not deterministic: %+v vs %+v", records, repeat)
 			}
 		}
 		t.Log("✓ Route generation reaches observed generation")
@@ -301,6 +329,10 @@ func TestScenario7_IntegrationTest(t *testing.T) {
 
 	// 3. Test health filtering
 	health := NewHealthFilter(2, 30*time.Second)
+	// Only recorded-healthy backends pass the filter: node-1 and node-3
+	// prove healthy first, node-2 never does.
+	health.RecordSuccess("node-1.internal", 8080)
+	health.RecordSuccess("node-3.internal", 8080)
 	health.RecordFailure("node-2.internal", 8080, "connection timeout")
 	health.RecordFailure("node-2.internal", 8080, "connection timeout")
 

@@ -1,12 +1,22 @@
 // Common API types
 
-/** Matches the meta.pagination shape returned by paginated list endpoints. */
+/** Matches the meta.pagination shape returned by paginated list endpoints.
+ *
+ * Canonical keys are `current` (1-based page) and `total` (total pages), as
+ * emitted by `GET /servers`, `GET /nodes` and the other `meta.pagination`
+ * list routes. `current_page` / `total_pages` are legacy aliases still emitted
+ * by a few admin routes — readers must accept both, writers must send both.
+ */
 export type PaginationMeta = {
   current: number;
   total: number;
   count: number;
   per_page: number;
   total_records: number;
+  /** @deprecated Legacy alias of `current`. Read `current`, write both. */
+  current_page?: number;
+  /** @deprecated Legacy alias of `total`. Read `total`, write both. */
+  total_pages?: number;
 };
 
 /**
@@ -44,26 +54,24 @@ export type ApiUser = {
   serverLimit?: number;
   createdAt: string;
   updatedAt: string;
-  sessionVersion?: number;
   disabled?: boolean;
   useTotp?: boolean;
-  totpSecret?: string;
 };
 
-export type ApiServerDesiredState = "running" | "stopped" | "terminated";
+export type ApiServerDesiredState = 'running' | 'stopped' | 'terminated';
 
 export type ApiServerActualState =
-  | "offline"
-  | "starting"
-  | "running"
-  | "stopping"
-  | "stopped"
-  | "installing"
-  | "restoring_backup"
-  | "crashed"
-  | "terminating"
-  | "terminated"
-  | "unknown";
+  | 'offline'
+  | 'starting'
+  | 'running'
+  | 'stopping'
+  | 'stopped'
+  | 'installing'
+  | 'restoring_backup'
+  | 'crashed'
+  | 'terminating'
+  | 'terminated'
+  | 'unknown';
 
 export type ApiServer = {
   id: string;
@@ -104,9 +112,10 @@ export type ApiServer = {
   transferTargetNodeId?: string;
   transferState?: string;
   transferError?: string;
-  transferRunToken?: string;
   createdAt?: string;
   dockerImage?: string;
+  /** Engine this workload is dispatched to (docker, podman, kvm, …). */
+  runtimeProvider?: string;
   startupCommand?: string;
   configSyncPending?: boolean;
   configSyncError?: string;
@@ -120,21 +129,21 @@ export type ApiServer = {
   workloadLeaseExpiry?: string;
 };
 
-export type ApiNodeDesiredState = "active" | "maintenance" | "draining";
+export type ApiNodeDesiredState = 'active' | 'maintenance' | 'draining';
 
-export type ApiNodeActualState = "online" | "offline" | "degraded" | "reconciling" | "unknown";
+export type ApiNodeActualState = 'online' | 'offline' | 'degraded' | 'reconciling' | 'unknown';
 
 export type ApiNodeStatus =
-  | "online"
-  | "offline"
-  | "degraded"
-  | "maintenance"
-  | "draining"
-  | "installing"
-  | "restoring_backup"
-  | "stopped"
-  | "active"
-  | "unknown";
+  | 'online'
+  | 'offline'
+  | 'degraded'
+  | 'maintenance'
+  | 'draining'
+  | 'installing'
+  | 'restoring_backup'
+  | 'stopped'
+  | 'active'
+  | 'unknown';
 
 export type ApiNode = {
   id: string;
@@ -272,13 +281,23 @@ export type ApiAllocation = {
   nodeId?: string;
   ip: string;
   port: number;
-  containerPort?: number;
-  protocol?: "tcp" | "udp";
+  /**
+   * Container-side port. Always present (mirrors `store.Allocation.ContainerPort`).
+   * `0` means unset — the container uses `port` directly.
+   */
+  containerPort: number;
+  protocol?: 'tcp' | 'udp';
   alias?: string;
   notes?: string;
   server?: string;
   serverId?: string;
+  /**
+   * Whether this allocation is the server's primary allocation. Not stored on
+   * the allocation row — derived server-side from the server's
+   * `primaryAllocationId`. `primary` is a legacy alias kept for compatibility.
+   */
   isPrimary?: boolean;
+  /** @deprecated Use `isPrimary` instead. */
   primary?: boolean;
 };
 
@@ -295,7 +314,7 @@ export type ApiDatabase = {
   port?: number;
   database?: string;
   engine?: string;
-  provisioningState?: "pending" | "ready" | "failed" | string;
+  provisioningState?: 'pending' | 'ready' | 'failed' | string;
   provisioningError?: string;
   createdAt: string;
   updatedAt: string;
@@ -313,7 +332,7 @@ export type ApiDatabaseOrphanRemediation = {
   username: string;
   remote: string;
   reason: string;
-  status: "pending" | "resolved";
+  status: 'pending' | 'resolved';
   createdAt: string;
   resolvedAt?: string;
 };
@@ -323,7 +342,7 @@ export type ApiServerOrphanRemediation = {
   serverId: string;
   nodeUrl: string;
   daemonError: string;
-  status: "pending" | "resolved";
+  status: 'pending' | 'resolved';
   createdAt: string;
   resolvedAt?: string;
 };
@@ -333,32 +352,78 @@ export type ApiOrphanRemediations = {
   databaseRemediations: ApiDatabaseOrphanRemediation[];
 };
 
+/** Lifecycle status of a backup. Mirrors `store.Backup` validation (`pending`, `running`, `completed`, `failed`, `deleted`). */
+export type ApiBackupStatus = 'pending' | 'running' | 'completed' | 'failed' | 'deleted';
+
+/**
+ * Backup record. Field names and shapes mirror `store.Backup` JSON tags
+ * (`uuid`, `serverId`, `name`, `checksum`, `size`, `status`, `uploadId`,
+ * `completedAt`, `createdAt`, `updatedAt`, `isLocked`, `statusMessage`,
+ * `statusCallback`, `retryCount`, `lastRetryAt`, …).
+ *
+ * There are no `successful`/`locked` aliases: use `status === "completed"` and
+ * `isLocked` directly so a stale or absent reading can never be misread as a
+ * healthy state.
+ */
 export type ApiBackup = {
   uuid: string;
   serverId: string;
   name: string;
+  /** Legacy alias for `uuid` returned by some list endpoints. Prefer `uuid`. */
   id?: string;
-  successful?: boolean;
-  locked?: boolean;
-  isLocked?: boolean;
-  status?: string;
+  checksum?: string;
+  size: number;
+  status: ApiBackupStatus | string;
   uploadId?: string;
   completedAt?: string;
   createdAt: string;
-  updatedAt?: string;
-  size?: number;
-  checksum?: string;
+  updatedAt: string;
+  isLocked: boolean;
   statusMessage?: string;
   statusCallback?: string;
   retryCount?: number;
   lastRetryAt?: string;
+  sourceType?: string;
+  sourceId?: string;
+  databaseType?: string;
+  volumeName?: string;
+  checksumVerified?: boolean;
+  restoreCount?: number;
+  lastRestoreAt?: string;
+  compressed?: boolean;
+  encrypted?: boolean;
+  /** Client-supplied ignore list echoed back on create; not stored server-side. */
   ignoredFiles?: string[];
 };
 
 export type BackupCreateInput = {
-  name?: string;
+  /**
+   * File patterns to exclude from the backup. This is the only field the
+   * server honors: `POST /servers/:id/backups` binds `{ ignored }`
+   * (`forge/api/internal/http/handlers_servers.go`) and generates the backup
+   * name server-side. Lock state is managed via the lock/unlock endpoints,
+   * never at create time — so there are no `name`/`is_locked` fields here by
+   * design, and callers must not collect them from users.
+   */
   ignored?: string[];
-  is_locked?: boolean;
+};
+
+/**
+ * Response of `GET /servers/:id/backups`. Unlike the canonical
+ * `PaginatedResponse` (`{ data, meta.pagination }`), this route returns a
+ * flat `{ data, pagination: { page, per_page, total, total_pages } }` shape
+ * (`forge/api/internal/http/handlers_servers.go`). Typed separately so a
+ * drift in either shape surfaces at compile time instead of rendering as an
+ * empty list.
+ */
+export type BackupListResponse = {
+  data: ApiBackup[];
+  pagination: {
+    page: number;
+    per_page: number;
+    total: number;
+    total_pages: number;
+  };
 };
 
 export type ServerCreateInput = {
@@ -387,6 +452,8 @@ export type ServerCreateInput = {
   dockerImage?: string;
   startupCommand?: string;
   startupVariables?: Record<string, string>;
+  /** Workload engine: docker | containerd | podman | firecracker | kubernetes | kvm | lxc */
+  runtimeProvider?: string;
 };
 
 export type ServerUpdateInput = {
@@ -410,11 +477,22 @@ export type ServerUpdateInput = {
   allocationId?: string;
 };
 
+/**
+ * Single input for creating a server database (`POST /servers/:id/databases`).
+ * `database` and `name` are aliases — provide either one.
+ */
 export type DatabaseCreateInput = {
-	database: string;
-	remote?: string;
-	maxConnections?: number;
+  database?: string;
+  name?: string;
+  hostId?: string;
+  remote?: string;
+  username?: string;
+  password?: string;
+  maxConnections?: number;
 };
+
+/** @deprecated Use `DatabaseCreateInput` instead. Kept as an alias. */
+export type CreateServerDatabaseInput = DatabaseCreateInput;
 
 export type ScheduleCreateInput = {
   name: string;
@@ -460,7 +538,7 @@ export type ScheduleUpdateInput = {
 
 export type ScheduleTaskCreateInput = {
   action: string;
-  payload?: any;
+  payload?: Record<string, unknown>;
   continueOnFailure?: boolean;
   timeOffset?: number;
   timeOffsetSeconds?: number;
@@ -471,7 +549,7 @@ export type ScheduleTaskCreateInput = {
 
 export type ScheduleTaskUpdateInput = {
   action?: string;
-  payload?: any;
+  payload?: Record<string, unknown>;
   continueOnFailure?: boolean;
   timeOffset?: number;
   timeOffsetSeconds?: number;
@@ -534,10 +612,31 @@ export type ApiSetupStatus = {
   appVersion: string;
 };
 
+/**
+ * Body accepted by `POST /setup` (initial panel setup). Only `email` and
+ * `password` are required. Field names mirror `SetupRequest` in
+ * `forge/api/internal/http/handlers_setup.go:19-25`; the SDK's
+ * `SetupRequest` is an alias of this type so the three can never drift.
+ */
 export type ApiSetupRequest = {
   email: string;
   password: string;
   name?: string;
+  orgName?: string;
+  nodeName?: string;
+  nodeFqdn?: string;
+  smtpHost?: string;
+  smtpPort?: string;
+  smtpUser?: string;
+  smtpPass?: string;
+  smtpFrom?: string;
+  smtpEncryption?: string;
+  backupDriver?: string;
+  s3Bucket?: string;
+  s3Region?: string;
+  s3Endpoint?: string;
+  domainName?: string;
+  tlsEmail?: string;
 };
 
 export type LoginResponse = {
@@ -557,7 +656,7 @@ export type ApiPanelSettings = {
   loginBackgroundUrl?: string;
   themePreset?: string;
   defaultLocale: string;
-  require2FA?: "none" | "admin" | "all";
+  require2FA?: 'none' | 'admin' | 'all';
   requireEmailVerification?: boolean;
   passwordComplexity?: string;
   passwordExpirationDays?: number;
@@ -605,16 +704,6 @@ export type ApiPanelSettings = {
   backupAutoCleanup?: boolean;
   backupEncryptionEnabled?: boolean;
   backupKeyRotationDays?: number;
-};
-
-export type CreateServerDatabaseInput = {
-  database?: string;
-  name?: string;
-  hostId?: string;
-  remote?: string;
-  username?: string;
-  password?: string;
-  maxConnections?: number;
 };
 
 export type ApiWSTicket = {
@@ -770,15 +859,15 @@ export type ApiWebhookTestResult = {
 };
 
 export type ApiMigrationStatus =
-  | "pending"
-  | "planned"
-  | "preparing"
-  | "transferring"
-  | "restoring"
-  | "in_progress"
-  | "completed"
-  | "failed"
-  | "cancelled";
+  | 'pending'
+  | 'planned'
+  | 'preparing'
+  | 'transferring'
+  | 'restoring'
+  | 'in_progress'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
 
 export type ApiMigrationHistory = {
   id: string;
@@ -896,7 +985,7 @@ export type ApiEgg = {
   dockerImagesList?: string[];
   startup: string;
   startupCommand?: string;
-  config?: any;
+  config?: Record<string, unknown>;
   configFiles?: string;
   environment?: Record<string, string>;
   variables?: ApiStartupVariable[];
@@ -955,17 +1044,41 @@ export type ApiAdminAuditEvent = {
   createdAt: string;
 };
 
+/**
+ * Runtime telemetry for a workload, as reported by the node.
+ *
+ * Only `cpuPercent`, `memoryBytes`, `memoryLimit` and the two network counters
+ * are always measured. Everything else is optional because a node may not be
+ * able to report it, and an absent reading must render as unknown — never as a
+ * zero, which is indistinguishable from a real measurement of nothing.
+ */
 export type ApiStats = {
   cpuPercent: number;
   memoryBytes: number;
   memoryLimit: number;
-  diskBytes: number;
-  diskLimit: number;
   networkRxBytes: number;
   networkTxBytes: number;
-  uptime: number;
+  /** Whether the workload's container exists on the node. */
+  exists?: boolean;
+  /** Whether it is running. A stats frame with `running: false` carries no metrics. */
+  running?: boolean;
+  /** The runtime's own status string (e.g. "running", "exited"). */
+  status?: string;
+  /** RFC3339 start time of the current run; absent when it has never started. */
+  startedAt?: string;
+  /** Uptime of the current run. Absent when the workload is not running. */
   uptimeMs?: number;
-  state?: string;
+  /**
+   * Present on streamed frames: `false` means the frame reports lifecycle only,
+   * because a stopped workload has no metrics to sample.
+   */
+  metrics?: boolean;
+  /**
+   * Disk usage. No runtime adapter reports this yet, so it is normally absent
+   * and must be shown as not reported rather than as 0 B.
+   */
+  diskBytes?: number;
+  diskLimit?: number;
 };
 
 export type TwoFactorSetup = {
@@ -981,7 +1094,13 @@ export type CreateNodeInput = {
   name: string;
   region: string;
   regionId?: string;
-  locationId?: string;
+  /**
+   * Required: `CreateNodeRequest.LocationID` carries `validate:"required"`
+   * (`forge/api/internal/http/server.go`), and `regionId` is an independent
+   * optional field — not an alternative — so omitting `locationId` is always
+   * a 422.
+   */
+  locationId: string;
   description?: string;
   baseUrl?: string;
   fqdn: string;
@@ -1061,9 +1180,16 @@ export type UpdateNodeInput = {
 export type CreateAllocationInput = {
   nodeId: string;
   ip: string;
-  ports: string;
+  /**
+   * Single port. The server accepts `port` or `ports` (at least one is
+   * required — `handlers_admin.go` 400s on "port or ports is required"), so
+   * both are optional here and callers must supply one. The SDK enforces this
+   * client-side; the web caller passes `ports`.
+   */
+  port?: number;
+  ports?: string;
   containerPort?: number;
-  protocol?: "tcp" | "udp";
+  protocol?: 'tcp' | 'udp';
   alias?: string;
   notes?: string;
 };
@@ -1129,7 +1255,7 @@ export type RenameFileInput = {
 
 export type PatchScheduleTaskInput = {
   action?: string;
-  payload?: any;
+  payload?: Record<string, unknown>;
   continueOnFailure?: boolean;
   timeOffset?: number;
   timeOffsetSeconds?: number;
@@ -1143,7 +1269,7 @@ export type CreateEggInput = {
   description?: string;
   dockerImages?: Record<string, string> | string[];
   startup?: string;
-  config?: any;
+  config?: Record<string, unknown>;
   defaultMemoryMb?: number;
   installScript?: string;
   installContainer?: string;
@@ -1156,7 +1282,7 @@ export type UpdateEggInput = {
   description?: string;
   dockerImages?: Record<string, string> | string[];
   startup?: string;
-  config?: any;
+  config?: Record<string, unknown>;
   defaultMemoryMb?: number;
   installScript?: string;
   installContainer?: string;
@@ -1179,7 +1305,7 @@ export type ApiActivityLog = {
   actorEmail?: string;
   subjectType?: string;
   subjectId?: string;
-  properties?: any;
+  properties?: Record<string, unknown>;
   level?: string;
   source?: string;
   createdAt?: string;
@@ -1239,7 +1365,7 @@ export type ApiAlert = {
   id: string;
   title: string;
   message: string;
-  level: "info" | "warning" | "error" | "critical";
+  level: 'info' | 'warning' | 'error' | 'critical';
   createdAt: string;
 };
 
@@ -1286,7 +1412,7 @@ export type CrashEvent = {
 
 export type ApiHealthCheck = {
   name: string;
-  status: "ok" | "warning" | "failed";
+  status: 'ok' | 'warning' | 'failed';
   label: string;
   notificationMessage: string;
   critical: boolean;
@@ -1299,7 +1425,7 @@ export type ApiHealthCheck = {
 };
 
 export type ApiHealthReport = {
-  status: "ok" | "warning" | "failed";
+  status: 'ok' | 'warning' | 'failed';
   ok: boolean;
   service: string;
   version?: string;
@@ -1360,7 +1486,7 @@ export type ApiEvacuationItem = {
 export type ApiEvacuationPlan = {
   id: string;
   nodeId: string;
-  status: "pending" | "running" | "completed" | "cancelled" | "failed";
+  status: 'pending' | 'running' | 'completed' | 'cancelled' | 'failed';
   items: ApiEvacuationItem[];
   createdAt: string;
   updatedAt: string;
@@ -1383,7 +1509,15 @@ export type ApiRecoveryItem = {
   sourceBackupName?: string;
   sourceBackupChecksum?: string;
   sourceBackupSize?: number;
-  status: "pending" | "planned" | "executing" | "completed" | "restored" | "cancelled" | "failed" | "skipped";
+  status:
+    | 'pending'
+    | 'planned'
+    | 'executing'
+    | 'completed'
+    | 'restored'
+    | 'cancelled'
+    | 'failed'
+    | 'skipped';
   reason?: string;
   createdAt: string;
   updatedAt: string;
@@ -1407,7 +1541,15 @@ export type ApiReservation = {
 export type ApiRecoveryPlan = {
   id: string;
   nodeId: string;
-  status: "pending" | "planning" | "planned" | "executing" | "completed" | "restored" | "cancelled" | "failed";
+  status:
+    | 'pending'
+    | 'planning'
+    | 'planned'
+    | 'executing'
+    | 'completed'
+    | 'restored'
+    | 'cancelled'
+    | 'failed';
   reason: string;
   items: ApiRecoveryItem[];
   createdAt: string;
@@ -1427,105 +1569,105 @@ export type ApiLegacyTransferStatus = {
 };
 
 export type SocialProvider = {
-	id: string;
-	name: string;
-	displayName: string;
-	enabled: boolean;
-	clientId: string;
-	issuerUrl?: string;
-	hasClientSecret: boolean;
-	scopes: string[];
-	buttonStyle: string;
-	iconClass: string;
-	createdAt: string;
-	updatedAt: string;
+  id: string;
+  name: string;
+  displayName: string;
+  enabled: boolean;
+  clientId: string;
+  issuerUrl?: string;
+  hasClientSecret: boolean;
+  scopes: string[];
+  buttonStyle: string;
+  iconClass: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type ApiEndpoint = {
-	id: string;
-	name: string;
-	description?: string;
-	endpointType: "docker" | "swarm" | "kubernetes" | "edge";
-	connectionMode: "direct" | "tunnel" | "edge";
-	status: "unknown" | "online" | "degraded" | "offline" | "provisioning";
-	edgeId?: string;
-	tags?: string[];
-	labels?: { key: string; value: string }[];
-	url?: string;
-	projectId?: string;
-	groupId?: string;
-	reachable?: boolean;
-	version?: string;
-	nodeCount?: number;
-	totalContainers?: number;
-	totalImages?: number;
-	totalVolumes?: number;
-	createdAt: string;
-	updatedAt: string;
+  id: string;
+  name: string;
+  description?: string;
+  endpointType: 'docker' | 'swarm' | 'kubernetes' | 'edge';
+  connectionMode: 'direct' | 'tunnel' | 'edge';
+  status: 'unknown' | 'online' | 'degraded' | 'offline' | 'provisioning';
+  edgeId?: string;
+  tags?: string[];
+  labels?: { key: string; value: string }[];
+  url?: string;
+  projectId?: string;
+  groupId?: string;
+  reachable?: boolean;
+  version?: string;
+  nodeCount?: number;
+  totalContainers?: number;
+  totalImages?: number;
+  totalVolumes?: number;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type ApiEndpointDiagnostics = {
-	endpointId: string;
-	reachable: boolean;
-	version?: string;
-	totalMemoryMb?: number;
-	usedMemoryMb?: number;
-	totalDiskMb?: number;
-	usedDiskMb?: number;
-	cpuPercent?: number;
-	nodes: {
-		nodeId: string;
-		name: string;
-		status: string;
-		serverCount: number;
-		allocatedMemMb: number;
-		allocatedCpu: number;
-		allocatedDiskMb: number;
-	}[];
-	checkedAt: string;
+  endpointId: string;
+  reachable: boolean;
+  version?: string;
+  totalMemoryMb?: number;
+  usedMemoryMb?: number;
+  totalDiskMb?: number;
+  usedDiskMb?: number;
+  cpuPercent?: number;
+  nodes: {
+    nodeId: string;
+    name: string;
+    status: string;
+    serverCount: number;
+    allocatedMemMb: number;
+    allocatedCpu: number;
+    allocatedDiskMb: number;
+  }[];
+  checkedAt: string;
 };
 
 export type ApiEndpointInventorySummary = {
-	totalServers: number;
-	totalContainers: number;
-	totalImages: number;
-	totalVolumes: number;
-	totalAllocations: number;
-	usedMemoryMb: number;
-	totalMemoryMb: number;
-	usedDiskMb: number;
-	totalDiskMb: number;
+  totalServers: number;
+  totalContainers: number;
+  totalImages: number;
+  totalVolumes: number;
+  totalAllocations: number;
+  usedMemoryMb: number;
+  totalMemoryMb: number;
+  usedDiskMb: number;
+  totalDiskMb: number;
 };
 
 export type ApiEndpointHealthRecord = {
-	id: string;
-	endpointId: string;
-	status: string;
-	reachable: boolean;
-	healthScore: number;
-	version?: string;
-	containers: number;
-	images: number;
-	volumes: number;
-	error?: string;
-	observedAt: string;
+  id: string;
+  endpointId: string;
+  status: string;
+  reachable: boolean;
+  healthScore: number;
+  version?: string;
+  containers: number;
+  images: number;
+  volumes: number;
+  error?: string;
+  observedAt: string;
 };
 
 export type ApiEndpointAccessPolicy = {
-	id: string;
-	endpointId: string;
-	principalType: string;
-	principalId: string;
-	role: string;
-	createdAt: string;
+  id: string;
+  endpointId: string;
+  principalType: string;
+  principalId: string;
+  role: string;
+  createdAt: string;
 };
 
 export type ApiEndpointNodeMember = {
-	id: string;
-	nodeId: string;
-	nodeName: string;
-	nodeStatus: string;
-	createdAt: string;
+  id: string;
+  nodeId: string;
+  nodeName: string;
+  nodeStatus: string;
+  createdAt: string;
 };
 
 export type ProcessType = {
@@ -1580,14 +1722,31 @@ export type ApiServerConfiguration = {
 };
 
 export type ApiNodeSystemInformation = {
+  nodeId: string;
+  /**
+   * Whether the node answered the probe. A failed probe returns false with
+   * `error` set rather than an empty object, so "unreachable" and "reachable
+   * but reporting nothing" stay distinguishable.
+   */
+  online: boolean;
   version: string;
   os: string;
   architecture: string;
+  kernelVersion?: string;
   cpuThreads: number;
+  memoryMb?: number;
   dockerAvailable: boolean;
   dockerStatus: string;
-  kernelVersion?: string;
+  capabilities?: string[];
+  /**
+   * Uptime of the node agent process, not of the machine. The panel shows the
+   * two apart because a restarted agent and a freshly booted host look the
+   * same if only one number is reported.
+   */
+  daemonUptimeSeconds?: number;
   uptime?: number;
+  fetchedAt?: string;
+  error?: string;
 };
 
 export type ApiRegionCluster = {

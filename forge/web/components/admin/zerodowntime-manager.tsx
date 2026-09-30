@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { OfflineBanner } from "@/components/shared/states-offline";
 import { AdminCard, AdminPageLayout } from "@/components/admin/admin-layout";
 import * as api from "@/lib/api/zerodowntime";
+import { ApiError } from "@/lib/api/http";
 import { sanitizeError } from "@/lib/sanitize";
 
 export function ZerodowntimeManager() {
@@ -39,7 +40,13 @@ export function ZerodowntimeManager() {
     try {
       const [list, h] = await Promise.all([
         api.listReleases(serverId.trim()),
-        api.getHealthCheckConfig(serverId.trim()).catch(() => null),
+        // A server with no health-check config yet answers 404, which is a real
+        // "not configured" state; any other failure must surface instead of
+        // quietly leaving the previous/default form on screen.
+        api.getHealthCheckConfig(serverId.trim()).catch((e: unknown) => {
+          if (e instanceof ApiError && e.status === 404) return null;
+          throw e;
+        }),
       ]);
       setReleases(list);
       if (h) {
@@ -101,13 +108,18 @@ export function ZerodowntimeManager() {
 
   async function handleSelect(release: api.Release) {
     setSelected(release);
+    // Drop the previous release's details first: if either request fails we
+    // surface the error below rather than showing stale rows as if they were
+    // this release's (empty) events and health results.
+    setEvents([]);
+    setHealthResults([]);
     try {
       const [ev, hr] = await Promise.all([
-        api.getDeploymentEvents(serverId.trim(), release.id).catch(() => [] as api.DeploymentEvent[]),
-        api.getHealthCheckResults(serverId.trim(), release.id).catch(() => [] as api.HealthCheckResult[]),
+        api.getDeploymentEvents(serverId.trim(), release.id),
+        api.getHealthCheckResults(serverId.trim(), release.id),
       ]);
       setEvents(ev);
-      setHealthResults(hr);
+      setHealthResults([...hr].sort((a, b) => new Date(b.checkTimestamp).getTime() - new Date(a.checkTimestamp).getTime()));
     } catch (e) {
       setError(sanitizeError(e instanceof Error ? e.message : "Load details failed"));
     }
@@ -115,32 +127,19 @@ export function ZerodowntimeManager() {
 
   // Auto-load when serverId changes? No, explicit.
 
-  useEffect(() => {
-    // keep healthResults sorted
-    setHealthResults((prev) => [...prev].sort((a, b) => new Date(b.checkTimestamp).getTime() - new Date(a.checkTimestamp).getTime()));
-  }, [selected]);
-
   return (
     <AdminPageLayout
-      title="Zero-Downtime Deployments"
+      title="Zero-Downtime Releases"
       description="522L service: CreateRelease → DeployRelease → RunHealthChecks (ticker + thresholds, 2m max) → PromoteRelease / RollbackRelease. Health checks hit allocation IP:port + path. Requires server + allocation."
-      breadcrumbs={[{ label: "Admin", href: "/admin/zerodowntime" }, { label: "Zero-Downtime" }]}
     >
       <OfflineBanner onRetry={() => { if (serverId.trim()) void loadReleases(); }} />
-      <div className="flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] px-3 py-2 font-mono text-[11px] text-[var(--text-subtle)]">
-        <span className="h-2 w-2 rounded-full bg-[var(--brand)]" />
-        <span>zerodowntime</span>
-        <span className="text-[var(--text-subtle)]">::</span>
-        <span className="text-[var(--brand)]">releases</span>
-        <span className="ml-auto hidden sm:inline uppercase tracking-widest text-[var(--text-subtle)]">var(--brand) var(--canvas) var(--surface) var(--line)</span>
-      </div>
       {error && (
-        <div role="alert" className="flex items-center justify-between gap-3 rounded-xl border border-red-500/25 bg-red-500/[0.09] p-4 text-sm text-red-200">
+        <div role="alert" className="flex items-center justify-between gap-3 rounded-xl border border-[var(--danger-line)] bg-[var(--danger-subtle)] p-4 text-sm text-[var(--text)]">
           <span>{error}</span> <button onClick={() => setError(null)} className="rounded px-2 py-1 text-xs underline hover:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]">Dismiss</button>
         </div>
       )}
       {success && (
-        <div role="status" className="flex items-center justify-between gap-3 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.09] p-4 text-sm text-emerald-200">
+        <div role="status" className="flex items-center justify-between gap-3 rounded-xl border border-[var(--ok-line)] bg-[var(--ok-subtle)] p-4 text-sm text-[var(--text)]">
           <span>{success}</span> <button onClick={() => setSuccess(null)} className="rounded px-2 py-1 text-xs underline hover:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]">Dismiss</button>
         </div>
       )}
@@ -162,9 +161,9 @@ export function ZerodowntimeManager() {
           ) : (
             <div className="space-y-2 max-h-[520px] overflow-auto">
               {releases.map((r) => (
-                <div key={r.id} className={`rounded-lg border p-3 ${selected?.id === r.id ? "border-red-400 bg-[var(--brand)]-wash" : "border-[var(--line)] bg-surface"}`}>
+                <div key={r.id} className={`rounded-lg border p-3 ${selected?.id === r.id ? "border-[var(--brand)] bg-[var(--brand-subtle)]" : "border-[var(--line)] bg-[var(--surface)]"}`}>
                   <div className="flex items-center justify-between">
-                    <p className="text-sm font-bold text-[var(--text)]">v{r.version} · {r.imageTag} <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${r.status === "live" ? "bg-green-100 text-emerald-200" : r.status === "failed" ? "bg-[var(--brand)]-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>{r.status}</span></p>
+                    <p className="text-sm font-bold text-[var(--text)]">v{r.version} · {r.imageTag} <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${r.status === "live" ? "bg-[var(--ok-subtle)] text-[var(--ok)]" : r.status === "failed" ? "bg-[var(--danger-subtle)] text-[var(--danger)]" : "bg-[var(--warn-subtle)] text-[var(--warn)]"}`}>{r.status}</span></p>
                     <span className="text-xs text-[var(--text-subtle)]">{new Date(r.createdAt).toLocaleString()}</span>
                   </div>
                   <div className="mt-2 flex gap-1">
@@ -239,7 +238,7 @@ export function ZerodowntimeManager() {
                   {events.length === 0 ? <p className="text-xs text-[var(--text-subtle)]">No events.</p> : (
                     <div className="mt-2 space-y-1 max-h-40 overflow-auto">
                       {events.map((ev) => (
-                        <div key={ev.id} className="flex justify-between rounded border border-[var(--line)] bg-surface px-3 py-1.5 text-xs">
+                        <div key={ev.id} className="flex justify-between rounded border border-[var(--line)] bg-[var(--surface)] px-3 py-1.5 text-xs">
                           <span><b>{ev.eventType}</b> — {ev.message}</span>
                           <span className="text-[var(--text-subtle)]">{new Date(ev.createdAt).toLocaleTimeString()}</span>
                         </div>

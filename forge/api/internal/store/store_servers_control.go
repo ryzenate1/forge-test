@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // SetServerPowerState records the expected power state after a control
@@ -61,11 +62,12 @@ func (s *Store) ServerControlTarget(ctx context.Context, serverID string) (Serve
 		SELECT s.id::text, n.base_url, n.id::text,
 		       COALESCE(n.daemon_token_id, ''),
 		       COALESCE(n.daemon_token, ''),
-		       COALESCE(n.daemon_token_encrypted, '')
+		       COALESCE(n.daemon_token_encrypted, ''),
+		       COALESCE(s.runtime_provider, 'docker')
 		FROM servers s
 		JOIN nodes n ON n.id = s.node_id
 		WHERE s.id = $1
-	`, serverID).Scan(&target.ServerID, &target.NodeURL, &nodeID, &tokenID, &daemonToken, &daemonTokenEncrypted)
+	`, serverID).Scan(&target.ServerID, &target.NodeURL, &nodeID, &tokenID, &daemonToken, &daemonTokenEncrypted, &target.RuntimeProvider)
 	if err != nil {
 		return ServerControlTarget{}, err
 	}
@@ -90,6 +92,7 @@ func (s *Store) ServerProvisionTarget(ctx context.Context, serverID string) (Ser
 		       COALESCE(n.daemon_token_id, ''),
 		       COALESCE(n.daemon_token, ''),
 		       COALESCE(n.daemon_token_encrypted, ''),
+		       COALESCE(s.runtime_provider, 'docker'),
 		       COALESCE(NULLIF(s.docker_image, ''), (SELECT value FROM jsonb_each_text(e.docker_images) ORDER BY key LIMIT 1), ''),
 		       COALESCE(NULLIF(s.startup_command, ''), e.startup),
 		       e.install_script, e.install_container, e.install_entrypoint, e.config::text, e.file_denylist::text,
@@ -110,6 +113,7 @@ func (s *Store) ServerProvisionTarget(ctx context.Context, serverID string) (Ser
 		&tokenID,
 		&daemonToken,
 		&daemonTokenEncrypted,
+		&target.RuntimeProvider,
 		&target.Image,
 		&target.StartupCommand,
 		&target.InstallScript,
@@ -148,6 +152,12 @@ func (s *Store) ServerProvisionTarget(ctx context.Context, serverID string) (Ser
 	}
 	if allocationPort.Valid {
 		target.AllocationPort = int(allocationPort.Int64)
+	}
+	// Resolve private-registry credentials for the provisioned image, if any.
+	// Docker Hub (the default registry) never matches, so public images pull
+	// unauthenticated exactly as before.
+	if auth, err := s.registryAuthForImage(ctx, target.Image); err == nil {
+		target.RegistryAuth = auth
 	}
 	target.Environment = map[string]string{}
 	variableRows, err := s.db.Query(ctx, `
@@ -270,4 +280,69 @@ func (s *Store) SetServerStatus(ctx context.Context, serverID, status, action st
 		return errors.New("server not found")
 	}
 	return s.AppendAudit(ctx, nil, action, "server", &serverID, fmt.Sprintf(`{"status":"%s"}`, status))
+}
+
+// RegistryAuthForImageRef is the exported entry point to registryAuthForImage
+// for other packages (e.g. compose) that resolve private-registry credentials
+// from an image reference.
+func (s *Store) RegistryAuthForImageRef(ctx context.Context, image string) (*RegistryCredential, error) {
+	return s.registryAuthForImage(ctx, image)
+}
+
+// registryHostOfImage returns the registry host component of a Docker image
+// reference, or "" when the image comes from Docker Hub. A slash-prefixed
+// first segment that contains a dot or colon (or is localhost) is a registry
+// host; otherwise the reference is an organization/image on the hub.
+func registryHostOfImage(image string) string {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return ""
+	}
+	slash := strings.Index(image, "/")
+	if slash < 0 {
+		return "" // e.g. "nginx", "redis:7"
+	}
+	first := image[:slash]
+	if first == "localhost" || strings.ContainsAny(first, ".:") {
+		return first // e.g. "ghcr.io", "registry.example.com:5000"
+	}
+	return "" // e.g. "itzg/minecraft-server"
+}
+
+// registryAuthForImage finds a stored docker registry whose server address
+// matches the registry host prefixing image and returns its decrypted
+// credentials. Returns nil (no auth required) for Docker Hub images or when no
+// registry matches, so it never blocks provisioning.
+func (s *Store) registryAuthForImage(ctx context.Context, image string) (*RegistryCredential, error) {
+	host := registryHostOfImage(image)
+	if host == "" {
+		return nil, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id, username, credential_encrypted, server_address
+		FROM docker_registries
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, username, encrypted, addr string
+		if err := rows.Scan(&id, &username, &encrypted, &addr); err != nil {
+			return nil, err
+		}
+		if normalizeServerAddress(addr) != host {
+			continue
+		}
+		cred, derr := s.decryptSecret(encrypted, "", secretAAD("docker_registries", id, "credential"))
+		if derr != nil {
+			return nil, derr
+		}
+		return &RegistryCredential{
+			Username:      username,
+			Password:      cred,
+			ServerAddress: normalizeServerAddress(addr),
+		}, nil
+	}
+	return nil, rows.Err()
 }

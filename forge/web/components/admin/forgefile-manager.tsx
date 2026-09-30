@@ -1,8 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { OfflineBanner } from "@/components/shared/states-offline";
-import { AdminCard, AdminPageLayout } from "@/components/admin/admin-layout";
+import { AdminCard } from "@/components/admin/admin-layout";
+import { AdminPageLayout, Btn, SectionHeader } from "@/components/admin/admin-ui";
+import { FreshnessBadge } from "@/components/admin/telemetry-ui";
+import { sourceState } from "@/lib/admin/telemetry";
+import { adminPageGuides } from "@/components/admin/admin-page-guides";
 import * as api from "@/lib/api/forgefile";
 import { sanitizeError } from "@/lib/sanitize";
 
@@ -30,97 +35,112 @@ environments: [dev, prod]
 `;
 
 export function ForgefileManager() {
+  const queryClient = useQueryClient();
   const [content, setContent] = useState(SAMPLE);
-  const [validateRes, setValidateRes] = useState<api.ValidateResult | null>(null);
-  const [applyRes, setApplyRes] = useState<api.ApplyResult | null>(null);
-  const [manifests, setManifests] = useState<string[]>([]);
   const [selected, setSelected] = useState<string>("");
-  const [manifestDetail, setManifestDetail] = useState<{ slug: string; version: number; updatedAt: string; manifest: api.Manifest } | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
 
-  async function loadManifests() {
-    try {
-      const list = await api.listManifests();
-      setManifests(list);
-    } catch (e) {
-      setError(sanitizeError(e instanceof Error ? e.message : "Load manifests failed"));
-    }
+  // Server state (the manifest slug list) lives in react-query; validate/apply
+  // and the single-manifest lookup are request-driven actions, so they are
+  // modelled as mutations whose results feed the panels below. Nothing is
+  // announced as applied/valid until the corresponding call has resolved.
+  const manifestsQuery = useQuery({
+    queryKey: ["forgefile-manifests"],
+    queryFn: api.listManifests,
+  });
+  const manifests = manifestsQuery.data ?? [];
+
+  const validateMut = useMutation({ mutationFn: (text: string) => api.validateForgefile(text) });
+  const applyMut = useMutation({
+    mutationFn: (text: string) => api.applyForgefile(text),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["forgefile-manifests"] });
+    },
+  });
+  const detailMut = useMutation({ mutationFn: (slug: string) => api.getManifest(slug) });
+
+  const validateRes = validateMut.data ?? null;
+  const applyRes = applyMut.data ?? null;
+  const manifestDetail = detailMut.data ?? null;
+
+  function editContent(text: string) {
+    setContent(text);
+    validateMut.reset();
+    applyMut.reset();
   }
 
-  useEffect(() => {
-    void loadManifests();
-  }, []);
+  const actionPending = validateMut.isPending || applyMut.isPending;
 
-  async function handleValidate() {
-    setError(null);
-    try {
-      const res = await api.validateForgefile(content);
-      setValidateRes(res);
-      if (res.valid) setSuccess("Valid forge.yaml");
-      else setError(res.error || "Invalid");
-    } catch (e) {
-      setError(sanitizeError(e instanceof Error ? e.message : "Validate failed"));
-    }
+  function handleValidate(text: string) {
+    // Only one of the two result panels can be live at a time, so each action
+    // clears the other's cached result instead of leaving a stale banner.
+    applyMut.reset();
+    validateMut.mutate(text);
   }
 
-  async function handleApply() {
-    setError(null);
-    try {
-      const res = await api.applyForgefile(content);
-      setApplyRes(res);
-      setSuccess(`Applied ${res.projectSlug} v${res.version}`);
-      await loadManifests();
-    } catch (e) {
-      setError(sanitizeError(e instanceof Error ? e.message : "Apply failed"));
-    }
+  function handleApply(text: string) {
+    validateMut.reset();
+    applyMut.mutate(text);
   }
 
-  async function handleGet(slug: string) {
+  function handleGet(slug: string) {
     setSelected(slug);
-    try {
-      const detail = await api.getManifest(slug);
-      setManifestDetail(detail);
-    } catch (e) {
-      setError(sanitizeError(e instanceof Error ? e.message : "Get manifest failed"));
-    }
+    // Drop the previous lookup first so a failed fetch cannot leave a stale
+    // detail panel rendered under the newly selected slug.
+    detailMut.reset();
+    detailMut.mutate(slug);
+  }
+
+  const invalidMessage = validateRes && !validateRes.valid ? validateRes.error || "Invalid" : null;
+  const actionError = manifestsQuery.isError
+    ? sanitizeError(manifestsQuery.error instanceof Error ? manifestsQuery.error.message : "Load manifests failed")
+    : validateMut.isError
+      ? sanitizeError(validateMut.error instanceof Error ? validateMut.error.message : "Validate failed")
+      : applyMut.isError
+        ? sanitizeError(applyMut.error instanceof Error ? applyMut.error.message : "Apply failed")
+        : detailMut.isError
+          ? sanitizeError(detailMut.error instanceof Error ? detailMut.error.message : "Get manifest failed")
+          : null;
+  const error = actionError ?? invalidMessage;
+  const success = applyRes
+    ? `Applied ${applyRes.projectSlug} v${applyRes.version}`
+    : validateRes?.valid
+      ? "Valid forge.yaml"
+      : null;
+
+  function dismissStatus() {
+    validateMut.reset();
+    applyMut.reset();
   }
 
   return (
-    <AdminPageLayout
-      title="Forgefile (env-as-code)"
-      description="Declarative forge.yaml — validate with checkKeys + apply via apphosting materialization. Max 256 KiB, unknown keys warned. Apply is idempotent upsert on project slug (version++)."
-      breadcrumbs={[{ label: "Admin", href: "/admin/forgefile" }, { label: "Forgefile" }]}
-    >
-      <OfflineBanner onRetry={() => void loadManifests()} />
-      <div className="flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] px-3 py-2 font-mono text-[11px] text-[var(--text-subtle)]">
-        <span className="h-2 w-2 rounded-full bg-[var(--brand)]" />
-        <span>forgefile</span>
-        <span className="text-[var(--text-subtle)]">::</span>
-        <span className="text-[var(--brand)]">manifest</span>
-        <span className="ml-auto hidden sm:inline uppercase tracking-widest text-[var(--text-subtle)]">var(--brand) var(--canvas) var(--surface) var(--line)</span>
-      </div>
+    <AdminPageLayout>
+      <SectionHeader title="Forgefile" sub="Validate and apply project configuration from a forge.yaml manifest." info={adminPageGuides.forgefile} status={<FreshnessBadge state={sourceState(manifestsQuery)} />} />
+      <OfflineBanner onRetry={() => void manifestsQuery.refetch()} />
       {error && (
-        <div role="alert" className="flex items-center justify-between gap-3 rounded-xl border border-red-500/25 bg-red-500/[0.09] p-4 text-sm text-red-200">
-          <span>{error}</span> <button onClick={() => setError(null)} className="rounded px-2 py-1 text-xs underline hover:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]">Dismiss</button>
+        <div role="alert" className="flex items-center justify-between gap-3 rounded-xl border border-danger-line bg-danger/[0.09] p-4 text-sm text-danger">
+          <span>{error}</span>
+          <div className="flex items-center gap-2">
+            {manifestsQuery.isError && <button onClick={() => void manifestsQuery.refetch()} className="rounded px-2 py-1 text-xs underline hover:bg-overlay-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]">Retry</button>}
+            <button onClick={dismissStatus} className="rounded px-2 py-1 text-xs underline hover:bg-overlay-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]">Dismiss</button>
+          </div>
         </div>
       )}
       {success && (
-        <div role="status" className="flex items-center justify-between gap-3 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.09] p-4 text-sm text-emerald-200">
-          <span>{success}</span> <button onClick={() => setSuccess(null)} className="rounded px-2 py-1 text-xs underline hover:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]">Dismiss</button>
+        <div role="status" className="flex items-center justify-between gap-3 rounded-xl border border-ok-line bg-ok/[0.09] p-4 text-sm text-ok">
+          <span>{success}</span> <button onClick={dismissStatus} className="rounded px-2 py-1 text-xs underline hover:bg-overlay-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]">Dismiss</button>
         </div>
       )}
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <AdminCard title="Editor" description="Paste forge.yaml or JSON {content: '<yaml>'} — backend accepts both. GET /forgefile/validate?manifest=… also supported.">
-          <textarea value={content} onChange={(e) => setContent(e.target.value)} rows={20} className="w-full rounded-lg border border-[var(--line)] bg-surface p-3 font-mono text-xs" spellCheck={false} />
-          <div className="mt-3 flex gap-2">
-            <button onClick={() => void handleValidate()} className="rounded bg-[var(--brand)] px-4 py-2 text-xs font-bold text-white">Validate</button>
-            <button onClick={() => void handleApply()} className="rounded bg-[var(--brand)] px-4 py-2 text-xs font-bold text-white">Apply</button>
-            <button onClick={() => setContent(SAMPLE)} className="rounded border border-[var(--line)] px-4 py-2 text-xs">Reset Sample</button>
+        <AdminCard title="Editor" description="Edit your manifest, validate its configuration, then apply it to your project.">
+          <textarea aria-label="Forgefile manifest" value={content} disabled={actionPending} onChange={(e) => editContent(e.target.value)} rows={20} className="w-full rounded-lg border border-[var(--line)] bg-surface p-3 font-mono text-xs" spellCheck={false} />
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-4">
+            <Btn tone="ghost" onClick={() => handleValidate(content)} disabled={actionPending || !content.trim()} loading={validateMut.isPending}>Validate</Btn>
+            <Btn onClick={() => handleApply(content)} disabled={actionPending || !content.trim()} loading={applyMut.isPending}>Apply manifest</Btn>
+            <Btn tone="subtle" onClick={() => editContent(SAMPLE)} disabled={actionPending}>Reset sample</Btn>
           </div>
           {validateRes && (
-            <div className={`mt-3 rounded-lg border p-3 text-xs ${validateRes.valid ? "border-emerald-500/25 bg-emerald-500/[0.09]" : "border-red-500/25 bg-red-500/[0.09]"}`}>
+            <div className={`mt-3 rounded-lg border p-3 text-xs ${validateRes.valid ? "border-ok-line bg-ok/[0.09]" : "border-danger-line bg-danger/[0.09]"}`}>
               <p className="font-bold">{validateRes.valid ? "Valid" : "Invalid"} {validateRes.error ? `· ${validateRes.error}` : ""}</p>
               {validateRes.warnings.length > 0 && (
                 <ul className="mt-2 list-disc pl-5 text-[var(--text-subtle)]">
@@ -132,12 +152,12 @@ export function ForgefileManager() {
             </div>
           )}
           {applyRes && (
-            <div className="mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/[0.09] p-3 text-xs">
+            <div className="mt-3 rounded-lg border border-ok-line bg-ok/[0.09] p-3 text-xs">
               <p className="font-bold">Applied {applyRes.projectSlug} v{applyRes.version}</p>
               <p className="text-[var(--text-subtle)]">Links: {Object.entries(applyRes.links).map(([k, v]) => `${k}=${v}`).join(", ") || "—"}</p>
               <p className="text-[var(--text-subtle)]">Apps: {applyRes.apps.map((a) => `${a.appName} (${a.domain})`).join(", ") || "—"}</p>
               {applyRes.warnings.length > 0 && (
-                <ul className="mt-1 list-disc pl-5 text-amber-700">
+                <ul className="mt-1 list-disc pl-5 text-warn">
                   {applyRes.warnings.map((w, i) => (
                     <li key={i}>{w}</li>
                   ))}
@@ -147,17 +167,21 @@ export function ForgefileManager() {
           )}
         </AdminCard>
 
-        <AdminCard title="Manifests" description="GET /forgefile lists slugs visible to caller (admin sees all, others only own). GET /forgefile/:slug returns version + updatedAt + manifest (requires ownership).">
-          <div className="flex gap-2">
-            <button onClick={() => void loadManifests()} className="rounded border border-[var(--line)] px-3 py-1.5 text-xs">Refresh</button>
-            <span className="text-xs text-[var(--text-subtle)] py-1.5">{manifests.length} manifest(s)</span>
+        <AdminCard title="Manifests" description="Browse saved project manifests and inspect their latest versions.">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-xs text-text-subtle">{manifestsQuery.isSuccess ? `${manifests.length} manifests` : "Saved manifests"}</span>
+            <Btn tone="ghost" size="sm" onClick={() => void manifestsQuery.refetch()} disabled={manifestsQuery.isFetching}>Refresh</Btn>
           </div>
-          {manifests.length === 0 ? (
-            <p className="mt-3 text-sm text-[var(--text-subtle)]">No manifests. Apply one to create a project slug row (FORGEFILE_BASE_DOMAIN env controls app link base domain; empty → http://&lt;name&gt;.local/deploy/&lt;appId&gt;).</p>
+          {manifestsQuery.isError ? (
+            <p role="alert" className="mt-3 text-sm text-danger">Could not load saved manifests. Try refreshing the list.</p>
+          ) : manifestsQuery.isLoading ? (
+            <p role="status" className="mt-3 text-sm text-text-subtle">Loading manifests…</p>
+          ) : manifests.length === 0 ? (
+            <p className="mt-3 text-sm text-[var(--text-subtle)]">No saved manifests yet. Apply a manifest to create your first project.</p>
           ) : (
             <div className="mt-3 space-y-2">
               {manifests.map((slug) => (
-                <button key={slug} onClick={() => void handleGet(slug)} className={`w-full text-left rounded-lg border px-3 py-2 text-sm ${selected === slug ? "border-[var(--brand)] bg-[var(--brand)]/10" : "border-[var(--line)] bg-surface"}`}>
+                <button key={slug} onClick={() => handleGet(slug)} className={`w-full text-left rounded-lg border px-3 py-2 text-sm ${selected === slug ? "border-[var(--brand)] bg-[color-mix(in_srgb,var(--brand)_10%,transparent)]" : "border-[var(--line)] bg-surface"}`}>
                   {slug}
                 </button>
               ))}

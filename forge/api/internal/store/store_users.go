@@ -259,29 +259,63 @@ func (s *Store) UserCanAccessServer(ctx context.Context, serverID, userID, role,
 		return true, nil
 	}
 	var ownerID string
-	if err := s.db.QueryRow(ctx, `SELECT owner_id::text FROM servers WHERE id = $1`, serverID).Scan(&ownerID); err != nil {
+	var orgID *string
+	if err := s.db.QueryRow(ctx, `SELECT owner_id::text, org_id::text FROM servers WHERE id = $1`, serverID).Scan(&ownerID, &orgID); err != nil {
 		return false, err
+	}
+	hasServerGrant := false
+	if ownerID == userID {
+		hasServerGrant = true
+	} else {
+		var raw []byte
+		if err := s.db.QueryRow(ctx, `
+			SELECT permissions
+			FROM subusers
+			WHERE server_id = $1 AND user_id = $2
+		`, serverID, userID).Scan(&raw); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return false, nil
+			}
+			return false, err
+		}
+		var permissions []string
+		_ = json.Unmarshal(raw, &permissions)
+		if permission == "" {
+			hasServerGrant = true
+		} else {
+			hasServerGrant = HasPermission(permissions, permission)
+		}
+		if !hasServerGrant {
+			return false, nil
+		}
+	}
+	if permission != "" && ownerID == userID {
+		// Owners hold every permission on their own servers; no subuser-row
+		// check is needed. Fall through to the org check below.
+	}
+	// Tenancy: when the server is scoped to an org, the caller must also be
+	// a member of that org (owner, subuser, or otherwise). Both the server
+	// grant above AND org membership are required. Legacy servers with NULL
+	// org_id skip the org check. Admins bypass via the early return. Fail
+	// closed on membership lookup errors.
+	if orgID != nil && strings.TrimSpace(*orgID) != "" {
+		member, err := s.UserIsOrgMember(ctx, *orgID, userID)
+		if err != nil {
+			return false, err
+		}
+		if !member {
+			return false, nil
+		}
 	}
 	if ownerID == userID {
 		return true, nil
 	}
-	var raw []byte
-	if err := s.db.QueryRow(ctx, `
-		SELECT permissions
-		FROM subusers
-		WHERE server_id = $1 AND user_id = $2
-	`, serverID, userID).Scan(&raw); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
-		}
-		return false, err
-	}
-	var permissions []string
-	_ = json.Unmarshal(raw, &permissions)
 	if permission == "" {
-		return true, nil
+		return hasServerGrant, nil
 	}
-	return HasPermission(permissions, permission), nil
+	// Re-check the subuser permission for the non-owner path (already
+	// verified above); reaching here means the grant held.
+	return hasServerGrant, nil
 }
 
 func (s *Store) DeleteServerSubuser(ctx context.Context, serverID, userID string, actorID *string) error {
@@ -512,43 +546,59 @@ func (s *Store) UpdateUser(ctx context.Context, userID string, req UpdateUserReq
 	defer tx.Rollback(ctx)
 
 	// Update password if provided. Also write any resource-limit changes.
-	limitSets := []string{}
-	limitArgs := []any{}
+	// Limit placeholders are numbered after the fixed leading args
+	// (email/hash/role); numbering them from $1 collided with those args
+	// and every limit update failed with "inconsistent types deduced".
+	type limitUpdate struct {
+		column string
+		value  any
+	}
+	allowedUserLimitColumns := map[string]bool{
+		"cpu_limit": true, "memory_mb_limit": true, "disk_mb_limit": true,
+		"backup_limit": true, "database_limit": true, "allocation_limit": true,
+		"subuser_limit": true, "schedule_limit": true, "server_limit": true,
+	}
+	limits := []limitUpdate{}
 	if req.CPULimit != nil {
-		limitSets = append(limitSets, fmt.Sprintf("cpu_limit = $%d", len(limitArgs)+1))
-		limitArgs = append(limitArgs, *req.CPULimit)
+		limits = append(limits, limitUpdate{"cpu_limit", *req.CPULimit})
 	}
 	if req.MemoryMBLimit != nil {
-		limitSets = append(limitSets, fmt.Sprintf("memory_mb_limit = $%d", len(limitArgs)+1))
-		limitArgs = append(limitArgs, *req.MemoryMBLimit)
+		limits = append(limits, limitUpdate{"memory_mb_limit", *req.MemoryMBLimit})
 	}
 	if req.DiskMBLimit != nil {
-		limitSets = append(limitSets, fmt.Sprintf("disk_mb_limit = $%d", len(limitArgs)+1))
-		limitArgs = append(limitArgs, *req.DiskMBLimit)
+		limits = append(limits, limitUpdate{"disk_mb_limit", *req.DiskMBLimit})
 	}
 	if req.BackupLimit != nil {
-		limitSets = append(limitSets, fmt.Sprintf("backup_limit = $%d", len(limitArgs)+1))
-		limitArgs = append(limitArgs, *req.BackupLimit)
+		limits = append(limits, limitUpdate{"backup_limit", *req.BackupLimit})
 	}
 	if req.DatabaseLimit != nil {
-		limitSets = append(limitSets, fmt.Sprintf("database_limit = $%d", len(limitArgs)+1))
-		limitArgs = append(limitArgs, *req.DatabaseLimit)
+		limits = append(limits, limitUpdate{"database_limit", *req.DatabaseLimit})
 	}
 	if req.AllocationLimit != nil {
-		limitSets = append(limitSets, fmt.Sprintf("allocation_limit = $%d", len(limitArgs)+1))
-		limitArgs = append(limitArgs, *req.AllocationLimit)
+		limits = append(limits, limitUpdate{"allocation_limit", *req.AllocationLimit})
 	}
 	if req.SubuserLimit != nil {
-		limitSets = append(limitSets, fmt.Sprintf("subuser_limit = $%d", len(limitArgs)+1))
-		limitArgs = append(limitArgs, *req.SubuserLimit)
+		limits = append(limits, limitUpdate{"subuser_limit", *req.SubuserLimit})
 	}
 	if req.ScheduleLimit != nil {
-		limitSets = append(limitSets, fmt.Sprintf("schedule_limit = $%d", len(limitArgs)+1))
-		limitArgs = append(limitArgs, *req.ScheduleLimit)
+		limits = append(limits, limitUpdate{"schedule_limit", *req.ScheduleLimit})
 	}
 	if req.ServerLimit != nil {
-		limitSets = append(limitSets, fmt.Sprintf("server_limit = $%d", len(limitArgs)+1))
-		limitArgs = append(limitArgs, *req.ServerLimit)
+		limits = append(limits, limitUpdate{"server_limit", *req.ServerLimit})
+	}
+	for _, l := range limits {
+		if !allowedUserLimitColumns[l.column] {
+			return User{}, fmt.Errorf("disallowed column: %s", l.column)
+		}
+	}
+	// limitAssignments renders "col = $N, ..." continuing the numbering
+	// after args already collected, and appends the values in order.
+	limitAssignments := func(sets []string, args []any) ([]string, []any) {
+		for _, l := range limits {
+			sets = append(sets, fmt.Sprintf("%s = $%d", l.column, len(args)+1))
+			args = append(args, l.value)
+		}
+		return sets, args
 	}
 
 	if strings.TrimSpace(req.Password) != "" {
@@ -559,24 +609,15 @@ func (s *Store) UpdateUser(ctx context.Context, userID string, req UpdateUserReq
 		if err != nil {
 			return User{}, err
 		}
-		if len(limitSets) > 0 {
-			var allowedUserLimitColumns = map[string]bool{
-				"cpu_limit": true, "memory_mb_limit": true, "disk_mb_limit": true,
-				"backup_limit": true, "database_limit": true, "allocation_limit": true,
-				"subuser_limit": true, "schedule_limit": true, "server_limit": true,
-			}
-			for _, set := range limitSets {
-				col := strings.SplitN(set, " =", 2)[0]
-				if !allowedUserLimitColumns[col] {
-					return User{}, fmt.Errorf("disallowed column: %s", col)
-				}
-			}
+		if len(limits) > 0 {
+			var sets []string
+			args := []any{email, string(hash), req.Role}
+			sets, args = limitAssignments(sets, args)
+			args = append(args, userID)
 			query := fmt.Sprintf(`
 				UPDATE users SET email = $1, password_hash = $2, role = $3, session_version = session_version + 1, updated_at = now(), %s
 				WHERE id = $%d
-			`, strings.Join(limitSets, ", "), len(limitArgs)+4)
-			args := append([]any{email, string(hash), req.Role}, limitArgs...)
-			args = append(args, userID)
+			`, strings.Join(sets, ", "), len(args))
 			_, err = tx.Exec(ctx, query, args...)
 		} else {
 			_, err = tx.Exec(ctx, `
@@ -587,24 +628,15 @@ func (s *Store) UpdateUser(ctx context.Context, userID string, req UpdateUserReq
 		if err != nil {
 			return User{}, err
 		}
-	} else if len(limitSets) > 0 {
-		var allowedUserLimitColumns = map[string]bool{
-			"cpu_limit": true, "memory_mb_limit": true, "disk_mb_limit": true,
-			"backup_limit": true, "database_limit": true, "allocation_limit": true,
-			"subuser_limit": true, "schedule_limit": true, "server_limit": true,
-		}
-		for _, set := range limitSets {
-			col := strings.SplitN(set, " =", 2)[0]
-			if !allowedUserLimitColumns[col] {
-				return User{}, fmt.Errorf("disallowed column: %s", col)
-			}
-		}
+	} else if len(limits) > 0 {
+		var sets []string
+		args := []any{email, req.Role}
+		sets, args = limitAssignments(sets, args)
+		args = append(args, userID)
 		query := fmt.Sprintf(`
 			UPDATE users SET email = $1, role = $2, updated_at = now(), %s
 			WHERE id = $%d
-		`, strings.Join(limitSets, ", "), len(limitArgs)+3)
-		args := append([]any{email, req.Role}, limitArgs...)
-		args = append(args, userID)
+		`, strings.Join(sets, ", "), len(args))
 		if _, err = tx.Exec(ctx, query, args...); err != nil {
 			return User{}, err
 		}
@@ -822,7 +854,7 @@ func (s *Store) ListUserSessions(ctx context.Context, userID string) ([]UserSess
 	}
 
 	rows, err := s.db.Query(ctx, `
-		SELECT id::text, user_id::text, ip_address, user_agent, last_activity, created_at, expires_at, is_revoked, revoked_at, revoke_reason
+		SELECT id::text, user_id::text, COALESCE(ip_address,''), COALESCE(user_agent,''), last_activity, created_at, expires_at, is_revoked, revoked_at, COALESCE(revoke_reason,'')
 		FROM user_sessions
 		WHERE user_id = $1
 		ORDER BY last_activity DESC
@@ -1072,10 +1104,13 @@ func (s *Store) CreatePasswordResetToken(ctx context.Context, userID, tokenHash 
 		return "", nil
 	}
 	id := uuid.NewString()
+	// make_interval(secs => $4) carries the TTL as seconds: Go's
+	// Duration.String ("30m0s") is not a Postgres interval literal and
+	// $4::interval would reject it.
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at, requested_ip)
-		VALUES ($1, $2, $3, now() + $4::interval, $5)
-	`, id, userID, tokenHash, ttl.String(), ip)
+		VALUES ($1, $2, $3, now() + make_interval(secs => $4), $5)
+	`, id, userID, tokenHash, ttl.Seconds(), ip)
 	if err != nil {
 		return "", err
 	}

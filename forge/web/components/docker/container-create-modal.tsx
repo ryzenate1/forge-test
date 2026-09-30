@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Plus, X } from "lucide-react";
 import { createContainer, type CreateContainerRequest } from "@/lib/api/docker";
+import { NodeSelect } from "@/components/docker/node-select";
 import { Btn, Input, Modal, ModalFooter } from "@/components/admin/admin-ui";
 import { Alert } from "@/components/ui/primitives";
 
@@ -19,12 +20,14 @@ export function ContainerCreateModal({ onClose, onCreated }: { onClose: () => vo
   const [ports, setPorts] = useState<PortMapping[]>([{ hostPort: "", containerPort: "", protocol: "tcp" }]);
   const [envVars, setEnvVars] = useState<EnvVar[]>([{ key: "", value: "" }]);
   const [volumes, setVolumes] = useState<VolumeBinding[]>([{ hostPath: "", containerPath: "", readOnly: false }]);
+  const [nodeId, setNodeId] = useState("");
   const [error, setError] = useState("");
 
   const createMut = useMutation({
     mutationFn: () => {
       const config: CreateContainerRequest = {
         image,
+        nodeId,
       };
       if (name) config.name = name;
       if (network) config.network = network;
@@ -83,7 +86,7 @@ export function ContainerCreateModal({ onClose, onCreated }: { onClose: () => vo
 
   return (
     <Modal onClose={onClose} title="Create Container" wide>
-      <div className="space-y-5">
+      <div className="space-y-4">
         {error && <Alert tone="error" title="Failed to create container">{error}</Alert>}
 
         <div className="grid gap-4 sm:grid-cols-2">
@@ -91,9 +94,11 @@ export function ContainerCreateModal({ onClose, onCreated }: { onClose: () => vo
           <Input label="Container Name" placeholder="my-container" value={name} onChange={setName} />
         </div>
 
+        <NodeSelect value={nodeId} onChange={setNodeId} />
+
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-slate-300">Network</label>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Network</label>
             <select className="ui-input" value={network} onChange={(e) => setNetwork(e.target.value)}>
               <option value="bridge">bridge</option>
               <option value="host">host</option>
@@ -101,7 +106,7 @@ export function ContainerCreateModal({ onClose, onCreated }: { onClose: () => vo
             </select>
           </div>
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-slate-300">Restart Policy</label>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Restart Policy</label>
             <select className="ui-input" value={restartPolicy} onChange={(e) => setRestartPolicy(e.target.value)}>
               <option value="no">no</option>
               <option value="always">always</option>
@@ -114,7 +119,7 @@ export function ContainerCreateModal({ onClose, onCreated }: { onClose: () => vo
         {/* Port Mappings */}
         <div>
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-sm font-medium text-slate-300">Port Mappings</span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Port Mappings</span>
             <Btn size="sm" tone="ghost" onClick={addPort}><Plus size={12} /> Add Port</Btn>
           </div>
           <div className="space-y-2">
@@ -138,7 +143,7 @@ export function ContainerCreateModal({ onClose, onCreated }: { onClose: () => vo
         {/* Environment Variables */}
         <div>
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-sm font-medium text-slate-300">Environment Variables</span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Environment Variables</span>
             <Btn size="sm" tone="ghost" onClick={addEnv}><Plus size={12} /> Add Variable</Btn>
           </div>
           <div className="space-y-2">
@@ -157,7 +162,7 @@ export function ContainerCreateModal({ onClose, onCreated }: { onClose: () => vo
         {/* Volumes */}
         <div>
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-sm font-medium text-slate-300">Volumes</span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Volumes</span>
             <Btn size="sm" tone="ghost" onClick={addVolume}><Plus size={12} /> Add Volume</Btn>
           </div>
           <div className="space-y-2">
@@ -181,7 +186,7 @@ export function ContainerCreateModal({ onClose, onCreated }: { onClose: () => vo
           onCancel={onClose}
           onConfirm={() => createMut.mutate()}
           confirmLabel={createMut.isPending ? "Creating..." : "Create"}
-          disabled={!image || createMut.isPending}
+          disabled={!image || !nodeId || createMut.isPending}
         />
       </div>
     </Modal>

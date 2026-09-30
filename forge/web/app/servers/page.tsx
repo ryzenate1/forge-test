@@ -4,8 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { type ApiServer, fetchCurrentUser, fetchServers, logout } from "@/lib/api";
+import { type ApiServer, fetchServers, logout } from "@/lib/api";
+import { useCurrentUser } from "@/lib/api/use-current-user";
 import { useServerStore } from "@/stores/use-server-store";
+import { useTenancyStore } from "@/stores/use-tenancy-store";
 import { Cpu, HardDrive, LogOut, MemoryStick, Server, User } from "lucide-react";
 import { useBranding } from "@/components/branding";
 import { Pagination, ResourceBar, SearchInput, StatusPill, Switch } from "@/components/ui/primitives";
@@ -55,15 +57,10 @@ function ServerStatus({ server }: { server: ApiServer }) {
 export default function ServersPage() {
   const t = useT();
   const router = useRouter();
-  const { currentUser } = useServerStore();
+  const currentUser = useServerStore((s) => s.currentUser);
   const { companyName } = useBranding();
 
-  const userQuery = useQuery({
-    queryKey: ["current-user"],
-    queryFn: fetchCurrentUser,
-    retry: 1,
-    staleTime: 30_000,
-  });
+  const userQuery = useCurrentUser();
 
   useEffect(() => {
     if (userQuery.data === null) router.replace("/?reason=session-expired&next=%2Fservers");
@@ -89,6 +86,8 @@ export default function ServersPage() {
     try {
       await logout();
     } finally {
+      useServerStore.getState().reset();
+      useTenancyStore.getState().reset();
       router.push("/");
     }
   };
@@ -130,7 +129,7 @@ export default function ServersPage() {
   }
 
   if (userQuery.isError) {
-    return <div className="grid min-h-screen place-items-center bg-surface-base px-4 text-center text-slate-100"><div><p className="text-lg font-semibold">{t("servers.sessionVerificationUnavailable")}</p><p className="mt-2 text-sm text-neutral-secondary">{t("servers.retryOnceReachable")}</p></div></div>;
+    return <div className="grid min-h-screen place-items-center bg-surface-base px-4 text-center text-slate-100"><div><p className="text-lg font-semibold">{t("servers.sessionVerificationUnavailable")}</p><p className="mt-2 text-sm text-neutral-secondary">{t("servers.retryOnceReachable")}</p><button className="mt-4 rounded-lg bg-white/[0.06] px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/[0.1] disabled:opacity-60" disabled={userQuery.isFetching} onClick={() => void userQuery.refetch()} type="button">{userQuery.isFetching ? `${t("common.retry")}…` : t("common.retry")}</button></div></div>;
   }
 
   return (
@@ -214,7 +213,7 @@ export default function ServersPage() {
                 >
                   {/* Status bar indicator */}
                   <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-1 rounded-r-xl opacity-50 group-hover:opacity-75 transition-opacity" style={{
-                    backgroundColor: server.suspended ? "#f43f5e" : server.status === "running" ? "#10b981" : server.status === "installing" ? "#f59e0b" : "#64748b"
+                    backgroundColor: server.suspended ? "var(--danger)" : server.status === "running" ? "var(--success)" : server.status === "installing" ? "var(--warning)" : "var(--text-muted)"
                   }} />
 
                   <div className="flex items-start justify-between gap-3 mb-3">

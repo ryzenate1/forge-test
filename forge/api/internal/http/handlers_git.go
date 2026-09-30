@@ -218,6 +218,90 @@ func DisconnectGitProvider(cfg Config) fiber.Handler {
 	}
 }
 
+func TestGitProviderToken(cfg Config) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if cfg.GitService == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "git service is not available")
+		}
+		var req struct {
+			Provider    string `json:"provider"`
+			AccessToken string `json:"accessToken"`
+			BaseURL     string `json:"baseUrl"`
+			Username    string `json:"username"`
+		}
+		if err := c.BodyParser(&req); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		}
+		ctx, cancel := requestContext()
+		defer cancel()
+		login, err := cfg.GitService.ValidateProviderToken(ctx, store.GitProviderType(req.Provider), req.AccessToken, req.BaseURL)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"ok": false, "message": err.Error(), "provider": req.Provider})
+		}
+		return c.JSON(fiber.Map{"ok": true, "message": "token accepted for " + login, "provider": req.Provider})
+	}
+}
+
+func TestSavedGitProviderToken(cfg Config) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if cfg.GitService == nil || cfg.Store == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "git service is not available")
+		}
+		ctx, cancel := requestContext()
+		defer cancel()
+		token, err := cfg.Store.GetGitProviderTokenUnmasked(ctx, c.Params("id"))
+		if err != nil {
+			return fiber.NewError(fiber.StatusNotFound, err.Error())
+		}
+		if err := requireResourceOwner(c, token.UserID); err != nil {
+			return err
+		}
+		start := time.Now()
+		login, err := cfg.GitService.ValidateProviderToken(ctx, token.Provider, token.AccessToken, token.BaseURL)
+		latencyMs := time.Since(start).Milliseconds()
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"ok": false, "message": err.Error(), "latencyMs": latencyMs})
+		}
+		return c.JSON(fiber.Map{"ok": true, "message": "token accepted for " + login, "latencyMs": latencyMs})
+	}
+}
+
+func UpdateGitProviderToken(cfg Config) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if cfg.Store == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+		}
+		var req struct {
+			ProviderName *string `json:"providerName"`
+			Username     *string `json:"username"`
+			BaseURL      *string `json:"baseUrl"`
+			AvatarURL    *string `json:"avatarUrl"`
+		}
+		if err := c.BodyParser(&req); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		}
+		ctx, cancel := requestContext()
+		defer cancel()
+		existing, err := cfg.Store.GetGitProviderToken(ctx, c.Params("id"))
+		if err != nil {
+			return fiber.NewError(fiber.StatusNotFound, err.Error())
+		}
+		if err := requireResourceOwner(c, existing.UserID); err != nil {
+			return err
+		}
+		updated, err := cfg.Store.UpdateGitProviderToken(ctx, c.Params("id"), store.UpdateGitProviderTokenRequest{
+			ProviderName: req.ProviderName,
+			Username:     req.Username,
+			BaseURL:      req.BaseURL,
+			AvatarURL:    req.AvatarURL,
+		})
+		if err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		return c.JSON(updated)
+	}
+}
+
 func ListProviderRepos(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if cfg.GitService == nil || cfg.Store == nil {
@@ -332,7 +416,10 @@ func CreateGitSource(cfg Config) fiber.Handler {
 			}
 		}
 
-		webhookSecret := generateWebhookSecret()
+		webhookSecret, err := generateWebhookSecret()
+		if err != nil {
+			return respondInternalError(c, err)
+		}
 		webhookID := ""
 
 		if req.AutoDeploy && req.ProviderTokenID != nil && *req.ProviderTokenID != "" && cfg.GitService != nil {
@@ -424,7 +511,7 @@ type webhookPushPayload struct {
 func HandleGitHubWebhook(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
-			return c.SendStatus(fiber.StatusOK)
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
 		body := c.Body()
 		signature := c.Get("X-Hub-Signature-256")
@@ -460,11 +547,15 @@ func HandleGitHubWebhook(cfg Config) fiber.Handler {
 			return c.SendStatus(fiber.StatusOK)
 		}
 
-		if len(payload.Commits) > 0 && cfg.GitService != nil {
-			lastCommit := payload.Commits[len(payload.Commits)-1]
-			_ = cfg.GitService.HandleWebhookTrigger(ctx, source, lastCommit.ID, lastCommit.Message, lastCommit.Author.Name)
-		} else if cfg.GitService != nil {
-			_ = cfg.GitService.HandleWebhookTrigger(ctx, source, payload.After, "", "")
+		if cfg.GitService != nil {
+			sha, msg, author := payload.After, "", ""
+			if len(payload.Commits) > 0 {
+				lastCommit := payload.Commits[len(payload.Commits)-1]
+				sha, msg, author = lastCommit.ID, lastCommit.Message, lastCommit.Author.Name
+			}
+			if err := cfg.GitService.HandleWebhookTrigger(ctx, source, sha, msg, author); err != nil {
+				return respondInternalError(c, err)
+			}
 		}
 
 		return c.SendStatus(fiber.StatusOK)
@@ -474,7 +565,7 @@ func HandleGitHubWebhook(cfg Config) fiber.Handler {
 func HandleGitLabWebhook(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
-			return c.SendStatus(fiber.StatusOK)
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
 		body := c.Body()
 		tokenHeader := c.Get("X-Gitlab-Token")
@@ -535,7 +626,9 @@ func HandleGitLabWebhook(cfg Config) fiber.Handler {
 		}
 
 		if cfg.GitService != nil {
-			_ = cfg.GitService.HandleWebhookTrigger(ctx, source, sha, msg, author)
+			if err := cfg.GitService.HandleWebhookTrigger(ctx, source, sha, msg, author); err != nil {
+				return respondInternalError(c, err)
+			}
 		}
 
 		return c.SendStatus(fiber.StatusOK)
@@ -545,7 +638,7 @@ func HandleGitLabWebhook(cfg Config) fiber.Handler {
 func HandleBitbucketWebhook(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
-			return c.SendStatus(fiber.StatusOK)
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
 		body := c.Body()
 
@@ -632,7 +725,9 @@ func HandleBitbucketWebhook(cfg Config) fiber.Handler {
 		}
 
 		if cfg.GitService != nil {
-			_ = cfg.GitService.HandleWebhookTrigger(ctx, source, sha, msg, author)
+			if err := cfg.GitService.HandleWebhookTrigger(ctx, source, sha, msg, author); err != nil {
+				return respondInternalError(c, err)
+			}
 		}
 
 		return c.SendStatus(fiber.StatusOK)
@@ -642,7 +737,7 @@ func HandleBitbucketWebhook(cfg Config) fiber.Handler {
 func HandleGiteaWebhook(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
-			return c.SendStatus(fiber.StatusOK)
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
 		body := c.Body()
 		signature := c.Get("X-Gitea-Signature")
@@ -699,7 +794,9 @@ func HandleGiteaWebhook(cfg Config) fiber.Handler {
 		}
 
 		if cfg.GitService != nil {
-			_ = cfg.GitService.HandleWebhookTrigger(ctx, source, sha, msg, author)
+			if err := cfg.GitService.HandleWebhookTrigger(ctx, source, sha, msg, author); err != nil {
+				return respondInternalError(c, err)
+			}
 		}
 
 		return c.SendStatus(fiber.StatusOK)
@@ -729,10 +826,12 @@ func requireResourceOwner(c *fiber.Ctx, ownerID string) error {
 	return nil
 }
 
-func generateWebhookSecret() string {
+func generateWebhookSecret() (string, error) {
 	b := make([]byte, 32)
-	_, _ = rand.Read(b)
-	return fmt.Sprintf("%x", b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate webhook secret: %w", err)
+	}
+	return fmt.Sprintf("%x", b), nil
 }
 
 // ---------- Git Deployments ----------
@@ -829,13 +928,12 @@ func TriggerGitDeployment(cfg Config) fiber.Handler {
 				return err
 			}
 		}
-		deploy, err := cfg.Store.CreateGitDeployment(ctx, store.CreateGitDeploymentRequest{
-			GitSourceID: source.ID,
-			Branch:      req.Branch,
-			CommitSHA:   req.CommitHash,
-			Status:      "pending",
-			StartedAt:   time.Now().UTC(),
-		})
+		// Perform a real deployment (clone -> build -> run) through the git deploy
+		// engine instead of inserting a pending row that no consumer acts on.
+		if cfg.GitDeployMgmtService == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "git deployment engine unavailable")
+		}
+		deploy, err := cfg.GitDeployMgmtService.InitiateDeployment(ctx, req.RepoURL, req.Branch, req.CommitHash)
 		if err != nil {
 			return respondInternalError(c, err)
 		}
@@ -889,9 +987,12 @@ func CreateGitDeploymentHook(cfg Config) fiber.Handler {
 		if req.Events == nil {
 			req.Events = []string{"push"}
 		}
-		secret := ""
-		if cfg.GitDeployMgmtService != nil {
-			secret = cfg.GitDeployMgmtService.GenerateSecret()
+		if cfg.GitDeployMgmtService == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "git deployment engine unavailable")
+		}
+		secret, err := cfg.GitDeployMgmtService.GenerateSecret()
+		if err != nil {
+			return respondInternalError(c, err)
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
@@ -951,9 +1052,12 @@ func RegenerateGitDeploymentHookSecret(cfg Config) fiber.Handler {
 		if err := requireResourceOwner(c, source.UserID); err != nil {
 			return err
 		}
-		secret := ""
-		if cfg.GitDeployMgmtService != nil {
-			secret = cfg.GitDeployMgmtService.GenerateSecret()
+		if cfg.GitDeployMgmtService == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "git deployment engine unavailable")
+		}
+		secret, err := cfg.GitDeployMgmtService.GenerateSecret()
+		if err != nil {
+			return respondInternalError(c, err)
 		}
 		hook, err := cfg.Store.RegenerateGitDeploymentHookSecret(ctx, c.Params("hook_id"), secret)
 		if err != nil {
@@ -973,7 +1077,7 @@ type receiveWebhookRequest struct {
 func ReceiveGitDeploymentWebhook(cfg Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
-			return c.SendStatus(fiber.StatusOK)
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
 		serverID := c.Params("serverId")
 		if serverID == "" {
@@ -1001,13 +1105,14 @@ func ReceiveGitDeploymentWebhook(cfg Config) fiber.Handler {
 			return c.SendStatus(fiber.StatusUnauthorized)
 		}
 
-		if cfg.GitDeployMgmtService != nil {
-			if err := cfg.GitDeployMgmtService.HandleWebhookPayload(ctx, serverID, source.WebhookSecret, body, signature); err != nil {
-				if cfg.Logger != nil {
-					cfg.Logger.Warn("git deployment webhook processing failed", "server", serverID, "err", err)
-				}
-				return c.SendStatus(fiber.StatusUnauthorized)
+		if cfg.GitDeployMgmtService == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "git deployment engine unavailable")
+		}
+		if err := cfg.GitDeployMgmtService.HandleWebhookPayload(ctx, serverID, source.WebhookSecret, body, signature); err != nil {
+			if cfg.Logger != nil {
+				cfg.Logger.Warn("git deployment webhook processing failed", "server", serverID, "err", err)
 			}
+			return c.SendStatus(fiber.StatusUnauthorized)
 		}
 
 		return c.SendStatus(fiber.StatusOK)
@@ -1025,6 +1130,9 @@ func registerGitRoutes(protected fiber.Router, cfg Config, adminIPAccess, mutati
 
 	gitGroup.Get("/providers", ListGitProviderTokens(cfg))
 	gitGroup.Post("/providers", mutationLimiter, ConnectGitProvider(cfg))
+	gitGroup.Post("/providers/test", mutationLimiter, TestGitProviderToken(cfg))
+	gitGroup.Post("/providers/:id/test", mutationLimiter, TestSavedGitProviderToken(cfg))
+	gitGroup.Patch("/providers/:id", mutationLimiter, UpdateGitProviderToken(cfg))
 	gitGroup.Delete("/providers/:id", mutationLimiter, DisconnectGitProvider(cfg))
 	gitGroup.Get("/providers/:id/repos", ListProviderRepos(cfg))
 	gitGroup.Get("/providers/:id/branches", ListProviderBranches(cfg))

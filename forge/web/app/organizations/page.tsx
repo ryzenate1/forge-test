@@ -1,52 +1,101 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { useTenancyStore } from '@/stores/use-tenancy-store';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { fetchCurrentUser } from '@/lib/api';
 import { fetchOrganizations, createOrganization } from '@/lib/api/tenancy';
 import type { Organization } from '@/lib/api/tenancy';
 import { useT } from '@/components/TranslationProvider';
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export default function OrganizationsPage() {
   const t = useT();
   const router = useRouter();
-  const {
-    organizations, setOrganizations,
-    loading, setLoading, error, setError,
-  } = useTenancyStore();
+  // Depend on `replace`, not `router`: `useRouter()` can return a fresh object
+  // per render, so `[router]` would re-run the redirect effect every render.
+  const { replace } = router;
+  const queryClient = useQueryClient();
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
-  const [creating, setCreating] = useState(false);
 
-  const fetchOrgs = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await fetchOrganizations();
-      setOrganizations(data);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [setLoading, setError, setOrganizations]);
+  // Session guard — same contract as /servers: an explicit null means the
+  // session is gone (redirect to sign-in), while errors keep the page mounted
+  // with a retry instead of bouncing an authenticated user on a blip.
+  const userQuery = useQuery({
+    queryKey: ['current-user'],
+    queryFn: fetchCurrentUser,
+    retry: 1,
+    staleTime: 30_000,
+  });
 
-  useEffect(() => { fetchOrgs(); }, [fetchOrgs]);
+  useEffect(() => {
+    if (userQuery.data === null) replace('/?reason=session-expired&next=%2Forganizations');
+  }, [replace, userQuery.data]);
 
-  const handleCreate = async (e: React.FormEvent) => {
+  // Server state lives in react-query only — same ["organizations"] key the
+  // TenancyHydrator already populates, so this screen shares the cached list
+  // instead of re-fetching into a duplicate zustand copy.
+  const orgsQuery = useQuery({
+    queryKey: ['organizations'],
+    queryFn: fetchOrganizations,
+    staleTime: 60_000,
+  });
+
+  const createMut = useMutation({
+    mutationFn: (input: { name: string; slug?: string }) =>
+      createOrganization(input.name, input.slug),
+    // The draft is cleared and the list refreshed only once the API has
+    // confirmed the create; a rejected request keeps the form and surfaces
+    // the error so a failed operation never looks like a success.
+    onSuccess: (org) => {
+      void queryClient.invalidateQueries({ queryKey: ['organizations'] });
+      setName('');
+      setSlug('');
+      router.push(`/organizations/${org.slug}`);
+    },
+  });
+
+  const organizations = orgsQuery.data ?? [];
+  const loading = orgsQuery.isPending;
+  const creating = createMut.isPending;
+  const error = orgsQuery.isError
+    ? errorMessage(orgsQuery.error)
+    : createMut.isError
+      ? errorMessage(createMut.error)
+      : null;
+
+  const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
-    setCreating(true);
-    try {
-      const org = await createOrganization(name.trim(), slug.trim() || undefined);
-      router.push(`/organizations/${org.slug}`);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setCreating(false);
-    }
+    createMut.mutate({ name: name.trim(), slug: slug.trim() || undefined });
   };
+
+  const sessionPending = userQuery.isPending || userQuery.data === undefined;
+  if (sessionPending || userQuery.data === null) {
+    return <div className="mx-auto max-w-4xl px-4 py-8 text-center text-gray-400">{t('common.loading')}</div>;
+  }
+
+  if (userQuery.isError) {
+    return (
+      <div className="mx-auto max-w-4xl space-y-4 px-4 py-8 text-center">
+        <p className="text-lg font-semibold text-white">{t('servers.sessionVerificationUnavailable')}</p>
+        <p className="text-sm text-gray-400">{t('servers.retryOnceReachable')}</p>
+        <button
+          type="button"
+          disabled={userQuery.isFetching}
+          onClick={() => void userQuery.refetch()}
+          className="rounded-lg bg-white/[0.06] px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/[0.1] disabled:opacity-60"
+        >
+          {userQuery.isFetching ? `${t('common.retry')}…` : t('common.retry')}
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8">
@@ -55,8 +104,17 @@ export default function OrganizationsPage() {
       </div>
 
       {error && (
-        <div className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-red-400 text-sm">
-          {error}
+        <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-red-400 text-sm">
+          <span>{error}</span>
+          {orgsQuery.isError && (
+            <button
+              type="button"
+              onClick={() => void orgsQuery.refetch()}
+              className="rounded px-2 py-1 text-xs underline hover:bg-white/[0.06]"
+            >
+              {t('common.retry')}
+            </button>
+          )}
         </div>
       )}
 
@@ -91,11 +149,11 @@ export default function OrganizationsPage() {
         </div>
       </form>
 
-      {loading && organizations.length === 0 && (
+      {loading && (
         <div className="text-center text-gray-400 py-12">{t('common.loading')}</div>
       )}
 
-      {!loading && organizations.length === 0 && (
+      {!loading && !orgsQuery.isError && organizations.length === 0 && (
         <div className="rounded-xl border border-white/10 bg-white/5 p-12 text-center text-gray-400">
           {t('organizations.list.emptyState')}
         </div>

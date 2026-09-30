@@ -743,11 +743,14 @@ func (m *Manager) reconcile(ctx context.Context) {
 		return
 	}
 
+	anyFailed := false
 	for _, app := range apps {
 		instances, err := m.store.ListInstancesByApp(ctx, app.ID)
 		if err != nil {
 			continue
 		}
+		// RetryFailedPlacements fans out per app below; collecting the flag
+		// here keeps one paced pass per tick instead of one per failed app.
 
 		runningCount := 0
 		hasFailed := 0
@@ -762,10 +765,14 @@ func (m *Manager) reconcile(ctx context.Context) {
 					verifyErr := verifier.VerifyInstance(verifyCtx, inst.NodeID, inst.ID)
 					cancel()
 					if verifyErr != nil {
-						_, _ = m.store.UpdateInstanceStatus(ctx, inst.ID, "failed")
-						inst.Status = "failed"
-						m.logger.WarnContext(ctx, "Beacon instance verification failed",
-							"appId", app.ID, "instanceId", inst.ID, "nodeId", inst.NodeID, "error", verifyErr)
+						if _, err := m.store.UpdateInstanceStatus(ctx, inst.ID, "failed"); err != nil {
+							m.logger.WarnContext(ctx, "Beacon instance verification failed but status update did not persist; keeping observed state",
+								"appId", app.ID, "instanceId", inst.ID, "nodeId", inst.NodeID, "error", verifyErr, "updateError", err)
+						} else {
+							inst.Status = "failed"
+							m.logger.WarnContext(ctx, "Beacon instance verification failed",
+								"appId", app.ID, "instanceId", inst.ID, "nodeId", inst.NodeID, "error", verifyErr)
+						}
 					}
 				}
 			}
@@ -780,7 +787,7 @@ func (m *Manager) reconcile(ctx context.Context) {
 		}
 
 		if hasFailed > 0 {
-			_, _ = m.RetryFailedPlacements(ctx)
+			anyFailed = true
 		}
 
 		if !hasProvisioning && runningCount == app.Replicas && app.Status != string(AppDeploymentStatusRunning) {
@@ -805,6 +812,12 @@ func (m *Manager) reconcile(ctx context.Context) {
 				"failed":   hasFailed,
 			})
 		}
+	}
+	// One paced pass per tick: RetryFailedPlacements already iterates every
+	// app, so calling it inside the loop above retried the same failed
+	// instances once per failed app and hammered the scheduler.
+	if anyFailed {
+		_, _ = m.RetryFailedPlacements(ctx)
 	}
 }
 
@@ -881,24 +894,54 @@ func (m *Manager) Health(ctx context.Context) error {
 	return err
 }
 
+// retryPaceInterval spaces replacement attempts so a burst of failed
+// instances does not hammer the scheduler and the Beacon fleet at once.
+const retryPaceInterval = 100 * time.Millisecond
+
 func (m *Manager) RetryFailedPlacements(ctx context.Context) (int, error) {
 	apps, err := m.store.ListReplicaApps(ctx)
 	if err != nil {
 		return 0, err
 	}
 	retried := 0
+	var errs []error
 	for _, app := range apps {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, fmt.Errorf("retry cancelled: %w", err))
+			break
+		}
 		instances, err := m.store.ListInstancesByApp(ctx, app.ID)
 		if err != nil {
+			errs = append(errs, fmt.Errorf("list instances for app %s: %w", app.ID, err))
 			continue
 		}
 		for _, inst := range instances {
-			if inst.Status == "failed" {
-				_, _ = m.ReplaceInstance(ctx, inst.ID)
+			if inst.Status != "failed" {
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				errs = append(errs, fmt.Errorf("retry cancelled: %w", err))
+				break
+			}
+			reason, replaceErr := m.ReplaceInstance(ctx, inst.ID)
+			if replaceErr != nil {
+				errs = append(errs, fmt.Errorf("replace instance %s: %w", inst.ID, replaceErr))
+				continue
+			}
+			if reason != nil && reason.Accepted {
 				retried++
+			} else {
+				errs = append(errs, fmt.Errorf("replace instance %s: no replacement node found", inst.ID))
+			}
+			// Pacing lives between attempts and observes cancellation: a bare
+			// sleep at the end of the app loop would delay shutdown and hide
+			// per-instance failures that callers need aggregated below.
+			select {
+			case <-ctx.Done():
+				errs = append(errs, fmt.Errorf("retry cancelled: %w", ctx.Err()))
+			case <-time.After(retryPaceInterval):
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
-	return retried, nil
+	return retried, errors.Join(errs...)
 }

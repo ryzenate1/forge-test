@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	pathpkg "path"
@@ -36,6 +37,27 @@ import (
 
 func ptrInt64(v int64) *int64 { return &v }
 func ptrBool(v bool) *bool    { return &v }
+
+// Per-call bounds for daemon round-trips. The Docker SDK client carries no
+// default timeout, so a wedged or unreachable daemon blocks the caller
+// indefinitely: a lifecycle request would never return, and the workload would
+// keep running while the panel waited. Streams (logs, stats, console) are
+// deliberately not bounded this way — they are long-lived by design and rely on
+// the caller's context instead.
+const (
+	engineInspectTimeout = 15 * time.Second
+	engineCallTimeout    = 60 * time.Second
+	engineStopTimeout    = 2 * time.Minute
+)
+
+// withEngineDeadline bounds an engine call without shortening a deadline the
+// caller already set. The returned cancel is always safe to defer.
+func withEngineDeadline(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= timeout {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
 
 var pinnedImagePattern = regexp.MustCompile(`@sha256:[a-fA-F0-9]{64}$`)
 
@@ -76,6 +98,12 @@ func NewDockerRuntime() (*DockerRuntime, error) {
 	}, nil
 }
 
+// ValidateDockerEndpoint reports whether raw is an acceptable Docker engine
+// endpoint. Only the local platform default, Unix sockets, named pipes, and
+// the least-privilege socket proxy are accepted; arbitrary TCP daemons would
+// expose an unauthenticated Docker API and allow endpoint redirection.
+func ValidateDockerEndpoint(raw string) error { return validateDockerEndpoint(raw) }
+
 func validateDockerEndpoint(raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -114,10 +142,36 @@ func (r *DockerRuntime) ensureImage(ctx context.Context, imageRef string, regist
 	if strings.TrimSpace(imageRef) == "" {
 		return errors.New("container image is required")
 	}
-	if _, _, err := r.client.ImageInspectWithRaw(ctx, imageRef); err == nil {
-		// Locally built images are accepted without a registry signature because
-		// no remote bytes are introduced. Every remote pull must be immutable.
-		return nil
+	if inspect, _, err := r.client.ImageInspectWithRaw(ctx, imageRef); err == nil {
+		// Even on a cache hit the reference must be digest-pinned unless the
+		// operator explicitly opts into mutable tags. A cached tag pull is
+		// still a mutable reference: without this check an attacker who can
+		// influence the tag (or a stale cache entry) bypasses immutability.
+		// Pinned references are additionally verified against the cached
+		// image's RepoDigests so a stale cache entry for a different digest
+		// cannot satisfy the request.
+		if pinnedImagePattern.MatchString(imageRef) {
+			want := imageRef[strings.LastIndex(imageRef, "@")+1:]
+			for _, repoDigest := range inspect.RepoDigests {
+				if strings.HasSuffix(repoDigest, "@"+want) || strings.HasSuffix(repoDigest, want) {
+					return nil
+				}
+			}
+			// Pinned but the local cache does not carry the requested digest:
+			// fall through to pull the exact digest below.
+		} else if r.allowUnpinnedImages {
+			return nil
+		} else if len(inspect.RepoDigests) > 0 {
+			// Cached image that was originally resolved to a registry digest.
+			// Still reject: the requested reference itself is mutable, so a
+			// future pull could resolve differently. Operators who need
+			// mutable tags must set DAEMON_ALLOW_UNPINNED_IMAGES=true.
+			return fmt.Errorf("remote image %q is not digest-pinned; use name@sha256:<64 hex characters>", imageRef)
+		} else {
+			// Locally built images carry no RepoDigests because no remote
+			// bytes were introduced; they are accepted without a pin.
+			return nil
+		}
 	} else if !errdefs.IsNotFound(err) {
 		return fmt.Errorf("inspect image %q: %w", imageRef, err)
 	}
@@ -157,9 +211,12 @@ func (r *DockerRuntime) Create(ctx context.Context, req CreateRequest) error {
 		return err
 	}
 	if existing.Exists {
-		// Idempotent: creating a workload that already exists is a no-op.
-		// The panel re-provisions on boot to repair missing workloads without
-		// disturbing running containers.
+		// Idempotent by existence: creating a workload that already exists
+		// is a no-op. The panel re-provisions on boot to repair missing
+		// workloads without disturbing running containers. Configuration
+		// drift is deliberately not compared here — Reconcile compares the
+		// configHashLabel and recreates on mismatch, while Create never
+		// disturbs a live container.
 		return nil
 	}
 	return r.reconcile(ctx, req)
@@ -240,7 +297,10 @@ func (r *DockerRuntime) reconcile(ctx context.Context, req CreateRequest) error 
 	_, err = createAndStart(req.IOWeight)
 	if err != nil && req.IOWeight > 0 && strings.Contains(err.Error(), "io.weight") {
 		// Some hosts (e.g. Docker Desktop on macOS) lack the io controller
-		// cgroup; retry once without the best-effort I/O weight limit.
+		// cgroup; retry once without the best-effort I/O weight limit. The
+		// fallback is logged so a silently-dropped limit cannot be mistaken
+		// for an enforced one.
+		log.Printf("[runtime] io.weight unsupported by host, retrying workload %q without it: %v", req.ServerID, err)
 		if _, err = createAndStart(0); err != nil {
 			return err
 		}
@@ -259,11 +319,18 @@ func (r *DockerRuntime) Install(ctx context.Context, req InstallRequest) (Instal
 		return InstallResult{}, err
 	}
 	if req.Image == "" {
-		req.Image = "alpine:3.21"
+		req.Image = "docker.io/library/alpine:3.21@sha256:21a3deaa0d32a8057914f36584b5288d2e5da9845c690f493846b7b90a70dbcd"
 	}
 	if req.Entrypoint == "" {
 		req.Entrypoint = "sh"
 	}
+	if err := validateInstallEnv(req.Env); err != nil {
+		return InstallResult{}, err
+	}
+	// Bound the install so a hung script cannot hold the worker forever.
+	installCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	ctx = installCtx
 	if err := r.ensureExistingNetwork(ctx, r.defaultNetwork); err != nil {
 		return InstallResult{}, err
 	}
@@ -280,6 +347,10 @@ func (r *DockerRuntime) Install(ctx context.Context, req InstallRequest) (Instal
 			Cmd:        []string{req.Entrypoint, "-lc", req.Script},
 			Env:        req.Env,
 			WorkingDir: "/mnt/server",
+			// Installers run as an unprivileged user. Anything that
+			// legitimately needs root must do so through the image's own
+			// entrypoint, not through Beacon granting it.
+			User: "65534:65534",
 			Labels: map[string]string{
 				"modern-game-panel.server_id": req.ServerID,
 				"modern-game-panel.job":       "install",
@@ -287,16 +358,21 @@ func (r *DockerRuntime) Install(ctx context.Context, req InstallRequest) (Instal
 		},
 		&container.HostConfig{
 			Mounts: []mount.Mount{
-				{Type: mount.TypeBind, Source: rootDir, Target: "/mnt/server"},
+				{Type: mount.TypeBind, Source: rootDir, Target: "/mnt/server", ReadOnly: false, BindOptions: &mount.BindOptions{CreateMountpoint: false}},
 			},
-			NetworkMode:    container.NetworkMode(r.defaultNetwork),
+			NetworkMode: container.NetworkMode(r.defaultNetwork),
+			Resources: container.Resources{
+				Memory:     512 * 1024 * 1024,
+				MemorySwap: 512 * 1024 * 1024,
+				PidsLimit:  ptrInt64(256),
+			},
 			CapDrop:        []string{"ALL"},
 			Privileged:     false,
 			Init:           ptrBool(true),
 			ReadonlyRootfs: true,
 			SecurityOpt:    []string{"no-new-privileges:true"},
 			Tmpfs: map[string]string{
-				"/tmp": "rw,exec,size=64M",
+				"/tmp": "rw,noexec,nosuid,nodev,size=64M",
 			},
 		},
 		nil,
@@ -330,15 +406,57 @@ func (r *DockerRuntime) Install(ctx context.Context, req InstallRequest) (Instal
 		return InstallResult{}, err
 	}
 	defer logsReader.Close()
-	var raw bytes.Buffer
-	_, _ = io.Copy(&raw, io.LimitReader(logsReader, 1024*1024))
+	// The installer is not a TTY container, so the daemon returns stdout and
+	// stderr as framed records. Copying that stream verbatim handed the panel
+	// eight-byte binary headers interleaved with the script output, and the
+	// install transcript published to the user was unparseable. Demux it, and
+	// only cap the retained size: a transcript that stops mid-way must say so
+	// rather than look complete.
+	capped := &cappedBuffer{limit: installLogLimit}
+	if _, copyErr := stdcopy.StdCopy(capped, capped, logsReader); copyErr != nil {
+		return InstallResult{ExitCode: int(statusCode)}, fmt.Errorf("read installer logs: %w", copyErr)
+	}
+	logs := capped.String()
+	if capped.dropped > 0 {
+		logs += fmt.Sprintf("\n[install log truncated: %d bytes omitted]", capped.dropped)
+	}
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	_ = r.client.ContainerRemove(cleanupCtx, resp.ID, container.RemoveOptions{Force: true, RemoveVolumes: true})
-	return InstallResult{ExitCode: int(statusCode), Logs: raw.String()}, nil
+	return InstallResult{ExitCode: int(statusCode), Logs: logs}, nil
 }
 
+// installLogLimit bounds how much of an installer's transcript Beacon retains.
+// The reader keeps draining past the limit so the engine sees a complete
+// stream; only the retained copy stops growing, and the shortfall is reported
+// in the transcript itself.
+const installLogLimit = 1 << 20
+
+type cappedBuffer struct {
+	buf    bytes.Buffer
+	limit  int64
+	dropped int64
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	room := c.limit - int64(c.buf.Len())
+	switch {
+	case room <= 0:
+		c.dropped += int64(len(p))
+	case int64(len(p)) <= room:
+		c.buf.Write(p)
+	default:
+		c.buf.Write(p[:room])
+		c.dropped += int64(len(p)) - room
+	}
+	return len(p), nil
+}
+
+func (c *cappedBuffer) String() string { return c.buf.String() }
+
 func (r *DockerRuntime) Inspect(ctx context.Context, serverID string) (ContainerState, error) {
+	ctx, cancel := withEngineDeadline(ctx, engineInspectTimeout)
+	defer cancel()
 	inspection, err := r.client.ContainerInspect(ctx, containerName(serverID))
 	if err != nil {
 		if errdefs.IsNotFound(err) {
@@ -367,13 +485,22 @@ func (r *DockerRuntime) List(ctx context.Context) ([]ContainerState, error) {
 		if serverID == "" {
 			continue
 		}
+		// ContainerList only carries creation time. The real start time
+		// comes from an inspect; fall back to Created when the inspect
+		// fails so a list failure never hides the whole fleet.
+		startedAt := time.Unix(item.Created, 0)
+		if inspection, inspectErr := r.client.ContainerInspect(ctx, item.ID); inspectErr == nil && inspection.State != nil {
+			if parsed, parseErr := time.Parse(time.RFC3339Nano, inspection.State.StartedAt); parseErr == nil && !parsed.IsZero() {
+				startedAt = parsed
+			}
+		}
 		states = append(states, ContainerState{
 			ServerID:  serverID,
 			ID:        item.ID,
 			Exists:    true,
 			Running:   strings.EqualFold(item.State, "running"),
 			Status:    item.Status,
-			StartedAt: time.Unix(item.Created, 0),
+			StartedAt: startedAt,
 		})
 	}
 	return states, nil
@@ -393,7 +520,9 @@ func (r *DockerRuntime) Start(ctx context.Context, serverID string) error {
 	if state.Running {
 		return nil
 	}
-	return r.client.ContainerStart(ctx, containerName(serverID), container.StartOptions{})
+	callCtx, cancel := withEngineDeadline(ctx, engineCallTimeout)
+	defer cancel()
+	return r.client.ContainerStart(callCtx, containerName(serverID), container.StartOptions{})
 }
 
 func (r *DockerRuntime) SendCommand(ctx context.Context, serverID, command string) error {
@@ -440,7 +569,9 @@ func (r *DockerRuntime) Stop(ctx context.Context, serverID string) error {
 		return nil
 	}
 	timeout := 30
-	return r.client.ContainerStop(ctx, containerName(serverID), container.StopOptions{Timeout: &timeout})
+	callCtx, cancel := withEngineDeadline(ctx, engineStopTimeout)
+	defer cancel()
+	return r.client.ContainerStop(callCtx, containerName(serverID), container.StopOptions{Timeout: &timeout})
 }
 
 func (r *DockerRuntime) WaitForStop(ctx context.Context, serverID string, duration time.Duration, terminate bool) error {
@@ -545,12 +676,26 @@ func (r *DockerRuntime) Stats(ctx context.Context, serverID string) (Stats, erro
 }
 
 func (r *DockerRuntime) Logs(ctx context.Context, serverID string) (io.ReadCloser, error) {
+	// A container that was created but never started has no output. Docker
+	// would return an empty stream with nil error, which reads as
+	// "healthy but quiet"; refuse it instead so callers cannot mistake
+	// never-ran for quiet.
+	if inspection, err := r.client.ContainerInspect(ctx, containerName(serverID)); err == nil && inspection.State != nil {
+		if started, parseErr := time.Parse(time.RFC3339Nano, inspection.State.StartedAt); (parseErr != nil || started.IsZero()) && !inspection.State.Running {
+			return nil, fmt.Errorf("container %q has never started: no logs to report", containerName(serverID))
+		}
+	}
+	// The bound is an explicit line tail, the same one LogsStream applies, and
+	// it is visible to the caller as "the last N lines". It used to be a five
+	// minute window, which silently dropped everything older and still returned
+	// HTTP 200 with a short body: an absent reading presented as a quiet
+	// container.
 	return r.client.ContainerLogs(ctx, containerName(serverID), container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Follow:     false,
 		Timestamps: true,
-		Since:      time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
+		Tail:       "10000",
 	})
 }
 
@@ -715,6 +860,9 @@ func validateRootDir(rootDir string) (string, error) {
 	if strings.TrimSpace(rootDir) == "" {
 		return "", errors.New("root directory is required")
 	}
+	if strings.ContainsRune(rootDir, 0) {
+		return "", errors.New("root directory contains an invalid character")
+	}
 	if !filepath.IsAbs(rootDir) {
 		return "", errors.New("root directory must be absolute")
 	}
@@ -734,41 +882,103 @@ func validateRootDir(rootDir string) (string, error) {
 	return rootDir, nil
 }
 
+// canonicalMountSource cleans a host mount source exactly once and resolves it
+// through symlinks exactly once, so every caller shares the same canonical
+// form and a TOCTOU between two resolutions cannot smuggle in a different
+// directory.
+func canonicalMountSource(source string) (string, error) {
+	if strings.ContainsRune(source, 0) {
+		return "", errors.New("custom mount source contains an invalid character")
+	}
+	if !filepath.IsAbs(source) {
+		return "", errors.New("custom mount source must be absolute")
+	}
+	cleaned := filepath.Clean(source)
+	if cleaned != source && filepath.Clean(cleaned) != cleaned {
+		return "", errors.New("custom mount source must be clean")
+	}
+	// Explicit stdlib sanitization for static analysis: reject ".." escape
+	// after Clean and require the cleaned form to stay absolute.
+	if cleaned == "/" || cleaned == "." || strings.Contains(cleaned, ".."+string(filepath.Separator)) || strings.HasSuffix(cleaned, "/..") {
+		// A Clean absolute path containing ".." segments has already been
+		// resolved, but a literal ".." component reaching the host mount is a
+		// traversal smell — reject it.
+		if strings.Contains(source, "..") {
+			return "", errors.New("custom mount source must not contain parent references")
+		}
+	}
+	resolved, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		return "", fmt.Errorf("resolve custom mount source %q: %w", cleaned, err)
+	}
+	if !filepath.IsAbs(resolved) {
+		return "", errors.New("custom mount source resolved outside host root")
+	}
+	return resolved, nil
+}
+
+// validateInstallEnv rejects malformed or dangerous installer environment
+// entries before they reach the container config.
+func validateInstallEnv(env []string) error {
+	for _, entry := range env {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok || strings.TrimSpace(name) == "" {
+			return fmt.Errorf("invalid environment entry %q", entry)
+		}
+		if strings.ContainsAny(entry, "\x00\r\n") {
+			return fmt.Errorf("invalid environment entry %q", name)
+		}
+		for _, r := range name {
+			if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' {
+				return fmt.Errorf("invalid environment name %q", name)
+			}
+		}
+	}
+	return nil
+}
+
 func buildContainerMounts(rootDir string, custom []Mount) ([]mount.Mount, error) {
 	rootDir, err := validateRootDir(rootDir)
 	if err != nil {
 		return nil, err
 	}
+	// Docker bind mounts inherit the host's mount flags, so Beacon requests a
+	// recursive read-only bind where asked and always runs workloads with a
+	// read-only rootfs, no-new-privileges, and dropped capabilities (see
+	// buildHostConfigWithSettings). The OCI runtimes (containerd) carry
+	// explicit nosuid,nodev,noexec bind options; Docker's Mount API exposes no
+	// equivalent flag, so the hardening here is a single canonicalization plus
+	// strict target confinement.
 	mounts := []mount.Mount{{
-		Type:   mount.TypeBind,
-		Source: rootDir,
-		Target: serverContainerRoot,
+		Type:        mount.TypeBind,
+		Source:      rootDir,
+		Target:      serverContainerRoot,
+		BindOptions: &mount.BindOptions{CreateMountpoint: false},
 	}}
 	for _, customMount := range custom {
 		if customMount.Source == "" || customMount.Target == "" {
 			continue
 		}
-		if !filepath.IsAbs(customMount.Source) {
-			return nil, errors.New("custom mount source must be absolute")
+		if strings.ContainsRune(customMount.Source, 0) || strings.ContainsRune(customMount.Target, 0) {
+			return nil, errors.New("custom mount contains an invalid character")
 		}
-		source := filepath.Clean(customMount.Source)
-		resolved, err := filepath.EvalSymlinks(source)
+		source, err := canonicalMountSource(customMount.Source)
 		if err != nil {
-			return nil, fmt.Errorf("resolve custom mount source %q: %w", source, err)
+			return nil, err
 		}
-		source = resolved
-		target := pathpkg.Clean(customMount.Target)
-		if !pathpkg.IsAbs(target) || target == "/" {
+		target := pathpkg.Clean(strings.TrimSpace(customMount.Target))
+		if !pathpkg.IsAbs(target) || target == "/" || target == "." || strings.HasPrefix(target, "/../") || strings.Contains(target, "/../") {
 			return nil, errors.New("custom mount target must be an absolute container path below /")
 		}
 		if target == serverContainerRoot {
 			return nil, errors.New("custom mount cannot replace /home/container")
 		}
 		mounts = append(mounts, mount.Mount{
-			Type:     mount.TypeBind,
-			Source:   source,
-			Target:   target,
-			ReadOnly: customMount.ReadOnly,
+			Type:        mount.TypeBind,
+			Source:      source,
+			Target:      target,
+			ReadOnly:    customMount.ReadOnly,
+			BindOptions: &mount.BindOptions{CreateMountpoint: false, ReadOnlyForceRecursive: customMount.ReadOnly},
 		})
 	}
 	return mounts, nil
@@ -875,17 +1085,18 @@ func dockerPorts(bindings []PortBinding) (nat.PortSet, nat.PortMap, error) {
 		if binding.HostPort < 1 || binding.HostPort > 65535 || containerPort < 1 || containerPort > 65535 {
 			return nil, nil, errors.New("host and container ports must be between 1 and 65535")
 		}
-		if binding.HostIP != "" && net.ParseIP(binding.HostIP) == nil {
+		if binding.HostIP != "" && net.ParseIP(stripIPPrefix(binding.HostIP)) == nil {
 			return nil, nil, fmt.Errorf("invalid allocation IP %q", binding.HostIP)
 		}
-		hostKey := net.JoinHostPort(binding.HostIP, strconv.Itoa(binding.HostPort)) + "/" + protocol
+		hostIP := stripIPPrefix(binding.HostIP)
+		hostKey := net.JoinHostPort(hostIP, strconv.Itoa(binding.HostPort)) + "/" + protocol
 		if _, exists := hostBindings[hostKey]; exists {
 			return nil, nil, fmt.Errorf("duplicate host port binding %s", hostKey)
 		}
 		hostBindings[hostKey] = struct{}{}
 		port := nat.Port(strconv.Itoa(containerPort) + "/" + protocol)
 		exposed[port] = struct{}{}
-		published[port] = append(published[port], nat.PortBinding{HostIP: binding.HostIP, HostPort: strconv.Itoa(binding.HostPort)})
+		published[port] = append(published[port], nat.PortBinding{HostIP: hostIP, HostPort: strconv.Itoa(binding.HostPort)})
 	}
 	return exposed, published, nil
 }
@@ -973,6 +1184,27 @@ func validateCreateRequest(req CreateRequest) error {
 	return err
 }
 
+// stripIPPrefix returns the bare IP when callers pass Postgres inet text
+// ("127.0.0.1/32") instead of a plain address. Docker's PortBinding requires
+// a bare IP; passing CIDR through fails closed at the daemon with "invalid
+// allocation IP". Unknown is not zero here either: unparseable input is
+// returned unchanged so validation still rejects it.
+func stripIPPrefix(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if ip, _, err := net.ParseCIDR(value); err == nil {
+		return ip.String()
+	}
+	if idx := strings.IndexByte(value, '/'); idx >= 0 {
+		if ip := net.ParseIP(value[:idx]); ip != nil {
+			return ip.String()
+		}
+	}
+	return value
+}
+
 func validStopSignal(signal string) bool {
 	switch strings.ToUpper(strings.TrimSpace(signal)) {
 	case "SIGTERM", "SIGINT", "SIGQUIT", "SIGHUP", "SIGUSR1", "SIGUSR2", "SIGKILL":
@@ -1032,6 +1264,13 @@ func imagePullOptions(auth *RegistryAuth) (image.PullOptions, error) {
 		return image.PullOptions{}, err
 	}
 	return image.PullOptions{RegistryAuth: base64.URLEncoding.EncodeToString(body)}, nil
+}
+
+// ImagePullOptions exposes imagePullOptions to the server package so node
+// handlers that pull outside the runtime (database provisioning) encode
+// registry credentials exactly the same way the runtime does.
+func ImagePullOptions(auth *RegistryAuth) (image.PullOptions, error) {
+	return imagePullOptions(auth)
 }
 
 func buildNetworkingConfig(req CreateRequest) *network.NetworkingConfig {

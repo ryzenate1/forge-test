@@ -25,6 +25,7 @@ import { fetchJSON } from "@/lib/api";
 import {
   AdminPageLayout,
   AdminTabs,
+  type AdminTab,
   Btn,
   Card,
   CardHeader,
@@ -76,6 +77,14 @@ type ProxyDomain = {
 };
 
 // Industrial Terminal graph — routers → services arrows
+function matchServiceName(domain: string | undefined, services: Array<{ name: string }>): string {
+  const needle = (domain || "").split(".")[0]?.trim().toLowerCase();
+  if (!needle) return "—";
+  return services.find((s) => s.name.toLowerCase() === needle)?.name
+    ?? services.find((s) => s.name.toLowerCase().includes(needle))?.name
+    ?? "—";
+}
+
 function GatewayTopology({ routers, services }: { routers: RoutingRule[]; services: TargetGroup[] }) {
   const routerCount = routers.length;
   const serviceCount = services.length;
@@ -89,7 +98,7 @@ function GatewayTopology({ routers, services }: { routers: RoutingRule[]; servic
         <div className="mb-4 flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] px-3 py-2 font-mono text-[11px] text-[var(--text-subtle)]">
           <span className="h-2 w-2 rounded-full bg-[var(--success)] shadow-[0_0_8px_rgba(5,150,105,0.4)]" aria-hidden />
           <span className="text-[var(--text)]">forge</span>
-          <span className="text-[var(--text-subtle)]/60">::</span>
+          <span className="text-[color-mix(in_srgb,var(--text-subtle)_60%,transparent)]">::</span>
           <span className="text-[var(--brand)]">gateway</span>
           <span className="text-[var(--text-subtle)]">— routers → services → targets</span>
           <span className="ml-auto hidden sm:inline text-[10px] uppercase tracking-widest text-[var(--text-subtle)]">
@@ -125,7 +134,7 @@ function GatewayTopology({ routers, services }: { routers: RoutingRule[]; servic
                     </span>
                     <span className="shrink-0 font-mono text-[11px] text-[var(--text-subtle)]">{r.path}</span>
                     <span
-                      className={`ml-auto h-1.5 w-1.5 shrink-0 rounded-full ${r.enabled ? "bg-[var(--success)]" : "bg-[var(--text-subtle)]/40"}`}
+                      className={`ml-auto h-1.5 w-1.5 shrink-0 rounded-full ${r.enabled ? "bg-[var(--success)]" : "bg-[color-mix(in_srgb,var(--text-subtle)_40%,transparent)]"}`}
                       aria-hidden
                     />
                   </div>
@@ -150,7 +159,7 @@ function GatewayTopology({ routers, services }: { routers: RoutingRule[]; servic
           {/* Services lane */}
           <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4">
             <div className="mb-3 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.12em] text-[var(--text-subtle)]">
-              <Layers size={12} className="text-blue-400" aria-hidden />
+              <Layers size={12} className="text-info" aria-hidden />
               Services
               <Pill tone="blue" className="ml-auto font-mono text-[10px] tracking-wide">
                 {serviceCount}
@@ -167,7 +176,7 @@ function GatewayTopology({ routers, services }: { routers: RoutingRule[]; servic
                     key={s.id}
                     className="flex items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface-raised)] px-3 py-2"
                   >
-                    <Server size={12} className="shrink-0 text-blue-300" aria-hidden />
+                    <Server size={12} className="shrink-0 text-info" aria-hidden />
                     <span className="truncate text-xs font-medium text-[var(--text)]">{s.name}</span>
                     <Pill tone="neutral" className="ml-auto font-mono text-[10px] capitalize tracking-wide">
                       {s.algorithm.replaceAll("_", " ")}
@@ -185,7 +194,7 @@ function GatewayTopology({ routers, services }: { routers: RoutingRule[]; servic
           <div className="hidden place-items-center md:grid">
             <div className="flex flex-col items-center gap-1 text-[var(--text-subtle)]">
               <div className="h-px w-12 bg-[var(--line)]" />
-              <ArrowRight size={14} className="text-emerald-400" aria-hidden />
+              <ArrowRight size={14} className="text-ok" aria-hidden />
               <div className="h-px w-12 bg-[var(--line)]" />
               <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--text-subtle)]">LB</span>
             </div>
@@ -194,30 +203,30 @@ function GatewayTopology({ routers, services }: { routers: RoutingRule[]; servic
           {/* Targets lane */}
           <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4">
             <div className="mb-3 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.12em] text-[var(--text-subtle)]">
-              <Container size={12} className="text-emerald-400" aria-hidden />
+              <Container size={12} className="text-ok" aria-hidden />
               Targets
               <Pill tone="green" className="ml-auto font-mono text-[10px] tracking-wide">
                 {targetCount}
               </Pill>
             </div>
             <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-2 py-3">
-                <div className="font-mono text-lg font-bold text-emerald-400">
+              <div className="rounded-lg border border-ok-line bg-ok-subtle px-2 py-3">
+                <div className="font-mono text-lg font-bold text-ok">
                   {services.flatMap((s) => s.targets ?? []).filter((t) => t.status === "healthy").length}
                 </div>
-                <div className="text-[10px] uppercase tracking-widest text-emerald-300/80">healthy</div>
+                <div className="text-[10px] uppercase tracking-widest text-ok">healthy</div>
               </div>
-              <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-2 py-3">
-                <div className="font-mono text-lg font-bold text-amber-400">
+              <div className="rounded-lg border border-warn-line bg-warn-subtle px-2 py-3">
+                <div className="font-mono text-lg font-bold text-warn">
                   {services.flatMap((s) => s.targets ?? []).filter((t) => t.status === "draining").length}
                 </div>
-                <div className="text-[10px] uppercase tracking-widest text-amber-300/80">draining</div>
+                <div className="text-[10px] uppercase tracking-widest text-warn">draining</div>
               </div>
-              <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-2 py-3">
-                <div className="font-mono text-lg font-bold text-red-400">
+              <div className="rounded-lg border border-danger-line bg-danger-subtle px-2 py-3">
+                <div className="font-mono text-lg font-bold text-danger">
                   {services.flatMap((s) => s.targets ?? []).filter((t) => t.status === "unhealthy").length}
                 </div>
-                <div className="text-[10px] uppercase tracking-widest text-red-300/80">unhealthy</div>
+                <div className="text-[10px] uppercase tracking-widest text-danger">unhealthy</div>
               </div>
             </div>
             <p className="mt-3 text-center font-mono text-[11px] leading-5 text-[var(--text-subtle)]">
@@ -231,9 +240,9 @@ function GatewayTopology({ routers, services }: { routers: RoutingRule[]; servic
           <span className="inline-flex items-center gap-1.5">
             <span className="h-1.5 w-1.5 rounded-full bg-[var(--brand)]" aria-hidden /> Caddy · Traefik
           </span>
-          <span className="text-[var(--text-subtle)]/60">·</span>
+          <span className="text-[color-mix(in_srgb,var(--text-subtle)_60%,transparent)]">·</span>
           <span>5 writers collapsed → 1 reconciler (desired-state)</span>
-          <span className="ml-auto hidden sm:inline text-[var(--text-subtle)]/70">tip: Hover router to see its service binding</span>
+          <span className="ml-auto hidden sm:inline text-[color-mix(in_srgb,var(--text-subtle)_70%,transparent)]">tip: Hover router to see its service binding</span>
         </div>
       </div>
     </Card>
@@ -284,7 +293,7 @@ export default function AdminGatewaysPage() {
   const domains = useMemo(() => domainsQuery.data ?? [], [domainsQuery.data]);
   const certs = useMemo(() => certsQuery.data ?? [], [certsQuery.data]);
 
-  const tabs: Array<{ id: GatewayTab; label: string; icon?: typeof Router }> = [
+  const tabs: Array<AdminTab & { id: GatewayTab }> = [
     { id: "routers", label: `Routers · ${routers.length}` },
     { id: "services", label: `Services · ${services.length}` },
     { id: "middlewares", label: "Middlewares" },
@@ -296,7 +305,7 @@ export default function AdminGatewaysPage() {
       <OfflineBanner onRetry={() => window.location.reload()} />
       <SectionHeader
         title="Gateways"
-        sub="Unified Traefik-shaped control plane — Routers match host+path, reference Middlewares by ID, and forward to Services (load-balanced Targets). Caddy/Traefik adapters are projections of this single desired state. Legacy pages remain at Traffic / Load Balancer / Domains / Certificates."
+        sub="Edge gateway routers, services and middlewares."
         action={
           <div className="flex gap-2">
             <Btn tone="ghost" onClick={() => window.location.assign("/admin/traffic")}>
@@ -344,7 +353,7 @@ export default function AdminGatewaysPage() {
         </Btn>
       </div>
 
-      <AdminTabs tabs={tabs as unknown as Array<{ id: string; label: string }>} active={tab} onChange={(id) => setTab(id as GatewayTab)} />
+      <AdminTabs tabs={tabs} active={tab} onChange={(id) => setTab(id as GatewayTab)} />
 
       {tab === "routers" && (
         <Card>
@@ -393,7 +402,7 @@ export default function AdminGatewaysPage() {
                       <td className="px-4 py-3">
                         <span className="inline-flex items-center gap-1 text-xs text-[var(--text-subtle)]">
                           <ArrowRight size={12} className="text-[var(--brand)]" aria-hidden />
-                          {services.find((s) => s.name.toLowerCase().includes((r.domain || "").split(".")[0]))?.name ?? "—"}
+                          {matchServiceName(r.domain, services)}
                         </span>
                       </td>
                       <td className="px-4 py-3">
@@ -451,7 +460,7 @@ export default function AdminGatewaysPage() {
                 ) : (
                   <div className="divide-y divide-[var(--line)]">
                     {s.targets.map((t) => (
-                      <div key={t.id} className="flex items-center justify-between px-4 py-3 hover:bg-[var(--surface-hover)]/50 motion-safe:transition-colors motion-reduce:transition-none">
+                      <div key={t.id} className="flex items-center justify-between px-4 py-3 hover:bg-[color-mix(in_srgb,var(--surface-hover)_50%,transparent)] motion-safe:transition-colors motion-reduce:transition-none">
                         <div className="flex items-center gap-3">
                           <span
                             className={`h-2 w-2 rounded-full ${t.status === "healthy" ? "bg-[var(--success)]" : t.status === "draining" ? "bg-[var(--warning)]" : "bg-[var(--danger)]"}`}
@@ -477,7 +486,7 @@ export default function AdminGatewaysPage() {
         <Card>
           <CardHeader title="Middlewares" icon={Shield} />
           <div className="p-4">
-            <div className="rounded-lg border border-[var(--warning)]/20 bg-[var(--warning-subtle)] px-4 py-3 text-sm leading-6 text-[var(--text)]">
+            <div className="rounded-lg border border-[color-mix(in_srgb,var(--warning)_20%,transparent)] bg-[var(--warning-subtle)] px-4 py-3 text-sm leading-6 text-[var(--text)]">
               Middlewares (rate-limit, IP allow/deny, circuit-breaker, headers, redirect) are not yet exposed as a list — backend has no <code className="rounded bg-[var(--surface-raised)] px-1 py-0.5 font-mono text-xs border border-[var(--line)]">GET /policies</code> (only <code className="font-mono text-xs">GET /policies/:id</code>). They are currently applied as <span className="font-semibold">all-policies → all-routes</span> (see audit F-NET-05). The intended fix is a <code className="font-mono text-xs">gateway_middlewares</code> table referenced by routers (Traefik model).
             </div>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">

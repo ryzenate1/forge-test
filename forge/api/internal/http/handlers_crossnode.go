@@ -1,8 +1,11 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"gamepanel/forge/internal/services/crossnode"
 
@@ -30,7 +33,16 @@ func registerCrossNodeRoutes(protected fiber.Router, cfg Config, resolver *cross
 				return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "server_id or node_id parameter is required"})
 			}
 
-			host := resolver.ResolveTargetHost(ctx, serverID, nodeID)
+			// A failed resolution is reported as a failure, never as a fallback
+			// host: answering with a guess would point the caller at a node the
+			// resolver never confirmed.
+			host, err := resolver.ResolveTargetHost(ctx, serverID, nodeID)
+			if err != nil {
+				if errors.Is(err, crossnode.ErrNoTarget) {
+					return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "no reachable target for the requested server or node"})
+				}
+				return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "target resolution failed"})
+			}
 			return c.JSON(fiber.Map{"data": fiber.Map{"host": host}})
 		})
 
@@ -48,24 +60,32 @@ func registerCrossNodeRoutes(protected fiber.Router, cfg Config, resolver *cross
 			if err := c.BodyParser(&req); err != nil {
 				return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 			}
-
-			// Parse duration from string (e.g., "30s", "5m", "1h")
-			// For now, we'll use a simple approach - in production you might want to use time.ParseDuration
-			// This is a simplified version
-			return c.JSON(fiber.Map{"message": "TTL configuration would be set here"})
+			ttl, err := time.ParseDuration(strings.TrimSpace(req.TTL))
+			if err != nil || ttl <= 0 {
+				return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid ttl duration (e.g. 30s, 5m, 1h)"})
+			}
+			resolver.SetCacheTTL(ttl)
+			return c.JSON(fiber.Map{"message": "cache ttl set", "ttl": ttl.String()})
 		})
 
-		// Describe unreachable backend
+		// Describe a backend using what the prober actually recorded. An unbounded
+		// port is rejected here: the health key is host:port, so a nonsense port
+		// would silently alias onto another backend's record.
 		crossnodeGroup.Get("/describe/:host/:port", requireRole("admin"), requireAdminScope("routing.read"), func(c *fiber.Ctx) error {
-			host := c.Params("host")
-			portStr := c.Params("port")
+			host := strings.TrimSpace(c.Params("host"))
+			if host == "" {
+				return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "host is required"})
+			}
 
-			port, err := strconv.Atoi(portStr)
-			if err != nil {
-				return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid port"})
+			port, err := strconv.Atoi(c.Params("port"))
+			if err != nil || port < 1 || port > 65535 {
+				return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "port must be an integer between 1 and 65535"})
 			}
 
 			description := resolver.DescribeUnreachable(host, port)
+			if ingressSync != nil {
+				description = ingressSync.DescribeBackend(host, port)
+			}
 			return c.JSON(fiber.Map{"data": fiber.Map{"description": description}})
 		})
 	}
@@ -74,68 +94,112 @@ func registerCrossNodeRoutes(protected fiber.Router, cfg Config, resolver *cross
 	if ingressSync != nil {
 		// Get current rules
 		crossnodeGroup.Get("/ingress/rules", requireRole("admin"), requireAdminScope("routing.read"), func(c *fiber.Ctx) error {
-			// Get current rules from the synchronizer
-			// Note: This exposes the internal state for debugging/monitoring
-			return c.JSON(fiber.Map{"message": "ingress rules endpoint"})
+			return c.JSON(fiber.Map{"data": ingressSync.CurrentRules()})
 		})
 
 		// Get current policies
 		crossnodeGroup.Get("/ingress/policies", requireRole("admin"), requireAdminScope("routing.read"), func(c *fiber.Ctx) error {
-			return c.JSON(fiber.Map{"message": "ingress policies endpoint"})
+			return c.JSON(fiber.Map{"data": ingressSync.CurrentPolicies()})
 		})
 
-		// Trigger immediate sync
+		// Observed cross-node backend verdicts. These were previously unexposed, so
+		// an operator had no way to see which node backends the prober believed up.
+		crossnodeGroup.Get("/ingress/backends", requireRole("admin"), requireAdminScope("routing.read"), func(c *fiber.Ctx) error {
+			return c.JSON(fiber.Map{"data": ingressSync.Backends()})
+		})
+
+		crossnodeGroup.Get("/ingress/route-groups", requireRole("admin"), requireAdminScope("routing.read"), func(c *fiber.Ctx) error {
+			return c.JSON(fiber.Map{"data": ingressSync.RouteGenerationRecords()})
+		})
+
+		// Reconcile is the only route here that can change the gateway, and it
+		// converges through trafficmanager, which owns the live rule set.
 		crossnodeGroup.Post("/ingress/sync", mutationLimiter, requireRole("admin"), requireAdminScope("routing.write"), func(c *fiber.Ctx) error {
 			ctx, cancel := requestContext()
 			defer cancel()
 
-			if err := ingressSync.Sync(ctx); err != nil {
+			result, err := ingressSync.Reconcile(ctx)
+			if errors.Is(err, crossnode.ErrNoReconciler) {
+				return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
+					"synced":  false,
+					"skipped": true,
+					"error":   err.Error(),
+					"detail":  "cross-node ingress is observation-only until a gateway reconciler is wired",
+				})
+			}
+			if err != nil {
 				return respondInternalError(c, err)
 			}
-
-			return c.JSON(fiber.Map{"message": "sync triggered successfully"})
+			return c.JSON(fiber.Map{"data": result, "synced": true})
 		})
 
 		// Get health filter stats
 		crossnodeGroup.Get("/ingress/health/stats", requireRole("admin"), requireAdminScope("routing.read"), func(c *fiber.Ctx) error {
-			// This would expose health filter statistics if the health filter has such methods
-			return c.JSON(fiber.Map{"message": "health filter stats endpoint"})
+			ctx, cancel := requestContext()
+			defer cancel()
+			return c.JSON(fiber.Map{"data": ingressSync.Health(ctx)})
 		})
 
-		// Cleanup stale routes
 		crossnodeGroup.Post("/ingress/cleanup", mutationLimiter, requireRole("admin"), requireAdminScope("routing.write"), func(c *fiber.Ctx) error {
 			ctx, cancel := requestContext()
 			defer cancel()
 
 			if err := ingressSync.CleanupStale(ctx); err != nil {
+				if errors.Is(err, crossnode.ErrNoReconciler) {
+					return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
+						"cleaned": false,
+						"error":   err.Error(),
+						"detail":  "refusing to clean routes without the reconciler's live rule set: an empty active set would withdraw every live route",
+					})
+				}
 				return respondInternalError(c, err)
 			}
-
-			return c.JSON(fiber.Map{"message": "stale routes cleaned up"})
+			return c.JSON(fiber.Map{"cleaned": true, "message": "stale routes cleaned up"})
 		})
 
 		// Get sync statistics
 		crossnodeGroup.Get("/ingress/stats", requireRole("admin"), requireAdminScope("routing.read"), func(c *fiber.Ctx) error {
-			// This would expose ingress sync statistics
-			return c.JSON(fiber.Map{"message": "ingress sync stats endpoint"})
+			return c.JSON(fiber.Map{"data": ingressSync.Stats()})
 		})
 	}
 
-	// Cross-node routing health check
 	crossnodeGroup.Get("/health", requireRole("admin"), requireAdminScope("routing.read"), func(c *fiber.Ctx) error {
+		ctx, cancel := requestContext()
+		defer cancel()
+
 		status := fiber.Map{
 			"resolver_available":     resolver != nil,
 			"ingress_sync_available": ingressSync != nil,
 		}
-
-		if resolver != nil {
-			status["resolver_status"] = "active"
+		var reasons []string
+		if resolver == nil {
+			reasons = append(reasons, "no cross-node resolver configured")
 		}
 
 		if ingressSync != nil {
-			status["ingress_sync_status"] = "active"
+			stats := ingressSync.Stats()
+			status["ingress"] = stats
+			status["gateway"] = ingressSync.Health(ctx)
+			if !stats.ReconcilerConfigured {
+				reasons = append(reasons, "no gateway reconciler wired: ingress is observation-only")
+			}
+			if stats.RuleCount == 0 {
+				reasons = append(reasons, "no enabled routing rules observed")
+			}
+			if stats.BackendCount == 0 {
+				reasons = append(reasons, "no backend has a probe result yet")
+			}
+		} else {
+			reasons = append(reasons, "no ingress synchronizer configured")
 		}
 
+		// "active" used to be derived from a nil check, which reported a component
+		// that provably did no work as healthy.
+		status["status"] = "ok"
+		if len(reasons) > 0 {
+			status["status"] = "degraded"
+			status["reasons"] = reasons
+		}
 		return c.JSON(fiber.Map{"data": status})
 	})
 }

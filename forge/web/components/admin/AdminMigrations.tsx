@@ -1,4 +1,5 @@
 "use client";
+import { useNodesQuery } from "@/lib/admin/telemetry";
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -11,7 +12,6 @@ import {
   executeMigration,
   fetchMigrationExecutorStatus,
   fetchMigrations,
-  fetchNodes,
   fetchRecoveryPlans,
   fetchServers,
   startRecoveryPlan,
@@ -83,7 +83,7 @@ function CreateMigrationModal({ open, onClose }: { open: boolean; onClose: () =>
   const { toast } = useToast();
   const qc = useQueryClient();
   const servers = useQuery({ queryKey: ["servers"], queryFn: fetchServers });
-  const nodes = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
+  const nodes = useNodesQuery();
 
   const [serverId, setServerId] = useState("");
   const [targetNodeId, setTargetNodeId] = useState("");
@@ -126,7 +126,7 @@ function CreateMigrationModal({ open, onClose }: { open: boolean; onClose: () =>
           </select>
         </label>
         {createMut.error && (
-          <div className="rounded border border-red-700/30 bg-red-900/10 p-3 text-xs text-red-200">
+          <div className="rounded border border-red-700/30 bg-red-900/10 p-3 text-sm text-red-300">
             {errorMessage(createMut.error)}
           </div>
         )}
@@ -144,7 +144,7 @@ function CreateMigrationModal({ open, onClose }: { open: boolean; onClose: () =>
 function CreateRecoveryPlanModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { toast } = useToast();
   const qc = useQueryClient();
-  const nodes = useQuery({ queryKey: ["nodes"], queryFn: fetchNodes });
+  const nodes = useNodesQuery();
 
   const [nodeId, setNodeId] = useState("");
   const [reason, setReason] = useState("");
@@ -177,7 +177,7 @@ function CreateRecoveryPlanModal({ open, onClose }: { open: boolean; onClose: ()
         </label>
         <Input label="Recovery reason" value={reason} onChange={setReason} placeholder="e.g. node is unavailable" />
         {createMut.error && (
-          <div className="rounded border border-red-700/30 bg-red-900/10 p-3 text-xs text-red-200">
+          <div className="rounded border border-red-700/30 bg-red-900/10 p-3 text-sm text-red-300">
             {errorMessage(createMut.error)}
           </div>
         )}
@@ -260,8 +260,8 @@ export default function AdminMigrations() {
   return (
     <AdminPageLayout>
       <SectionHeader
-        title="Operations — Migrations & Recovery"
-        sub="OPERATIONS · Data mobility and resilience: live migration jobs (server movement between beacons with planning + execution) and recovery plans for failed beacons. Distinct from Deploy (releases) and Storage (backups)."
+        title="Migrations & Recovery"
+        sub="Live migration jobs for server movement between beacons and automated recovery plans for failed beacons."
         action={
           <div className="flex flex-wrap gap-2">
             <Btn onClick={() => setShowCreateMigration(true)}><Plus size={14} /> New Migration</Btn>

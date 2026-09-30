@@ -1,6 +1,12 @@
 package http
 
 import (
+	"context"
+	"fmt"
+	"net"
+	"time"
+
+	"gamepanel/forge/internal/services/acme"
 	"gamepanel/forge/internal/store"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -66,6 +72,22 @@ func registerProxyDomainRoutes(protected fiber.Router, cfg Config, adminIPAccess
 			WebSocket:        req.WebSocket,
 			RateLimit:        req.RateLimit,
 			RateLimitBurst:   req.RateLimitBurst,
+		}
+
+		// Provision TLS before persisting the row: a domain that claims a
+		// certificate must actually have one configured in the gateway, or the
+		// request fails rather than recording a false completion.
+		if cfg.CaddyTLS != nil {
+			switch req.CertType {
+			case "letsencrypt":
+				if err := cfg.CaddyTLS.ProvisionLetsEncrypt(c.Context(), &domain, ""); err != nil {
+					return fiber.NewError(fiber.StatusBadGateway, "tls provisioning failed: "+err.Error())
+				}
+			case "custom":
+				if err := cfg.CaddyTLS.UploadCustomCert(c.Context(), &domain); err != nil {
+					return fiber.NewError(fiber.StatusBadGateway, "certificate upload failed: "+err.Error())
+				}
+			}
 		}
 
 		result, err := cfg.Store.CreateProxyDomain(c.Context(), domain)
@@ -183,6 +205,24 @@ func registerProxyDomainRoutes(protected fiber.Router, cfg Config, adminIPAccess
 			existing.RateLimitBurst = *req.RateLimitBurst
 		}
 
+		if cfg.CaddyTLS != nil && req.CertType != nil {
+			switch existing.CertType {
+			case "letsencrypt":
+				if err := cfg.CaddyTLS.ProvisionLetsEncrypt(c.Context(), existing, ""); err != nil {
+					return fiber.NewError(fiber.StatusBadGateway, "tls provisioning failed: "+err.Error())
+				}
+			case "custom":
+				if err := cfg.CaddyTLS.UploadCustomCert(c.Context(), existing); err != nil {
+					return fiber.NewError(fiber.StatusBadGateway, "certificate upload failed: "+err.Error())
+				}
+			case "none":
+				if err := cfg.CaddyTLS.RemoveCert(c.Context(), existing.Hostname); err != nil {
+					return fiber.NewError(fiber.StatusBadGateway, "tls removal failed: "+err.Error())
+				}
+				existing.HTTPS = false
+			}
+		}
+
 		if err := cfg.Store.UpdateProxyDomain(c.Context(), *existing); err != nil {
 			return respondInternalError(c, err)
 		}
@@ -190,6 +230,13 @@ func registerProxyDomainRoutes(protected fiber.Router, cfg Config, adminIPAccess
 	})
 
 	domains.Delete("/:id", mutationLimiter, requireRole("admin"), requireAdminScope("domains.write"), func(c *fiber.Ctx) error {
+		if cfg.CaddyTLS != nil {
+			if d, err := cfg.Store.GetProxyDomain(c.Context(), c.Params("id")); err == nil && d != nil && d.CertType == "letsencrypt" {
+				if rmErr := cfg.CaddyTLS.RemoveCert(c.Context(), d.Hostname); rmErr != nil {
+					return fiber.NewError(fiber.StatusBadGateway, "tls removal failed: "+rmErr.Error())
+				}
+			}
+		}
 		if err := cfg.Store.DeleteProxyDomain(c.Context(), c.Params("id")); err != nil {
 			return respondInternalError(c, err)
 		}
@@ -204,14 +251,49 @@ func registerProxyDomainRoutes(protected fiber.Router, cfg Config, adminIPAccess
 		if d == nil {
 			return c.Status(404).JSON(fiber.Map{"error": "domain not found"})
 		}
+		// Real verification: the hostname must actually resolve in DNS. This used to
+		// return verified:true unconditionally — a false completion.
+		verified := false
+		var resolved []string
+		vctx, vcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer vcancel()
+		if addrs, lookupErr := net.DefaultResolver.LookupHost(vctx, d.Hostname); lookupErr == nil && len(addrs) > 0 {
+			verified = true
+			resolved = addrs
+		}
 		return c.JSON(fiber.Map{"data": fiber.Map{
-			"id":       d.ID,
-			"hostname": d.Hostname,
-			"verified": true,
+			"id":        d.ID,
+			"hostname":  d.Hostname,
+			"verified":  verified,
+			"addresses": resolved,
 		}})
 	})
 }
 
+// registerProxyCertificateRoutes owns one route: importing an operator-supplied
+// certificate and binding it to a proxy domain.
+//
+// Guard note (unified with handlers_certificates.go / _ext.go): the ACME
+// certificate routes guard on AcmeService == nil because they delegate to
+// acme.Service. This import guards on Store == nil instead because it is
+// store-backed by design — it binds PEM material to a proxy-domain row, not
+// to the ACME lifecycle — and documents that boundary rather than taking a
+// service it does not use.
+//
+// It used to also register GET /certificates, GET /certificates/:id,
+// DELETE /certificates/:id and POST /certificates/:id/renew. All four were
+// dead: registerCertificateRoutes (handlers_certificates.go, server.go:2562)
+// claims the same paths and Fiber resolves overlapping routes in registration
+// order, so this file — registered at server.go:2634 — never answered them.
+// Its guard is cfg.AcmeService, which main.go:1149 constructs unconditionally,
+// so there was no fallback case either.
+//
+// Removing them also removes a weaker implementation of DELETE: this copy
+// called cfg.Store.DeleteCertificate directly, dropping the database row while
+// leaving the certificate valid at the CA. The registration that actually
+// serves calls svc.RevokeCertificate, which revokes first. Likewise its GET /
+// filter understood only provider/limit/offset, where the live one also
+// handles status and wildcard.
 func registerProxyCertificateRoutes(protected fiber.Router, cfg Config, adminIPAccess, mutationLimiter fiber.Handler) {
 	if cfg.Store == nil {
 		return
@@ -219,14 +301,19 @@ func registerProxyCertificateRoutes(protected fiber.Router, cfg Config, adminIPA
 
 	certs := protected.Group("/certificates", adminIPAccess)
 
+	// POST /certificates — import a certificate the operator already holds and
+	// attach it to a proxy domain. This is the only certificate route in this
+	// file that is reachable; POST /certificates/upload
+	// (handlers_certificates_ext.go) is the equivalent for a certificate that
+	// is not tied to a proxy domain.
 	certs.Post("/", mutationLimiter, requireRole("admin"), requireAdminScope("certificates.write"), func(c *fiber.Ctx) error {
 		var req struct {
-			DomainID    string `json:"domainId"`
+			DomainID    string   `json:"domainId"`
 			Domains     []string `json:"domains"`
-			Certificate string `json:"certificate"`
-			PrivateKey  string `json:"privateKey"`
-			Issuer      string `json:"issuer"`
-			AutoRenew   bool   `json:"autoRenew"`
+			Certificate string   `json:"certificate"`
+			PrivateKey  string   `json:"privateKey"`
+			Issuer      string   `json:"issuer"`
+			AutoRenew   bool     `json:"autoRenew"`
 		}
 		if err := c.BodyParser(&req); err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "invalid request body"})
@@ -234,71 +321,68 @@ func registerProxyCertificateRoutes(protected fiber.Router, cfg Config, adminIPA
 		if req.DomainID == "" {
 			return c.Status(400).JSON(fiber.Map{"error": "domainId is required"})
 		}
+		if req.Certificate == "" || req.PrivateKey == "" {
+			return c.Status(400).JSON(fiber.Map{"error": "certificate and privateKey are required"})
+		}
+
+		// This route used to store whatever bytes it was handed, unparsed and
+		// with a zero ExpiresAt. That is what expires_at in the certificates
+		// table means, and both the "expiring soon" filter and
+		// FindExpiringCertificates compare against it — so every certificate
+		// imported here was permanently reported as long expired. Parse the PEM
+		// and take the real NotAfter, the same way /certificates/upload does.
+		certData, err := validateCertificatePEM(req.Certificate)
+		if err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": fmt.Sprintf("invalid certificate: %v", err)})
+		}
+		if err := validateKeyPair(req.Certificate, req.PrivateKey); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": fmt.Sprintf("key pair mismatch: %v", err)})
+		}
+
+		ctx, cancel := requestContext()
+		defer cancel()
 
 		domains := req.Domains
 		if len(domains) == 0 {
-			if d, err := cfg.Store.GetProxyDomain(c.Context(), req.DomainID); err == nil && d != nil {
-				domains = []string{d.Hostname}
-			} else {
+			d, domErr := cfg.Store.GetProxyDomain(ctx, req.DomainID)
+			if domErr != nil || d == nil {
 				return c.Status(400).JSON(fiber.Map{"error": "domainId does not resolve to a valid domain"})
 			}
+			domains = []string{d.Hostname}
+		}
+
+		issuer := req.Issuer
+		if issuer == "" {
+			issuer = certData.Issuer.String()
 		}
 
 		createReq := store.CreateCertificateRequest{
 			Domains:     domains,
-			Issuer:      req.Issuer,
+			Issuer:      issuer,
 			Certificate: req.Certificate,
 			PrivateKey:  req.PrivateKey,
-			AutoRenew:   req.AutoRenew,
-			Provider:    "custom",
+			ExpiresAt:   certData.NotAfter,
+			// An imported certificate cannot be reissued by Forge: there is no
+			// ACME order behind it. Honouring autoRenew here would enrol it in
+			// the renewal sweep, which would order a replacement from a public
+			// CA and overwrite the operator's own material.
+			// acme.IsACMEProvider gates that, and this provider is outside the
+			// ACME set, so record the request and leave the flag off.
+			AutoRenew: false,
+			Provider:  acme.ProviderCustom,
 		}
 
-		cert, err := cfg.Store.CreateCertificate(c.Context(), createReq)
+		cert, err := cfg.Store.CreateCertificate(ctx, createReq)
 		if err != nil {
 			return respondInternalError(c, err)
+		}
+		if req.AutoRenew {
+			return c.Status(201).JSON(fiber.Map{
+				"data":    cert,
+				"warning": "autoRenew was ignored: an imported certificate has no ACME order behind it and must be replaced by uploading a new one",
+			})
 		}
 		return c.Status(201).JSON(fiber.Map{"data": cert})
-	})
-
-	certs.Get("/", requireRole("admin"), requireAdminScope("certificates.read"), func(c *fiber.Ctx) error {
-		var filter store.CertificateFilter
-		if p := c.Query("provider"); p != "" {
-			filter.Provider = &p
-		}
-		filter.Limit = c.QueryInt("limit", 50)
-		filter.Offset = c.QueryInt("offset", 0)
-
-		results, err := cfg.Store.ListCertificates(c.Context(), filter)
-		if err != nil {
-			return respondInternalError(c, err)
-		}
-		return c.JSON(fiber.Map{"data": results})
-	})
-
-	certs.Get("/:id", requireRole("admin"), requireAdminScope("certificates.read"), func(c *fiber.Ctx) error {
-		cert, err := cfg.Store.GetCertificate(c.Context(), c.Params("id"))
-		if err != nil {
-			return c.Status(404).JSON(fiber.Map{"error": err.Error()})
-		}
-		return c.JSON(fiber.Map{"data": cert})
-	})
-
-	certs.Delete("/:id", mutationLimiter, requireRole("admin"), requireAdminScope("certificates.write"), func(c *fiber.Ctx) error {
-		if err := cfg.Store.DeleteCertificate(c.Context(), c.Params("id")); err != nil {
-			return respondInternalError(c, err)
-		}
-		return c.SendStatus(204)
-	})
-
-	certs.Post("/:id/renew", mutationLimiter, requireRole("admin"), requireAdminScope("certificates.write"), func(c *fiber.Ctx) error {
-		if cfg.AcmeService == nil {
-			return c.Status(503).JSON(fiber.Map{"error": "ACME service not available"})
-		}
-		cert, err := cfg.AcmeService.RenewCertificate(c.Context(), c.Params("id"))
-		if err != nil {
-			return respondInternalError(c, err)
-		}
-		return c.JSON(fiber.Map{"data": cert})
 	})
 }
 

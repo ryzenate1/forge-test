@@ -90,7 +90,8 @@ func (s *Store) ListNodesPaginated(ctx context.Context, offset, limit int) ([]No
 	       COALESCE(n.heartbeat_state::text, ''), COALESCE(n.heartbeat_recovery_count, 0),
 	       COALESCE(n.daemon_sftp_alias, ''), COALESCE(n.daemon_connect, 8080), COALESCE(n.cpu_overallocate, 0),
 	       COALESCE(n.tags, '[]'),
-	       COALESCE(n.scheduler_type, 'docker'), COALESCE(n.scheduler_config, NULL)::text
+	       COALESCE(n.scheduler_type, 'docker'), COALESCE(n.scheduler_config, NULL)::text,
+	       n.load_average, n.uptime_seconds
 		FROM nodes n
 		LEFT JOIN locations l ON l.id = n.location_id
 		ORDER BY n.name
@@ -133,6 +134,7 @@ func (s *Store) ListNodesPaginated(ctx context.Context, offset, limit int) ([]No
 			&node.DaemonSFTPAlias, &node.DaemonConnect, &node.CPUOverallocate,
 			&node.Tags,
 			&node.SchedulerType, &schedulerConfig,
+			&node.LoadAverage, &node.UptimeSeconds,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -184,7 +186,8 @@ func (s *Store) GetNode(ctx context.Context, nodeID string) (Node, error) {
 	       COALESCE(n.daemon_sftp_alias, ''), COALESCE(n.daemon_connect, 8080), COALESCE(n.cpu_overallocate, 0),
 	       COALESCE(n.tags, '[]'),
 	       COALESCE(n.scheduler_type, 'docker'), COALESCE(n.scheduler_config, NULL)::text,
-	       COALESCE(n.runtime_provider, '')
+	       COALESCE(n.runtime_provider, ''),
+	       n.load_average, n.uptime_seconds
 	FROM nodes n
 	LEFT JOIN locations l ON l.id = n.location_id
 	WHERE n.id = $1
@@ -218,6 +221,7 @@ func (s *Store) GetNode(ctx context.Context, nodeID string) (Node, error) {
 			&node.Tags,
 			&node.SchedulerType, &schedulerConfig,
 			&node.RuntimeProvider,
+			&node.LoadAverage, &node.UptimeSeconds,
 		)
 	if err != nil {
 		return Node{}, err
@@ -318,6 +322,70 @@ func (s *Store) CreateNode(ctx context.Context, req CreateNodeRequest, actorID *
 		return Node{}, "", err
 	}
 	return node, tokenID + "." + token, nil
+}
+
+// NodeLifecyclePatch flips only cluster-membership lifecycle columns
+// (draining, maintenance_mode, desired_state, status, maintenance_message).
+// Pointer fields distinguish "leave untouched" (nil) from an explicit value,
+// so internal state machines (join/leave/drain/maintenance) never have to
+// round-trip the full node row through UpdateNode — which requires the
+// complete endpoint identity and would clobber unrelated columns with zero
+// values when given a partial request.
+type NodeLifecyclePatch struct {
+	Draining           *bool
+	Maintenance        *bool
+	DesiredState       *NodeDesiredState
+	Status             *string
+	MaintenanceMessage *string
+}
+
+// PatchNodeLifecycle applies a NodeLifecyclePatch to a single node. Only the
+// whitelisted lifecycle columns are written; every other column keeps its
+// stored value. An empty patch is rejected, and a patch targeting a missing
+// node reports "node not found" rather than success.
+func (s *Store) PatchNodeLifecycle(ctx context.Context, nodeID string, patch NodeLifecyclePatch, actorID *string) (Node, error) {
+	if strings.TrimSpace(nodeID) == "" {
+		return Node{}, errors.New("node id is required")
+	}
+	sets := []string{}
+	args := []any{}
+	add := func(column string, value any) {
+		sets = append(sets, fmt.Sprintf("%s = $%d", column, len(args)+1))
+		args = append(args, value)
+	}
+	if patch.Draining != nil {
+		add("draining", *patch.Draining)
+	}
+	if patch.Maintenance != nil {
+		add("maintenance_mode", *patch.Maintenance)
+	}
+	if patch.DesiredState != nil {
+		switch *patch.DesiredState {
+		case NodeDesiredStateActive, NodeDesiredStateMaintenance, NodeDesiredStateDraining:
+			add("desired_state", string(*patch.DesiredState))
+		default:
+			return Node{}, fmt.Errorf("invalid desired state %q", string(*patch.DesiredState))
+		}
+	}
+	if patch.Status != nil {
+		add("status", strings.TrimSpace(*patch.Status))
+	}
+	if patch.MaintenanceMessage != nil {
+		add("maintenance_message", *patch.MaintenanceMessage)
+	}
+	if len(sets) == 0 {
+		return Node{}, errors.New("no lifecycle fields to update")
+	}
+	args = append(args, nodeID)
+	tag, err := s.db.Exec(ctx, fmt.Sprintf("UPDATE nodes SET %s WHERE id = $%d", strings.Join(sets, ", "), len(args)), args...)
+	if err != nil {
+		return Node{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		return Node{}, errors.New("node not found")
+	}
+	_ = s.AppendAudit(ctx, actorID, "node lifecycle updated", "node", &nodeID, `{"lifecycle":true}`)
+	return s.GetNode(ctx, nodeID)
 }
 
 func (s *Store) UpdateNode(ctx context.Context, nodeID string, req UpdateNodeRequest, actorID *string) (Node, error) {
@@ -742,9 +810,11 @@ func (s *Store) UpdateNodeHeartbeat(ctx context.Context, nodeID string, req Node
 		    docker_status = NULLIF($8, ''),
 		    runtime_status = NULLIF($9, ''),
 		    runtime_provider = NULLIF($10, ''),
-		    heartbeat_error = NULLIF($11, '')
+		    heartbeat_error = NULLIF($11, ''),
+		    load_average = CASE WHEN $13 > 0 THEN $13 ELSE load_average END,
+		    uptime_seconds = CASE WHEN $14 > 0 THEN $14 ELSE uptime_seconds END
 		WHERE id = $12
-	`, status, req.Version, req.OS, req.Architecture, req.CPUThreads, req.MemoryMB, req.DiskMB, req.DockerStatus, req.RuntimeStatus, req.RuntimeProvider, req.Error, nodeID)
+	`, status, req.Version, req.OS, req.Architecture, req.CPUThreads, req.MemoryMB, req.DiskMB, req.DockerStatus, req.RuntimeStatus, req.RuntimeProvider, req.Error, nodeID, req.LoadAverage, req.Uptime)
 	if err != nil {
 		return Node{}, err
 	}
@@ -1000,6 +1070,12 @@ func (s *Store) RemoteServerConfigurations(ctx context.Context, nodeID string) (
 		}
 		target.StartupCommand = resolveStartupCommand(target.StartupCommand, target.Environment)
 
+		// Resolve private-registry credentials for the image so reconcile/recreate
+		// on this node can pull non-Docker-Hub images (best-effort, never blocks).
+		if auth, err := s.registryAuthForImage(ctx, info.image); err == nil {
+			target.RegistryAuth = auth
+		}
+
 		allocs := allocsByServer[info.serverID]
 		if info.primaryAllocID.Valid {
 			sort.Slice(allocs, func(i, j int) bool {
@@ -1036,10 +1112,21 @@ func (s *Store) ResetNodeServerStates(ctx context.Context, nodeID string) error 
 	return err
 }
 
+// ServerBelongsToNode reports whether a server row exists with that node as its
+// owner. It is the authorization gate for every /api/remote endpoint, so the
+// (false, err) case must stay distinguishable from a plain (false, nil): the
+// first means "could not establish ownership", the second means "definitely not
+// this node's server". Callers should route them to 500 and 403 respectively —
+// see requireNodeOwnsServer in the http package.
 func (s *Store) ServerBelongsToNode(ctx context.Context, serverID, nodeID string) (bool, error) {
+	if s.db == nil {
+		return false, errors.New("no database connection")
+	}
 	var exists bool
-	err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM servers WHERE id = $1 AND node_id = $2)`, serverID, nodeID).Scan(&exists)
-	return exists, err
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM servers WHERE id = $1 AND node_id = $2)`, serverID, nodeID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check server %s belongs to node %s: %w", serverID, nodeID, err)
+	}
+	return exists, nil
 }
 
 type NodeConfiguration struct {
@@ -1347,7 +1434,7 @@ func (s *Store) ListServersForNode(ctx context.Context, nodeID string) ([]Server
 
 func (s *Store) ListAllocationsForNode(ctx context.Context, nodeID string) ([]Allocation, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT a.id::text, n.name, s.name, a.ip::text, a.port, a.container_port, a.protocol, a.alias, COALESCE(a.notes, '')
+		SELECT a.id::text, n.name, s.name, host(a.ip), a.port, a.container_port, a.protocol, a.alias, COALESCE(a.notes, '')
 		FROM allocations a
 		JOIN nodes n ON n.id = a.node_id
 		LEFT JOIN servers s ON s.id = a.server_id

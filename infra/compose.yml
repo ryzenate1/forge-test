@@ -88,8 +88,11 @@ services:
     init: true
     stop_grace_period: 30s
     image: redis:7-alpine
+    # $$ defers expansion to the container shell so REDIS_PASSWORD is read
+    # from the service environment at runtime (compose parse-time splicing
+    # would split passwords containing spaces and leak them into `config`).
     command: >
-      sh -c 'exec redis-server --appendonly yes ${REDIS_PASSWORD:+--requirepass $REDIS_PASSWORD}'
+      sh -c 'exec redis-server --appendonly yes $${REDIS_PASSWORD:+--requirepass "$$REDIS_PASSWORD"}'
     expose:
       - "6379"
     environment:
@@ -147,13 +150,17 @@ services:
       PGPASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/.env}"
       POSTGRES_BACKUP_INTERVAL_SECONDS: ${POSTGRES_BACKUP_INTERVAL_SECONDS:-86400}
       POSTGRES_BACKUP_RETENTION_DAYS: ${POSTGRES_BACKUP_RETENTION_DAYS:-14}
+      PUSHGATEWAY_URL: ${PUSHGATEWAY_URL:-http://pushgateway:9091}
       S3_BACKUP_BUCKET: ${S3_BACKUP_BUCKET:-}
       S3_BACKUP_REGION: ${S3_BACKUP_REGION:-}
       S3_BACKUP_ACCESS_KEY_ID: ${S3_BACKUP_ACCESS_KEY_ID:-}
       S3_BACKUP_SECRET_ACCESS_KEY: ${S3_BACKUP_SECRET_ACCESS_KEY:-}
       S3_BACKUP_PREFIX: ${S3_BACKUP_PREFIX:-postgres}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER-postgres} -d $${POSTGRES_DB-postgres}"]
+      # Probe the backup target with this service's own PG* credentials.
+      # (The previous check referenced POSTGRES_USER/POSTGRES_DB, which are
+      # unset in this container and silently defaulted to 'postgres'.)
+      test: ["CMD-SHELL", "pg_isready -h $${PGHOST:-postgres} -U $${PGUSER:-gamepanel} -d $${PGDATABASE:-gamepanel}"]
       interval: 60s
       timeout: 10s
       retries: 3
@@ -210,7 +217,7 @@ services:
       MIGRATIONS_DIR: /migrations
       LANGS_DIR: /lang
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
-      REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?Set REDIS_PASSWORD in infra/.env}"
       DAEMON_NODE_TOKEN: "${DAEMON_NODE_TOKEN:?Set DAEMON_NODE_TOKEN in infra/.env}"
       METRICS_TOKEN: "${METRICS_TOKEN:?Set METRICS_TOKEN in infra/.env}"
       PANEL_URL: ${PANEL_URL:-http://localhost:3000}
@@ -283,8 +290,10 @@ services:
       DAEMON_SFTP_HOST_KEY_PASSPHRASE: "${DAEMON_SFTP_HOST_KEY_PASSPHRASE:?Set DAEMON_SFTP_HOST_KEY_PASSPHRASE in infra/.env}"
       DAEMON_UPGRADE_PUBLIC_KEY: "${DAEMON_UPGRADE_PUBLIC_KEY:-}"
       PANEL_API_URL: "${PANEL_API_URL:?Set an HTTPS PANEL_API_URL in infra/.env}"
-      DAEMON_SFTP_ADDR: ${DAEMON_SFTP_ADDR:-127.0.0.1:2022}
-      DAEMON_SFTP_BIND_ADDR: ${DAEMON_SFTP_BIND_ADDR:-0.0.0.0:2022}
+      # Single SFTP bind variable. The daemon resolves the listen address from
+      # DAEMON_SFTP_BIND_ADDR only (see beacon/cmd/daemon/main.go); the legacy
+      # DAEMON_SFTP_ADDR alias is not set here to avoid split-brain configs.
+      DAEMON_SFTP_BIND_ADDR: ${DAEMON_SFTP_BIND_ADDR:-127.0.0.1:2022}
       DAEMON_ALLOW_MOCK_RUNTIME: ${DAEMON_ALLOW_MOCK_RUNTIME:-false}
       DAEMON_ALLOW_INSECURE_NO_AUTH: "false"
       METRICS_TOKEN: "${METRICS_TOKEN:?Set METRICS_TOKEN in infra/.env}"
@@ -394,10 +403,12 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     image: prom/alertmanager:v0.27.0
+    # NOTE: prom/alertmanager has no --config.expand-env flag (v0.27.0).
+    # Receiver endpoints are baked in by scripts/gen-alertmanager.sh from
+    # ALERTMANAGER_* vars before startup; do not re-add the flag.
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
       - "--storage.path=/alertmanager"
-      - "--config.expand-env=true"
     ports:
       - "127.0.0.1:9093:9093"
     healthcheck:
@@ -418,7 +429,10 @@ services:
       ALERTMANAGER_ADMIN_EMAIL: ${ALERTMANAGER_ADMIN_EMAIL:-}
       ALERTMANAGER_WEBHOOK_URL: ${ALERTMANAGER_WEBHOOK_URL:-}
     volumes:
-      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      # Rendered by scripts/gen-alertmanager.sh from
+      # infra/alertmanager/alertmanager.yml.tmpl (see its header). The legacy
+      # ./alertmanager.yml static copy is not used by the stack.
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - ./alertmanager/templates:/etc/alertmanager/templates:ro
       - alertmanager-data:/alertmanager
     networks:
@@ -498,6 +512,9 @@ services:
     expose:
       - "9121"
     environment:
+      # redis_exporter defaults to redis://localhost:6379; point it at the
+      # compose `redis` service explicitly (auth via REDIS_PASSWORD).
+      REDIS_ADDR: "redis://redis:6379"
       REDIS_PASSWORD: "${REDIS_PASSWORD}"
     depends_on:
       redis:
@@ -528,6 +545,79 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+  # Backs the PostgresBackupStale alert: postgres-backup pushes
+  # backup_last_success_seconds here when PUSHGATEWAY_URL is set.
+  pushgateway:
+    restart: unless-stopped
+    stop_grace_period: 15s
+    image: prom/pushgateway:v1.9.0
+    expose:
+      - "9091"
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      app.organization: "gamepanel"
+      app.component: "pushgateway"
+      app.environment: "${APP_ENV:-development}"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9091/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Backs the DiskSpaceLow alert (node_filesystem_* metrics).
+  node-exporter:
+    restart: unless-stopped
+    stop_grace_period: 15s
+    image: prom/node-exporter:v1.8.2
+    expose:
+      - "9100"
+    command:
+      - "--path.rootfs=/host"
+    volumes:
+      - /:/host:ro,rslave
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      app.organization: "gamepanel"
+      app.component: "node-exporter"
+      app.environment: "${APP_ENV:-development}"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9100/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   grafana:
     restart: unless-stopped
@@ -595,7 +685,14 @@ services:
       - caddy-data:/data
       - caddy-config:/config
     environment:
-      CADDY_ADMIN: "0.0.0.0:2019"
+      # Bind the admin API to loopback only — it is unauthenticated, so exposing
+      # it on 0.0.0.0:2019 would let every container on `frontend`/`backend`
+      # rewrite the gateway config. This matches the `admin` directive in the
+      # Caddyfile and infra/compose.caddy.production.yml. Containers that need to
+      # drive the admin API must be reachable via `localhost` inside the Caddy
+      # container (e.g. a shared network namespace / admin sidecar), not via
+      # `caddy:2019`.
+      CADDY_ADMIN: "127.0.0.1:2019"
     command: caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
     depends_on:
       api:
@@ -651,7 +748,9 @@ services:
       - path: .env
         required: false
     ports:
-      - "3000:3000"
+      # Loopback only: the public entrypoint for the web console is Caddy/Traefik
+      # on 80/443, never a raw 0.0.0.0:3000 publish.
+      - "127.0.0.1:3000:3000"
     depends_on:
       api:
         condition: service_healthy

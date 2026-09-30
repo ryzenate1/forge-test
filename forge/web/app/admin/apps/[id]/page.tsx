@@ -1,14 +1,15 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, use, Suspense, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, use, Suspense, useMemo, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  ArrowLeft, Cloud, Cpu, Database, FileText,
-  Globe, HardDrive, History, KeyRound, Power,
+  Cloud, Cpu, Database, FileText,
+  Globe, HardDrive, History, KeyRound, MoveRight, Power,
   RefreshCw, RotateCcw, Settings, Square, Terminal,
-  Wrench, XCircle,
+  Wrench,
 } from "lucide-react";
+import { DomainRedirectsPanel } from "@/components/app/domain-redirects-panel";
 import { useToast } from "@/components/ui/toast";
 import {
   fetchApp, fetchAppDeployments, fetchAppLogs, fetchAppDomains, fetchAppBackups,
@@ -18,12 +19,16 @@ import {
   typeLabel,
   type ApiAppDetail, type AppDeployment,
 } from "@/lib/api/apps";
-import { Btn, Card, CardHeader, EmptyState, Input, Modal, Pill, SectionHeader, cn } from "@/components/admin/admin-ui";
+import { Btn, Card, CardHeader, EmptyState, Input, Modal, Pill, SectionHeader, AdminErrorState, AdminLoadingState, AdminPageLayout, cn } from "@/components/admin/admin-ui";
+import { DashHeader, InfoCard } from "@/components/admin/dashboard-cards";
 import { DeployStatusBadge, LogViewer, ResourceGauge, EnvVarEditor, PortMapper, VolumeEditor } from "@/components/admin/AdminAppsShared";
 import { formatDate, formatBytes } from "@/lib/utils";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { useBreadcrumbLabel } from "@/lib/nav/breadcrumb-context";
+import { adminPageGuides } from "@/components/admin/admin-page-guides";
+import { queryKeys } from "@/lib/api/query-keys";
 
-type TabId = "overview" | "deployments" | "configuration" | "logs" | "console" | "domains" | "backups";
+type TabId = "overview" | "deployments" | "configuration" | "logs" | "console" | "domains" | "redirects" | "backups";
 
 const TABS: { id: TabId; label: string; icon: typeof Settings }[] = [
   { id: "overview", label: "Overview", icon: Cpu },
@@ -32,8 +37,24 @@ const TABS: { id: TabId; label: string; icon: typeof Settings }[] = [
   { id: "logs", label: "Logs", icon: FileText },
   { id: "console", label: "Console", icon: Terminal },
   { id: "domains", label: "Domains", icon: Globe },
+  { id: "redirects", label: "Redirects", icon: MoveRight },
   { id: "backups", label: "Backups", icon: Database },
 ];
+
+/**
+ * Resolve a configured resource limit to a number, or `undefined` when none is
+ * set. `mapApplicationDetail` always hands back `resourceLimits.*` as a string
+ * and uses "" for "not configured", so parsing unconditionally yields NaN —
+ * which used to reach the UI as the literal text "NaN". An unset limit is
+ * unknown, not zero and not an invented default.
+ */
+function resolveLimit(configured: string | undefined, fallback: number | undefined): number | undefined {
+  if (configured != null && configured.trim() !== "") {
+    const parsed = Number.parseFloat(configured);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
 
 function AdminAppDetailContent({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -47,41 +68,44 @@ function AdminAppDetailContent({ params }: { params: Promise<{ id: string }> }) 
   };
 
   const { data: app, isLoading, error } = useQuery({
-    queryKey: ["app", id],
+    queryKey: queryKeys.apps.detail(id),
     queryFn: () => fetchApp(id),
     enabled: !!id,
     refetchInterval: 10_000,
   });
 
+  // The shell renders the one breadcrumb trail; this names its id crumb so
+  // it reads as the app rather than a bare uuid. Before the name loads the
+  // crumb keeps the id — it does not flash a placeholder.
+  useBreadcrumbLabel(id, app?.name ?? null);
+
   if (isLoading) {
     return (
-      <div className="space-y-6">
+      <AdminPageLayout>
         <SectionHeader title="Application" sub="Loading..." />
-        <div className="p-8 text-center text-sm text-slate-500">Loading application details...</div>
-      </div>
+        <AdminLoadingState label="Loading application details..." />
+      </AdminPageLayout>
     );
   }
 
   if (error || !app) {
     return (
-      <div className="space-y-6">
+      <AdminPageLayout>
         <SectionHeader title="Application" sub="Error loading application" />
-        <EmptyState icon={XCircle} message={error instanceof Error ? error.message : "Application not found."} />
-      </div>
+        <AdminErrorState message={error instanceof Error ? error.message : "Application not found."} />
+      </AdminPageLayout>
     );
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <Btn tone="ghost" size="sm" onClick={() => router.push("/admin/apps")}>
-          <ArrowLeft size={14} />
-        </Btn>
-        <SectionHeader
-          title={app.name}
-          sub={`${typeLabel(app.type)} - ${app.id.slice(0, 8)}...`}
-        />
-      </div>
+    <AdminPageLayout>
+      <SectionHeader
+        title={app.name}
+        sub={`${typeLabel(app.type)} · ${app.id.slice(0, 8)}...`}
+        info={adminPageGuides.applications}
+        backAction={() => router.push("/admin/apps")}
+        backLabel="Apps"
+      />
 
       <div className="flex flex-wrap gap-4">
         {app.type === "compose" && (
@@ -96,7 +120,7 @@ function AdminAppDetailContent({ params }: { params: Promise<{ id: string }> }) 
         )}
       </div>
 
-      <div className="flex gap-1 border-b border-white/[0.06]">
+      <div className="flex gap-1 border-b border-line">
         {TABS.map(({ id: tId, label, icon: Icon }) => (
           <button
             key={tId}
@@ -104,8 +128,8 @@ function AdminAppDetailContent({ params }: { params: Promise<{ id: string }> }) 
             className={cn(
               "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition -mb-px",
               tab === tId
-                ? "border-[#dc2626] text-[#dc2626]"
-                : "border-transparent text-slate-500 hover:text-slate-300",
+                ? "border-[var(--brand)] text-[var(--brand)]"
+                : "border-transparent text-text-muted hover:text-text-subtle",
             )}
             onClick={() => setTab(tId)}
           >
@@ -121,18 +145,19 @@ function AdminAppDetailContent({ params }: { params: Promise<{ id: string }> }) 
       {tab === "logs" && <LogsTab appId={id} />}
       {tab === "console" && <ConsoleTab app={app} />}
       {tab === "domains" && <DomainsTab appId={id} />}
+      {tab === "redirects" && <DomainRedirectsPanel appId={id} />}
       {tab === "backups" && <BackupsTab appId={id} />}
-    </div>
+    </AdminPageLayout>
   );
 }
 
 export default function AdminAppDetailPage({ params }: { params: Promise<{ id: string }> }) {
   return (
     <Suspense fallback={
-      <div className="space-y-6">
+      <AdminPageLayout>
         <SectionHeader title="Application" sub="Loading..." />
-        <div className="p-8 text-center text-sm text-slate-500">Loading application details...</div>
-      </div>
+        <AdminLoadingState label="Loading application details..." />
+      </AdminPageLayout>
     }>
       <AdminAppDetailContent params={params} />
     </Suspense>
@@ -143,32 +168,41 @@ function OverviewTab({ app, id }: { app: ApiAppDetail; id: string }) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const startMut = useMutation({
-    mutationFn: () => startApp(id),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["app", id] }),
+    mutationFn: async () => {
+      const result = await startApp(id);
+      if (!result.ok) throw new Error("The server reported the app did not start.");
+      return result;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: queryKeys.apps.detail(id) }),
     onError: (error) => toast({ tone: "error", title: "Start failed", message: error instanceof Error ? error.message : "Failed to start app" }),
   });
   const stopMut = useMutation({
-    mutationFn: () => stopApp(id),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["app", id] }),
+    mutationFn: async () => {
+      const result = await stopApp(id);
+      if (!result.ok) throw new Error("The server reported the app did not stop.");
+      return result;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: queryKeys.apps.detail(id) }),
     onError: (error) => toast({ tone: "error", title: "Stop failed", message: error instanceof Error ? error.message : "Failed to stop app" }),
   });
   const restartMut = useMutation({
     mutationFn: () => restartApp(id),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["app", id] }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: queryKeys.apps.detail(id) }),
     onError: (error) => toast({ tone: "error", title: "Restart failed", message: error instanceof Error ? error.message : "Failed to restart app" }),
   });
   const triggerMut = useMutation({
     mutationFn: () => triggerDeploy(id),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["app", id] }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: queryKeys.apps.detail(id) }),
     onError: (error) => toast({ tone: "error", title: "Deploy failed", message: error instanceof Error ? error.message : "Failed to trigger deploy" }),
   });
 
-  const cpuUsage = app.cpuUsage ?? 0;
-  const cpuLimit = typeof app.resourceLimits?.cpu === "string" ? parseFloat(app.resourceLimits.cpu) : (app.cpuLimit ?? 1);
-  const memUsage = app.memoryUsage ?? 0;
-  const memLimit = typeof app.resourceLimits?.memory === "string" ? parseInt(app.resourceLimits.memory) : (app.memoryLimit ?? 1024);
-  const diskUsage = app.diskUsage ?? 0;
-  const diskLimit = typeof app.resourceLimits?.disk === "string" ? parseInt(app.resourceLimits.disk) : (app.diskLimit ?? 10240);
+  // Usage is passed through unchanged, including `undefined`: `mapApplication`
+  // (lib/api/apps.ts) never populates cpu/memory/diskUsage because no endpoint
+  // reports it yet, and coercing that to 0 would draw an idle-looking gauge for
+  // a workload we have no reading for. ResourceGauge renders "—" instead.
+  const cpuLimit = resolveLimit(app.resourceLimits?.cpu, app.cpuLimit);
+  const memLimit = resolveLimit(app.resourceLimits?.memory, app.memoryLimit);
+  const diskLimit = resolveLimit(app.resourceLimits?.disk, app.diskLimit);
 
   return (
     <div className="space-y-6">
@@ -197,51 +231,56 @@ function OverviewTab({ app, id }: { app: ApiAppDetail; id: string }) {
         <Card>
           <CardHeader title="Resource Usage" icon={Cpu} />
           <div className="space-y-4 p-4">
-            <ResourceGauge label="CPU" value={cpuUsage} limit={cpuLimit} unit="cores" />
-            <ResourceGauge label="Memory" value={memUsage} limit={memLimit} unit="MiB" />
-            <ResourceGauge label="Disk" value={diskUsage} limit={diskLimit} unit="MiB" />
+            <ResourceGauge label="CPU" value={app.cpuUsage} limit={cpuLimit} unit="cores" />
+            <ResourceGauge label="Memory" value={app.memoryUsage} limit={memLimit} unit="MiB" />
+            <ResourceGauge label="Disk" value={app.diskUsage} limit={diskLimit} unit="MiB" />
+            {app.cpuUsage == null && app.memoryUsage == null && app.diskUsage == null ? (
+              <p className="text-xs text-[var(--text-subtle)]">
+                Per-app usage is not collected yet — these gauges show the configured limits only.
+              </p>
+            ) : null}
           </div>
         </Card>
 
         <Card>
           <CardHeader title="Information" icon={Cloud} />
-          <div className="divide-y divide-white/[0.06] text-sm">
+          <div className="divide-y divide-line text-sm">
             <div className="flex justify-between px-4 py-3">
-              <span className="text-slate-400">Status</span>
+              <span className="text-text-subtle">Status</span>
               <DeployStatusBadge status={app.status} type="app" />
             </div>
             <div className="flex justify-between px-4 py-3">
-              <span className="text-slate-400">Type</span>
-              <span className="text-slate-200">{typeLabel(app.type)}</span>
+              <span className="text-text-subtle">Type</span>
+              <span className="text-text">{typeLabel(app.type)}</span>
             </div>
             <div className="flex justify-between px-4 py-3">
-              <span className="text-slate-400">Image</span>
-              <span className="font-mono text-xs text-slate-300">{app.image ?? "—"}</span>
+              <span className="text-text-subtle">Image</span>
+              <span className="font-mono text-xs text-text-subtle">{app.image ?? "—"}</span>
             </div>
             <div className="flex justify-between px-4 py-3">
-              <span className="text-slate-400">Version</span>
-              <span className="text-slate-200">{app.version ?? "—"}</span>
+              <span className="text-text-subtle">Version</span>
+              <span className="text-text">{app.version ?? "—"}</span>
             </div>
             {app.uptime && (
               <div className="flex justify-between px-4 py-3">
-                <span className="text-slate-400">Uptime</span>
-                <span className="text-slate-200">{app.uptime}</span>
+                <span className="text-text-subtle">Uptime</span>
+                <span className="text-text">{app.uptime}</span>
               </div>
             )}
             <div className="flex justify-between px-4 py-3">
-              <span className="text-slate-400">Created</span>
-              <span className="text-slate-200">{formatDate(app.createdAt)}</span>
+              <span className="text-text-subtle">Created</span>
+              <span className="text-text">{formatDate(app.createdAt)}</span>
             </div>
             {app.deployedAt && (
               <div className="flex justify-between px-4 py-3">
-                <span className="text-slate-400">Last Deployed</span>
-                <span className="text-slate-200">{formatDate(app.deployedAt)}</span>
+                <span className="text-text-subtle">Last Deployed</span>
+                <span className="text-text">{formatDate(app.deployedAt)}</span>
               </div>
             )}
             {app.node && (
               <div className="flex justify-between px-4 py-3">
-                <span className="text-slate-400">Node</span>
-                <span className="font-mono text-xs text-slate-300">{app.node}</span>
+                <span className="text-text-subtle">Node</span>
+                <span className="font-mono text-xs text-text-subtle">{app.node}</span>
               </div>
             )}
           </div>
@@ -251,11 +290,11 @@ function OverviewTab({ app, id }: { app: ApiAppDetail; id: string }) {
       {app.ports.length > 0 && (
         <Card>
           <CardHeader title="Ports" icon={Globe} />
-          <div className="divide-y divide-white/[0.06] text-sm">
+          <div className="divide-y divide-line text-sm">
             {app.ports.map((port) => (
               <div key={`${port.protocol}-${port.containerPort}-${port.hostPort}`} className="flex justify-between px-4 py-3">
-                <span className="text-slate-400">{port.name ?? `${port.protocol}/${port.containerPort}`}</span>
-                <span className="font-mono text-xs text-slate-300">{port.hostPort}:{port.containerPort}/{port.protocol}</span>
+                <span className="text-text-subtle">{port.name ?? `${port.protocol}/${port.containerPort}`}</span>
+                <span className="font-mono text-xs text-text-subtle">{port.hostPort}:{port.containerPort}/{port.protocol}</span>
               </div>
             ))}
           </div>
@@ -268,7 +307,7 @@ function OverviewTab({ app, id }: { app: ApiAppDetail; id: string }) {
 function DeploymentsTab({ appId }: { appId: string }) {
   const router = useRouter();
   const { data: deploymentsRaw, isLoading } = useQuery({
-    queryKey: ["app-deployments", appId],
+    queryKey: queryKeys.deployments.byApp(appId),
     queryFn: () => fetchAppDeployments(appId),
     refetchInterval: 10_000,
   });
@@ -289,14 +328,14 @@ function DeploymentsTab({ appId }: { appId: string }) {
           }
         />
         {isLoading ? (
-          <div className="p-8 text-center text-sm text-slate-500">Loading deployments...</div>
+          <div className="p-8 text-center text-sm text-text-muted">Loading deployments...</div>
         ) : !Array.isArray(deployments) || deployments.length === 0 ? (
           <EmptyState icon={History} message="No deployments yet." />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-white/[0.06] text-left text-[10px] uppercase tracking-widest text-slate-500">
+                <tr className="border-b border-line text-left text-[10px] uppercase tracking-widest text-text-muted">
                   <th className="px-4 py-3">Revision</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3">Source</th>
@@ -305,28 +344,28 @@ function DeploymentsTab({ appId }: { appId: string }) {
                   <th className="px-4 py-3">Duration</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-white/[0.04]">
+              <tbody className="divide-y divide-line">
                 {Array.isArray(deployments) && deployments.map((dep) => (
                   <tr
                     key={dep.id}
-                    className="hover:bg-white/[0.02] cursor-pointer"
+                    className="hover:bg-overlay-subtle cursor-pointer"
                     onClick={() => setSelected(dep)}
                   >
-                    <td className="px-4 py-3 font-mono text-xs text-slate-200">#{dep.revision}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-text">#{dep.revision}</td>
                     <td className="px-4 py-3">
                       <DeployStatusBadge status={dep.status} type="deployment" />
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-400">
-                      {typeLabel(dep.source)}
+                    <td className="px-4 py-3 text-xs text-text-subtle">
+                      {dep.source ? typeLabel(dep.source) : "—"}
                       {dep.commit && (
-                        <span className="ml-1 font-mono text-slate-500">({dep.commit.slice(0, 7)})</span>
+                        <span className="ml-1 font-mono text-text-muted">({dep.commit.slice(0, 7)})</span>
                       )}
                     </td>
                     <td className="px-4 py-3">
                       <Pill tone="neutral">{dep.trigger}</Pill>
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-500">{formatDate(dep.startedAt)}</td>
-                    <td className="px-4 py-3 text-xs text-slate-500">
+                    <td className="px-4 py-3 text-xs text-text-muted">{formatDate(dep.startedAt)}</td>
+                    <td className="px-4 py-3 text-xs text-text-muted">
                       {dep.duration != null ? `${dep.duration}s` : "—"}
                     </td>
                   </tr>
@@ -338,38 +377,37 @@ function DeploymentsTab({ appId }: { appId: string }) {
       </Card>
 
       {selected && (
-        <Modal title={`Deployment #${selected.revision}`} onClose={() => setSelected(null)} wide>
+        <Modal title={`Deployment #${selected.revision}`} description={selected.commitMessage ?? selected.status} onClose={() => setSelected(null)} wide className="max-w-6xl">
           <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <span className="text-slate-400">Status:</span>
-                <DeployStatusBadge status={selected.status} type="deployment" />
-              </div>
-              <div><span className="text-slate-400">Trigger:</span> <span className="text-slate-200">{selected.trigger}</span></div>
-              <div><span className="text-slate-400">Started:</span> <span className="text-slate-200">{formatDate(selected.startedAt)}</span></div>
-              <div><span className="text-slate-400">Completed:</span> <span className="text-slate-200">{formatDate(selected.completedAt)}</span></div>
-              {selected.commit && (
-                <div className="col-span-2">
-                  <span className="text-slate-400">Commit:</span>
-                  <span className="font-mono text-xs text-slate-200 ml-1">{selected.commit}</span>
-                </div>
-              )}
-              {selected.commitMessage && (
-                <div className="col-span-2">
-                  <span className="text-slate-400">Message:</span>
-                  <span className="text-slate-200 ml-1">{selected.commitMessage}</span>
-                </div>
-              )}
-            </div>
+            <DashHeader
+              icon={History}
+              eyebrow="App deployment"
+              title={`Deployment #${selected.revision}`}
+              pill={{ tone: selected.status === "completed" ? "green" : selected.status === "failed" ? "red" : selected.status === "pending" ? "neutral" : "yellow", label: selected.status }}
+              description={selected.commitMessage ?? undefined}
+              meta={[
+                { label: "Trigger", value: selected.trigger },
+                { label: "Started", value: formatDate(selected.startedAt) },
+                { label: "Completed", value: formatDate(selected.completedAt) },
+              ]}
+            />
+            <InfoCard icon={History} title="Deployment Information" rows={[
+              ["Status", <DeployStatusBadge key="st" status={selected.status} type="deployment" />],
+              ["Trigger", <span key="trig" className="text-text">{selected.trigger}</span>],
+              ["Started", <span key="started" className="text-text">{formatDate(selected.startedAt)}</span>],
+              ["Completed", <span key="done" className="text-text">{formatDate(selected.completedAt)}</span>],
+              ...(selected.commit ? [["Commit", <span key="commit" className="font-mono text-text">{selected.commit}</span>] as [string, ReactNode]] : []),
+              ...(selected.commitMessage ? [["Message", <span key="msg" className="text-text">{selected.commitMessage}</span>] as [string, ReactNode]] : []),
+            ]} />
             {selected.error && (
-              <div className="rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-300">
+              <div className="rounded-lg border border-danger-line bg-danger-subtle p-3 text-sm text-danger">
                 {selected.error}
               </div>
             )}
             {selected.log && (
               <div>
-                <p className="mb-2 text-xs font-semibold text-slate-400">Build/Deploy Log</p>
-                <pre className="max-h-48 overflow-y-auto rounded-lg border border-white/[0.06] bg-[var(--canvas)] p-3 font-mono text-xs text-slate-400 whitespace-pre-wrap">
+                <p className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-text-subtle">Build/Deploy Log</p>
+                <pre className="max-h-48 overflow-y-auto rounded-lg border border-line bg-[var(--canvas)] p-3 font-mono text-xs text-text-subtle whitespace-pre-wrap">
                   {selected.log}
                 </pre>
               </div>
@@ -401,7 +439,7 @@ function ConfigurationTab({ app, id }: { app: ApiAppDetail; id: string }) {
       diskLimit: disk,
     }),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["app", id] });
+      void qc.invalidateQueries({ queryKey: queryKeys.apps.detail(id) });
     },
     onError: (error) => toast({ tone: "error", title: "Update failed", message: error instanceof Error ? error.message : "Failed to update app configuration" }),
   });
@@ -454,7 +492,7 @@ function ConfigurationTab({ app, id }: { app: ApiAppDetail; id: string }) {
         </Btn>
       </div>
       {updateMut.error && (
-        <div className="rounded-lg border border-red-500/20 bg-red-950/10 p-3 text-sm text-red-300">
+        <div className="rounded-lg border border-danger-line bg-danger-subtle p-3 text-sm text-danger">
           {updateMut.error.message}
         </div>
       )}
@@ -557,7 +595,7 @@ function ConsoleTab({ app }: { app: ApiAppDetail }) {
         icon={Terminal}
         action={
           <div className="flex items-center gap-2">
-            <span className={cn("h-2 w-2 rounded-full", connected ? "bg-emerald-500" : "bg-red-500")} />
+            <span className={cn("h-2 w-2 rounded-full", connected ? "bg-ok" : "bg-danger")} />
             <Btn size="sm" tone={connected ? "ghost" : "primary"} onClick={connect}>
               {connected ? "Reconnect" : "Connect"}
             </Btn>
@@ -567,10 +605,10 @@ function ConsoleTab({ app }: { app: ApiAppDetail }) {
       <div className="p-4 space-y-3">
         <div
           ref={terminalRef}
-          className="h-96 overflow-y-auto rounded-lg border border-white/[0.06] bg-[var(--canvas)] p-3 font-mono text-xs text-slate-300"
+          className="h-96 overflow-y-auto rounded-lg border border-line bg-[var(--canvas)] p-3 font-mono text-xs text-text-subtle"
         >
           {output.length === 0 ? (
-            <div className="py-8 text-center text-slate-500">
+            <div className="py-8 text-center text-text-muted">
               {connected ? "Waiting for output..." : "Click Connect to start the console session."}
             </div>
           ) : (
@@ -583,7 +621,7 @@ function ConsoleTab({ app }: { app: ApiAppDetail }) {
         </div>
         <form onSubmit={send} className="flex gap-2">
           <input
-            className="flex-1 h-9 rounded-lg border border-white/10 bg-[var(--surface-input)] px-3 font-mono text-xs text-slate-100 outline-none"
+            className="flex-1 h-9 rounded-lg border border-line bg-[var(--surface-input)] px-3 font-mono text-xs text-text outline-none"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Type a command..."
@@ -611,7 +649,11 @@ function DomainsTab({ appId }: { appId: string }) {
   const [enableTls, setEnableTls] = useState(false);
 
   const addMut = useMutation({
-    mutationFn: () => addAppDomain(appId, newDomain.trim(), enableTls),
+    mutationFn: async () => {
+      const result = await addAppDomain(appId, newDomain.trim(), enableTls);
+      if (!result.ok) throw new Error("The server reported the domain was not added.");
+      return result;
+    },
     onSuccess: () => {
       setNewDomain("");
       setEnableTls(false);
@@ -634,12 +676,12 @@ function DomainsTab({ appId }: { appId: string }) {
           <div className="flex-1 min-w-[200px]">
             <Input label="New Domain" value={newDomain} onChange={setNewDomain} placeholder="example.com" />
           </div>
-          <label className="flex items-center gap-2 text-xs text-slate-400 pb-2">
+          <label className="flex items-center gap-2 text-xs text-text-subtle pb-2">
             <input
               type="checkbox"
               checked={enableTls}
               onChange={(e) => setEnableTls(e.target.checked)}
-              className="h-3 w-3 rounded border-white/20 bg-[var(--surface-input)] accent-[#dc2626]"
+              className="h-3 w-3 rounded border-line bg-[var(--surface-input)] accent-[var(--brand)]"
             />
             Enable TLS
           </label>
@@ -648,27 +690,27 @@ function DomainsTab({ appId }: { appId: string }) {
           </Btn>
         </div>
         {addMut.error && (
-          <div className="px-4 pb-3 text-sm text-red-400">{addMut.error.message}</div>
+          <div className="px-4 pb-3 text-sm text-danger">{addMut.error.message}</div>
         )}
         {isLoading ? (
-          <div className="p-8 text-center text-sm text-slate-500">Loading domains...</div>
+          <div className="p-8 text-center text-sm text-text-muted">Loading domains...</div>
         ) : !Array.isArray(domains) || domains.length === 0 ? (
           <EmptyState icon={Globe} message="No domains configured." />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-white/[0.06] text-left text-[10px] uppercase tracking-widest text-slate-500">
+                <tr className="border-b border-line text-left text-[10px] uppercase tracking-widest text-text-muted">
                   <th className="px-4 py-3">Domain</th>
                   <th className="px-4 py-3">SSL</th>
                   <th className="px-4 py-3">Added</th>
                   <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-white/[0.04]">
+              <tbody className="divide-y divide-line">
                 {Array.isArray(domains) && domains.map((d) => (
                   <tr key={d.id}>
-                    <td className="px-4 py-3 font-mono text-xs text-slate-200">{d.domain}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-text">{d.domain}</td>
                     <td className="px-4 py-3">
                       {d.ssl ? (
                         <Pill tone={d.sslStatus === "active" ? "green" : d.sslStatus === "failed" ? "red" : "yellow"}>
@@ -678,7 +720,7 @@ function DomainsTab({ appId }: { appId: string }) {
                         <Pill tone="neutral">none</Pill>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-500">{formatDate(d.createdAt)}</td>
+                    <td className="px-4 py-3 text-xs text-text-muted">{formatDate(d.createdAt)}</td>
                     <td className="px-4 py-3 text-right">
                       <Btn tone="danger" size="sm" onClick={() => { void (async () => { if (await confirm({ title: `Remove ${d.domain}?`, description: "The domain will stop routing to this app. This cannot be undone.", danger: true, confirmLabel: "Remove" })) deleteMut.mutate(d.id); })(); }}>
                         Remove
@@ -708,13 +750,21 @@ function BackupsTab({ appId }: { appId: string }) {
   const backups = useMemo(() => backupsRaw ?? [], [backupsRaw]);
 
   const createMut = useMutation({
-    mutationFn: () => createAppBackup(appId),
+    mutationFn: async () => {
+      const result = await createAppBackup(appId);
+      if (!result.ok) throw new Error("The server reported the backup was not created.");
+      return result;
+    },
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["app-backups", appId] }),
     onError: (error) => toast({ tone: "error", title: "Backup failed", message: error instanceof Error ? error.message : "Failed to create backup" }),
   });
 
   const restoreMut = useMutation({
-    mutationFn: (backupId: string) => restoreAppBackup(appId, backupId),
+    mutationFn: async (backupId: string) => {
+      const result = await restoreAppBackup(appId, backupId);
+      if (!result.ok) throw new Error("The server reported the backup restore did not complete.");
+      return result;
+    },
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["app-backups", appId] }),
     onError: (error) => toast({ tone: "error", title: "Restore failed", message: error instanceof Error ? error.message : "Failed to restore backup" }),
   });
@@ -736,14 +786,14 @@ function BackupsTab({ appId }: { appId: string }) {
       <Card>
         <CardHeader title={`${(Array.isArray(backups) ? backups : []).length} backup${(Array.isArray(backups) ? backups : []).length === 1 ? "" : "s"}`} icon={Database} />
         {isLoading ? (
-          <div className="p-8 text-center text-sm text-slate-500">Loading backups...</div>
+          <div className="p-8 text-center text-sm text-text-muted">Loading backups...</div>
         ) : !Array.isArray(backups) || backups.length === 0 ? (
           <EmptyState icon={Database} message="No backups yet." />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-white/[0.06] text-left text-[10px] uppercase tracking-widest text-slate-500">
+                <tr className="border-b border-line text-left text-[10px] uppercase tracking-widest text-text-muted">
                   <th className="px-4 py-3">Name</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3">Size</th>
@@ -751,10 +801,10 @@ function BackupsTab({ appId }: { appId: string }) {
                   <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-white/[0.04]">
+              <tbody className="divide-y divide-line">
                 {Array.isArray(backups) && backups.map((b) => (
                   <tr key={b.id}>
-                    <td className="px-4 py-3 font-mono text-xs text-slate-200">{b.name}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-text">{b.name}</td>
                     <td className="px-4 py-3">
                       <Pill
                         tone={b.status === "completed" ? "green" : b.status === "failed" ? "red" : b.status === "creating" || b.status === "restoring" ? "blue" : "neutral"}
@@ -762,10 +812,10 @@ function BackupsTab({ appId }: { appId: string }) {
                         {b.status}
                       </Pill>
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-400">
+                    <td className="px-4 py-3 text-xs text-text-subtle">
                       {b.size ? formatBytes(b.size) : "—"}
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-500">{formatDate(b.createdAt)}</td>
+                    <td className="px-4 py-3 text-xs text-text-muted">{formatDate(b.createdAt)}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
                         <Btn

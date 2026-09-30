@@ -4,7 +4,7 @@ import { useState, use, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import {
-  ArrowLeft, History, RotateCcw, RefreshCw, XCircle, Eye,
+  History, RotateCcw, RefreshCw, XCircle, Eye,
 } from "lucide-react";
 import {
   fetchApp, fetchAppDeployments,
@@ -21,6 +21,7 @@ import { RevisionCompare } from "@/components/app/revision-compare";
 import { RollbackConfirm } from "@/components/app/rollback-confirm";
 import type { RollbackChange } from "@/components/app/rollback-confirm";
 import { formatDate } from "@/lib/utils";
+import { useBreadcrumbLabel } from "@/lib/nav/breadcrumb-context";
 
 export default function AppDeploymentsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -67,6 +68,11 @@ export default function AppDeploymentsPage({ params }: { params: Promise<{ id: s
 
   const deployments = useMemo(() => deploymentsQuery.data ?? [], [deploymentsQuery.data]);
   const app = appQuery.data;
+  // The shell renders the one breadcrumb trail; this names its id crumb so
+  // it reads as the app rather than a bare uuid. Before the name loads the
+  // crumb keeps the id — it does not flash a placeholder.
+  useBreadcrumbLabel(id, app?.name ?? null);
+
   const inProgress = useMemo(() => Array.isArray(deployments) ? deployments.filter(
     (d) => d.status === "pending" || d.status === "running",
   ) : [], [deployments]);
@@ -82,33 +88,32 @@ export default function AppDeploymentsPage({ params }: { params: Promise<{ id: s
     }
     changes.push({
       field: "revision",
-      oldValue: `#${dep.revision}`,
-      newValue: `#${dep.revision - 1}`,
+      oldValue: `#${dep.revision ?? "?"}`,
+      newValue: `#${(dep.revision ?? 0) - 1}`,
     });
     return changes;
   };
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <Btn tone="ghost" size="sm" onClick={() => router.push(`/admin/apps/${id}`)}>
-          <ArrowLeft size={14} />
-        </Btn>
-        <SectionHeader
-          title="Deployments"
-          sub={app ? `${app.name} - ${(Array.isArray(deployments) ? deployments : []).length} total` : "Loading..."}
-        />
-        <div className="ml-auto flex gap-2">
-          <Btn tone="ghost" size="sm" onClick={() => setShowCompare(!showCompare)}>
-            <Eye size={12} />
-            Compare Revisions
-          </Btn>
-          <Btn size="sm" onClick={() => deploymentsQuery.refetch()}>
-            <RefreshCw size={12} className={deploymentsQuery.isRefetching ? "animate-spin" : ""} />
-            Refresh
-          </Btn>
-        </div>
-      </div>
+      <SectionHeader
+        title="Deployments"
+        sub={app ? `${app.name} · ${(Array.isArray(deployments) ? deployments : []).length} total` : "Loading..."}
+        backAction={() => router.push(`/admin/apps/${id}`)}
+        backLabel={app?.name ?? "App"}
+        action={
+          <div className="flex items-center gap-2">
+            <Btn tone="ghost" size="sm" onClick={() => setShowCompare(!showCompare)}>
+              <Eye size={12} />
+              Compare Revisions
+            </Btn>
+            <Btn size="sm" onClick={() => deploymentsQuery.refetch()}>
+              <RefreshCw size={12} className={deploymentsQuery.isRefetching ? "animate-spin" : ""} />
+              Refresh
+            </Btn>
+          </div>
+        }
+      />
 
       {Array.isArray(inProgress) && inProgress.length > 0 && (
         <Card>
@@ -297,7 +302,7 @@ export default function AppDeploymentsPage({ params }: { params: Promise<{ id: s
 
       {showRollback && (
         <RollbackConfirm
-          revisionNumber={showRollback.revision}
+          revisionNumber={showRollback.revision ?? 0}
           changes={buildRollbackChanges(showRollback)}
           estimatedDowntime="30-60 seconds"
           onConfirm={handleRollbackConfirm}

@@ -1,4 +1,4 @@
-import { fetchJSON, postJSON, putJSON, deleteJSON, API_BASE_URL } from './http';
+import { fetchJSON, postJSON, putJSON, deleteJSON, requestBlob } from './http';
 
 export interface Certificate {
   id: string;
@@ -70,16 +70,55 @@ export function uploadCertificate(cert: string, key: string, chain?: string): Pr
   return postJSON<Certificate>('/certificates/upload', { certificate: cert, privateKey: key, chain });
 }
 
-export async function downloadCertificate(id: string): Promise<Blob> {
-  const response = await fetch(`${API_BASE_URL}/certificates/${encodeURIComponent(id)}/download`, {
-    credentials: 'include',
-  });
-  if (!response.ok) {
-    throw new Error(`download failed: ${response.status}`);
-  }
-  return response.blob();
+export function downloadCertificate(id: string): Promise<Blob> {
+  return requestBlob(`/certificates/${encodeURIComponent(id)}/download`);
 }
 
 export function exportCertificate(id: string): Promise<{ certificate: string; privateKey: string }> {
   return postJSON<{ certificate: string; privateKey: string }>(`/certificates/${encodeURIComponent(id)}/export`);
+}
+
+// ---- Certificate inventory + ACME issuance (POST /certificates/issue, etc.) ----
+
+export type IssueCertificateRequest = {
+  domains: string[];
+  provider?: string;
+  email?: string;
+  challengeType?: "http-01" | "dns-01" | "tls-alpn-01";
+  dnsProvider?: string;
+  dnsCredentials?: Record<string, string>;
+  autoRenew?: boolean;
+};
+
+export function listCertificates(params?: {
+  provider?: string;
+  status?: string;
+  wildcard?: boolean;
+  limit?: number;
+  offset?: number;
+}): Promise<Certificate[]> {
+  const query = new URLSearchParams();
+  if (params?.provider) query.set("provider", params.provider);
+  if (params?.status) query.set("status", params.status);
+  if (params?.wildcard !== undefined) query.set("wildcard", String(params.wildcard));
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  if (params?.offset !== undefined) query.set("offset", String(params.offset));
+  const qs = query.toString();
+  return fetchJSON<{ data: Certificate[] }>(`/certificates${qs ? `?${qs}` : ""}`).then((r) => r.data ?? []);
+}
+
+export function getCertificate(id: string): Promise<Certificate> {
+  return fetchJSON<{ data: Certificate }>(`/certificates/${encodeURIComponent(id)}`).then((r) => r.data);
+}
+
+export function issueCertificate(req: IssueCertificateRequest): Promise<Certificate> {
+  return postJSON<{ data: Certificate }>("/certificates/issue", req).then((r) => r.data);
+}
+
+export function deleteCertificate(id: string): Promise<void> {
+  return deleteJSON<void>(`/certificates/${encodeURIComponent(id)}`);
+}
+
+export function renewCertificate(id: string): Promise<Certificate> {
+  return postJSON<{ data: Certificate }>(`/certificates/${encodeURIComponent(id)}/renew`, {}).then((r) => r.data);
 }

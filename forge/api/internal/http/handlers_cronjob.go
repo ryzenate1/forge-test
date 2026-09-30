@@ -25,14 +25,28 @@ func validateCronSchedule(schedule string) error {
 	return nil
 }
 
+// registerCronJobRoutes is layered as handler -> cronjob.Service -> store.
+// Persistence and schedule sync both live in the service (CreateJob/UpdateJob/
+// DeleteJob/ToggleJob); the handlers validate input and translate errors only.
+//
+// Routes are always mounted: an unconfigured backend answers 503, it never
+// 404s. The composition root builds the service exactly when the store exists
+// (and NewServer additionally skips mounting without one), so a nil store
+// here means "cannot do the job", never "pretend it worked".
 func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *cronjobsvc.Service, mutationLimiter fiber.Handler) {
-	protected.Get("/cron-jobs", requireRole("admin"), func(c *fiber.Ctx) error {
+	requireCronStore := func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
+		return nil
+	}
+	protected.Get("/cron-jobs", requireRole("admin"), requireAdminScope("scheduler.read"), func(c *fiber.Ctx) error {
+		if err := requireCronStore(c); err != nil {
+			return err
+		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		jobs, err := cfg.Store.ListCronJobs(ctx)
+		jobs, err := cronJobService.ListJobs(ctx)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
@@ -48,9 +62,9 @@ func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *c
 		return c.JSON(result)
 	})
 
-	protected.Post("/cron-jobs", mutationLimiter, requireRole("admin"), func(c *fiber.Ctx) error {
-		if cfg.Store == nil {
-			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+	protected.Post("/cron-jobs", mutationLimiter, requireRole("admin"), requireAdminScope("scheduler.write"), func(c *fiber.Ctx) error {
+		if err := requireCronStore(c); err != nil {
+			return err
 		}
 		var req struct {
 			Name            string `json:"name" validate:"required"`
@@ -85,7 +99,7 @@ func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *c
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		job, err := cfg.Store.CreateCronJob(ctx, store.CreateCronJobRequest{
+		job, err := cronJobService.CreateJob(ctx, store.CreateCronJobRequest{
 			Name:            req.Name,
 			Description:     req.Description,
 			Schedule:        req.Schedule,
@@ -101,28 +115,25 @@ func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *c
 		if err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
-		if err := cronJobService.RescheduleJob(ctx, job); err != nil {
-			return respondInternalError(c, err)
-		}
 		return c.Status(fiber.StatusCreated).JSON(job)
 	})
 
-	protected.Get("/cron-jobs/:id", requireRole("admin"), func(c *fiber.Ctx) error {
-		if cfg.Store == nil {
-			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+	protected.Get("/cron-jobs/:id", requireRole("admin"), requireAdminScope("scheduler.read"), func(c *fiber.Ctx) error {
+		if err := requireCronStore(c); err != nil {
+			return err
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		job, err := cfg.Store.GetCronJob(ctx, c.Params("id"))
+		job, err := cronJobService.GetJob(ctx, c.Params("id"))
 		if err != nil {
 			return fiber.NewError(fiber.StatusNotFound, "cron job not found")
 		}
 		return c.JSON(job)
 	})
 
-	protected.Put("/cron-jobs/:id", mutationLimiter, requireRole("admin"), func(c *fiber.Ctx) error {
-		if cfg.Store == nil {
-			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+	protected.Put("/cron-jobs/:id", mutationLimiter, requireRole("admin"), requireAdminScope("scheduler.write"), func(c *fiber.Ctx) error {
+		if err := requireCronStore(c); err != nil {
+			return err
 		}
 		var req struct {
 			Name            *string `json:"name"`
@@ -150,7 +161,7 @@ func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *c
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		job, err := cfg.Store.UpdateCronJob(ctx, c.Params("id"), store.UpdateCronJobRequest{
+		job, err := cronJobService.UpdateJob(ctx, c.Params("id"), store.UpdateCronJobRequest{
 			Name:            req.Name,
 			Description:     req.Description,
 			Schedule:        req.Schedule,
@@ -166,28 +177,24 @@ func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *c
 		if err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
-		if err := cronJobService.RescheduleJob(ctx, job); err != nil {
-			return respondInternalError(c, err)
-		}
 		return c.JSON(job)
 	})
 
-	protected.Delete("/cron-jobs/:id", mutationLimiter, requireRole("admin"), func(c *fiber.Ctx) error {
-		if cfg.Store == nil {
-			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+	protected.Delete("/cron-jobs/:id", mutationLimiter, requireRole("admin"), requireAdminScope("scheduler.write"), func(c *fiber.Ctx) error {
+		if err := requireCronStore(c); err != nil {
+			return err
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		cronJobService.RescheduleJob(ctx, store.CronJob{ID: c.Params("id"), Enabled: false})
-		if err := cfg.Store.DeleteCronJob(ctx, c.Params("id")); err != nil {
+		if err := cronJobService.DeleteJob(ctx, c.Params("id")); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 
-	protected.Post("/cron-jobs/:id/execute", mutationLimiter, requireRole("admin"), func(c *fiber.Ctx) error {
-		if cfg.Store == nil {
-			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+	protected.Post("/cron-jobs/:id/execute", mutationLimiter, requireRole("admin"), requireAdminScope("scheduler.write"), func(c *fiber.Ctx) error {
+		if err := requireCronStore(c); err != nil {
+			return err
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
@@ -198,30 +205,37 @@ func registerCronJobRoutes(protected fiber.Router, cfg Config, cronJobService *c
 		return c.JSON(execution)
 	})
 
-	protected.Post("/cron-jobs/:id/toggle", mutationLimiter, requireRole("admin"), func(c *fiber.Ctx) error {
-		if cfg.Store == nil {
-			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+	protected.Post("/cron-jobs/:id/toggle", mutationLimiter, requireRole("admin"), requireAdminScope("scheduler.write"), func(c *fiber.Ctx) error {
+		if err := requireCronStore(c); err != nil {
+			return err
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		job, err := cfg.Store.ToggleCronJob(ctx, c.Params("id"))
+		job, err := cronJobService.ToggleJob(ctx, c.Params("id"))
 		if err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
-		}
-		if err := cronJobService.RescheduleJob(ctx, job); err != nil {
-			return respondInternalError(c, err)
 		}
 		return c.JSON(job)
 	})
 
-	protected.Get("/cron-jobs/:id/executions", requireRole("admin"), func(c *fiber.Ctx) error {
-		if cfg.Store == nil {
-			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+	protected.Get("/cron-jobs/:id/executions", requireRole("admin"), requireAdminScope("scheduler.read"), func(c *fiber.Ctx) error {
+		if err := requireCronStore(c); err != nil {
+			return err
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		limit, _ := strconv.Atoi(c.Query("limit", "50"))
-		executions, err := cfg.Store.ListCronJobExecutions(ctx, c.Params("id"), limit)
+		limit := 50
+		if raw := strings.TrimSpace(c.Query("limit", "")); raw != "" {
+			n, err := strconv.Atoi(raw)
+			if err != nil || n < 1 {
+				return fiber.NewError(fiber.StatusBadRequest, "limit must be a positive integer")
+			}
+			if n > 500 {
+				n = 500
+			}
+			limit = n
+		}
+		executions, err := cronJobService.ListExecutions(ctx, c.Params("id"), limit)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}

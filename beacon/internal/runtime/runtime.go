@@ -110,6 +110,13 @@ type Stats struct {
 	MemoryLimit    uint64  `json:"memoryLimit"`
 	NetworkRxBytes uint64  `json:"networkRxBytes"`
 	NetworkTxBytes uint64  `json:"networkTxBytes"`
+	// NetworkKnown reports whether the engine actually measured the network
+	// counters above. A false value means "not reported", and the two byte
+	// fields must be rendered as unknown rather than as zero traffic: engines
+	// with no network accounting (containerd cgroup metrics) leave it false,
+	// while engines that read a network namespace set it true even when the
+	// counters come back at zero.
+	NetworkKnown bool `json:"networkKnown"`
 }
 
 type InstallRequest struct {
@@ -164,6 +171,14 @@ type Runtime interface {
 
 type Pinger interface {
 	Ping(ctx context.Context) error
+}
+
+// Availability is an optional capability implemented by runtimes that can say
+// whether they are backed by a live engine. Mock and degraded runtimes report
+// false so health, readiness, and metrics tell the truth instead of advertising
+// a runtime that rejects every workload operation.
+type Availability interface {
+	Available() bool
 }
 
 type ConsoleSession interface {

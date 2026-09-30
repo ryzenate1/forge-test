@@ -4,8 +4,10 @@ import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Trash2, RefreshCw, Plus, Eraser } from "lucide-react";
 import { listVolumes, createVolume, deleteVolume, pruneVolumes, type DockerVolume } from "@/lib/api/docker";
+import { NodeSelect } from "@/components/docker/node-select";
 import { Btn, Card, EmptyState, Input, Modal, ModalFooter, AdminLoadingState } from "@/components/admin/admin-ui";
 import { ConfirmDialog, Alert, Pagination } from "@/components/ui/primitives";
+import { useToast } from "@/components/ui/toast";
 
 function formatDate(ts: string): string {
   if (!ts) return "";
@@ -18,6 +20,7 @@ function formatDate(ts: string): string {
 
 export function VolumesView() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<DockerVolume | null>(null);
@@ -34,19 +37,21 @@ export function VolumesView() {
   const volumes = useMemo(() => Array.isArray(volumesQuery.data) ? volumesQuery.data : [], [volumesQuery.data]);
 
   const createMut = useMutation({
-    mutationFn: (data: { name: string; driver: string }) =>
-      createVolume({ name: data.name, driver: data.driver || undefined }),
+    mutationFn: (data: { name: string; driver: string; nodeId: string }) =>
+      createVolume({ name: data.name, driver: data.driver || undefined, nodeId: data.nodeId }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["docker", "volumes"] }); setShowCreate(false); },
   });
 
   const deleteMut = useMutation({
     mutationFn: ({ id, nodeId }: { id: string; nodeId: string }) => deleteVolume(id, nodeId),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["docker", "volumes"] }); setDeleteTarget(null); },
+    onError: (err) => toast({ tone: "error", title: "Failed to delete volume", message: err instanceof Error ? err.message : "An error occurred" }),
   });
 
   const pruneMut = useMutation({
     mutationFn: () => pruneVolumes(),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["docker", "volumes"] }); setShowPruneConfirm(false); },
+    onError: (err) => toast({ tone: "error", title: "Failed to prune unused volumes", message: err instanceof Error ? err.message : "An error occurred" }),
   });
 
   const filtered = useMemo(
@@ -160,17 +165,19 @@ export function VolumesView() {
   );
 }
 
-function CreateVolumeModal({ onClose, onCreate, loading, error }: { onClose: () => void; onCreate: (data: { name: string; driver: string }) => void; loading: boolean; error?: string }) {
+function CreateVolumeModal({ onClose, onCreate, loading, error }: { onClose: () => void; onCreate: (data: { name: string; driver: string; nodeId: string }) => void; loading: boolean; error?: string }) {
   const [name, setName] = useState("");
   const [driver, setDriver] = useState("local");
+  const [nodeId, setNodeId] = useState("");
 
   return (
     <Modal onClose={onClose} title="Create Volume">
       <div className="space-y-4">
         {error && <Alert tone="error" title="Create failed">{error}</Alert>}
         <Input label="Volume Name *" placeholder="my-volume" value={name} onChange={setName} />
+        <NodeSelect value={nodeId} onChange={setNodeId} />
         <div>
-          <label className="mb-1.5 block text-sm font-medium text-slate-300">Driver</label>
+          <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-400">Driver</label>
           <select className="ui-input" value={driver} onChange={(e) => setDriver(e.target.value)}>
             <option value="local">local</option>
             <option value="nfs">nfs</option>
@@ -179,9 +186,9 @@ function CreateVolumeModal({ onClose, onCreate, loading, error }: { onClose: () 
         </div>
         <ModalFooter
           onCancel={onClose}
-          onConfirm={() => onCreate({ name, driver })}
+          onConfirm={() => onCreate({ name, driver, nodeId })}
           confirmLabel={loading ? "Creating..." : "Create"}
-          disabled={!name || loading}
+          disabled={!name || !nodeId || loading}
         />
       </div>
     </Modal>

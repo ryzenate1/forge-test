@@ -1,6 +1,7 @@
 package http
 
 import (
+	"fmt"
 	"strings"
 
 	"gamepanel/forge/internal/services/onboarding"
@@ -31,15 +32,24 @@ func onboardingStatusHandler(svc *onboarding.Service) fiber.Handler {
 }
 
 // GET /api/v1/onboarding/repos — repository autocomplete listing.
+// Requires ?providerTokenId= (legacy ?providerId= accepted as an alias).
+// No default token is ever picked: an ambiguous target is rejected with 400.
 func onboardingReposHandler(svc *onboarding.Service) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		claims, err := currentClaims(c)
 		if err != nil {
 			return err
 		}
+		tokenID := c.Query("providerTokenId")
+		if tokenID == "" {
+			tokenID = c.Query("providerId")
+		}
+		if tokenID == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "providerTokenId is required")
+		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		repos, err := svc.ListRepos(ctx, claims.Sub, c.Query("providerId"))
+		repos, err := svc.ListRepos(ctx, claims.Sub, tokenID)
 		if err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
@@ -61,9 +71,16 @@ func onboardingBranchesHandler(svc *onboarding.Service) fiber.Handler {
 		if repo == "" {
 			return fiber.NewError(fiber.StatusBadRequest, "repo is required")
 		}
+		tokenID := c.Query("providerTokenId")
+		if tokenID == "" {
+			tokenID = c.Query("providerId")
+		}
+		if tokenID == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "providerTokenId is required")
+		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		branches, err := svc.ListBranches(ctx, claims.Sub, c.Query("providerId"), repo)
+		branches, err := svc.ListBranches(ctx, claims.Sub, tokenID, repo)
 		if err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
@@ -137,4 +154,26 @@ func ideFilesHandler(svc *onboarding.Service) fiber.Handler {
 		}
 		return c.JSON(fiber.Map{"data": sources})
 	}
+}
+
+func init() {
+	RegisterPhaseRegistrar("phase8-onboarding", 170, registerPhase8OnboardingRoutes)
+}
+
+func registerPhase8OnboardingRoutes(v1 fiber.Router, protected fiber.Router, cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("%w: nil config, onboarding routes not mounted", ErrPhaseSkipped)
+	}
+	svc := cfg.OnboardingService
+	if svc == nil {
+		return fmt.Errorf("%w: onboarding service not configured, wizard and /ide/files not mounted", ErrPhaseSkipped)
+	}
+	wizard := v1.Group("/onboarding", authMiddleware(cfg.AuthSecret, cfg.Store))
+	wizard.Get("/status", onboardingStatusHandler(svc))
+	wizard.Get("/repos", onboardingReposHandler(svc))
+	wizard.Get("/repos/:repo/branches", onboardingBranchesHandler(svc))
+	wizard.Post("/connect", onboardingConnectHandler(svc))
+	wizard.Post("/deploy", onboardingDeployHandler(svc))
+	v1.Get("/ide/files", authMiddleware(cfg.AuthSecret, cfg.Store), ideFilesHandler(svc))
+	return nil
 }

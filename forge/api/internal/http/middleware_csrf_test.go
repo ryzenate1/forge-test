@@ -13,8 +13,14 @@ import (
 
 // csrfTestApp builds a bare fiber app with the CSRF middleware enabled for
 // cookie-session-authenticated requests, mirroring how the real server wires
-// csrfMiddleware after authMiddleware sets the authSource local.
-func csrfTestApp(cfg SessionCookieConfig, panelOrigin string) *fiber.App {
+// csrfMiddleware after authMiddleware sets the authSource local. The helper
+// pins SESSION_COOKIE_SECURE=false so the global session-cookie lookup agrees
+// with the insecure cookie names the tests send (matching
+// SessionCookieConfig{Secure: false}); without this the lookup defaults to
+// the __Host- names and every request fails before reaching the CSRF checks.
+func csrfTestApp(t *testing.T, secret string, cfg SessionCookieConfig, panelOrigin string) *fiber.App {
+	t.Helper()
+	t.Setenv("SESSION_COOKIE_SECURE", "false")
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	app.Use(func(c *fiber.Ctx) error {
 		c.Locals("authSource", authSourceCookieSession)
@@ -22,7 +28,7 @@ func csrfTestApp(cfg SessionCookieConfig, panelOrigin string) *fiber.App {
 			c.Locals("panelOrigin", panelOrigin)
 		}
 		return c.Next()
-	}, csrfMiddleware(cfg))
+	}, csrfMiddleware(secret, cfg))
 	app.Post("/mutate", func(c *fiber.Ctx) error { return c.SendStatus(fiber.StatusNoContent) })
 	app.Put("/mutate", func(c *fiber.Ctx) error { return c.SendStatus(fiber.StatusNoContent) })
 	app.Patch("/mutate", func(c *fiber.Ctx) error { return c.SendStatus(fiber.StatusNoContent) })
@@ -31,6 +37,22 @@ func csrfTestApp(cfg SessionCookieConfig, panelOrigin string) *fiber.App {
 	app.Head("/safe", func(c *fiber.Ctx) error { return c.SendStatus(fiber.StatusNoContent) })
 	app.Options("/safe", func(c *fiber.Ctx) error { return c.SendStatus(fiber.StatusNoContent) })
 	return app
+}
+
+const csrfTestSecret = "test-csrf-binding-secret"
+
+// csrfSessionCookies builds the Cookie header for a session plus its bound
+// CSRF token (insecure names, matching SessionCookieConfig{Secure: false}).
+func csrfSessionCookies(session, csrf string) string {
+	cookies := "forge_session=" + session
+	if csrf != "" {
+		cookies += "; forge_csrf=" + csrf
+	}
+	return cookies
+}
+
+func csrfBoundToken(session string) string {
+	return deriveSessionCSRFToken(csrfTestSecret, session)
 }
 
 func csrfTestRequest(t *testing.T, app *fiber.App, method, path, cookie, header, origin, fetchSite string) (*http.Response, string) {
@@ -61,23 +83,23 @@ func csrfTestRequest(t *testing.T, app *fiber.App, method, path, cookie, header,
 }
 
 func TestCSRFMiddleware_RejectsMutationWithoutCookie(t *testing.T) {
-	app := csrfTestApp(SessionCookieConfig{Secure: false}, "")
+	app := csrfTestApp(t, csrfTestSecret, SessionCookieConfig{Secure: false}, "")
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		t.Run(method, func(t *testing.T) {
 			res, body := csrfTestRequest(t, app, method, "/mutate", "", "", "", "")
 			if res.StatusCode != http.StatusForbidden {
 				t.Fatalf("%s without CSRF cookie returned %d, want 403", method, res.StatusCode)
 			}
-			if !strings.Contains(body, "missing CSRF cookie") {
-				t.Fatalf("expected missing-cookie error, got: %s", body)
+			if !strings.Contains(body, "missing session") {
+				t.Fatalf("expected missing-session error, got: %s", body)
 			}
 		})
 	}
 }
 
 func TestCSRFMiddleware_RejectsMutationWithoutHeader(t *testing.T) {
-	app := csrfTestApp(SessionCookieConfig{Secure: false}, "")
-	res, body := csrfTestRequest(t, app, http.MethodPost, "/mutate", "forge_csrf=abc123", "", "", "")
+	app := csrfTestApp(t, csrfTestSecret, SessionCookieConfig{Secure: false}, "")
+	res, body := csrfTestRequest(t, app, http.MethodPost, "/mutate", csrfSessionCookies("sess-1", csrfBoundToken("sess-1")), "", "", "")
 	if res.StatusCode != http.StatusForbidden {
 		t.Fatalf("POST with cookie but no header returned %d, want 403", res.StatusCode)
 	}
@@ -87,8 +109,8 @@ func TestCSRFMiddleware_RejectsMutationWithoutHeader(t *testing.T) {
 }
 
 func TestCSRFMiddleware_RejectsMismatchedToken(t *testing.T) {
-	app := csrfTestApp(SessionCookieConfig{Secure: false}, "")
-	res, body := csrfTestRequest(t, app, http.MethodPost, "/mutate", "forge_csrf=abc123", "different-token", "", "")
+	app := csrfTestApp(t, csrfTestSecret, SessionCookieConfig{Secure: false}, "")
+	res, body := csrfTestRequest(t, app, http.MethodPost, "/mutate", csrfSessionCookies("sess-1", "abc123"), "different-token", "", "")
 	if res.StatusCode != http.StatusForbidden {
 		t.Fatalf("POST with mismatched tokens returned %d, want 403", res.StatusCode)
 	}
@@ -97,11 +119,26 @@ func TestCSRFMiddleware_RejectsMismatchedToken(t *testing.T) {
 	}
 }
 
+// TestCSRFMiddleware_RejectsUnboundToken pins the session binding: a
+// cookie/header pair that agrees with itself but was not derived from the
+// presented session must be rejected, otherwise a token fixed or stolen for
+// another session would validate.
+func TestCSRFMiddleware_RejectsUnboundToken(t *testing.T) {
+	app := csrfTestApp(t, csrfTestSecret, SessionCookieConfig{Secure: false}, "")
+	res, body := csrfTestRequest(t, app, http.MethodPost, "/mutate", csrfSessionCookies("sess-1", csrfBoundToken("other-session")), csrfBoundToken("other-session"), "", "")
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST with foreign-session token returned %d, want 403", res.StatusCode)
+	}
+	if !strings.Contains(body, "invalid CSRF token") {
+		t.Fatalf("expected invalid-token error, got: %s", body)
+	}
+}
+
 func TestCSRFMiddleware_PassesWithMatchingToken(t *testing.T) {
-	app := csrfTestApp(SessionCookieConfig{Secure: false}, "")
+	app := csrfTestApp(t, csrfTestSecret, SessionCookieConfig{Secure: false}, "")
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		t.Run(method, func(t *testing.T) {
-			res, body := csrfTestRequest(t, app, method, "/mutate", "forge_csrf=abc123", "abc123", "", "")
+			res, body := csrfTestRequest(t, app, method, "/mutate", csrfSessionCookies("sess-1", csrfBoundToken("sess-1")), csrfBoundToken("sess-1"), "", "")
 			if res.StatusCode != http.StatusNoContent {
 				t.Fatalf("%s with matching tokens returned %d, want 204: %s", method, res.StatusCode, body)
 			}
@@ -110,7 +147,7 @@ func TestCSRFMiddleware_PassesWithMatchingToken(t *testing.T) {
 }
 
 func TestCSRFMiddleware_ExemptsSafeMethods(t *testing.T) {
-	app := csrfTestApp(SessionCookieConfig{Secure: false}, "")
+	app := csrfTestApp(t, csrfTestSecret, SessionCookieConfig{Secure: false}, "")
 	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
 		t.Run(method, func(t *testing.T) {
 			res, body := csrfTestRequest(t, app, method, "/safe", "", "", "", "")
@@ -126,7 +163,7 @@ func TestCSRFMiddleware_SkipsNonCookieSessionAuth(t *testing.T) {
 	app.Use(func(c *fiber.Ctx) error {
 		c.Locals("authSource", authSourceAPIKey)
 		return c.Next()
-	}, csrfMiddleware(SessionCookieConfig{Secure: false}))
+	}, csrfMiddleware(csrfTestSecret, SessionCookieConfig{Secure: false}))
 	app.Post("/mutate", func(c *fiber.Ctx) error { return c.SendStatus(fiber.StatusNoContent) })
 
 	res, body := csrfTestRequest(t, app, http.MethodPost, "/mutate", "", "", "", "")
@@ -137,7 +174,7 @@ func TestCSRFMiddleware_SkipsNonCookieSessionAuth(t *testing.T) {
 
 func TestCSRFMiddleware_OriginEnforcement(t *testing.T) {
 	const panelOrigin = "https://panel.example.com"
-	app := csrfTestApp(SessionCookieConfig{Secure: false}, panelOrigin)
+	app := csrfTestApp(t, csrfTestSecret, SessionCookieConfig{Secure: false}, panelOrigin)
 
 	tests := []struct {
 		name      string
@@ -150,10 +187,17 @@ func TestCSRFMiddleware_OriginEnforcement(t *testing.T) {
 		{name: "cross-origin", origin: "https://evil.example.com", wantCode: http.StatusForbidden, wantBody: "invalid Origin"},
 		{name: "matching origin", origin: panelOrigin, wantCode: http.StatusNoContent},
 		{name: "fetch-site fallback", fetchSite: "same-origin", wantCode: http.StatusNoContent},
+		{name: "fetch-site same-site", fetchSite: "same-site", wantCode: http.StatusNoContent},
+		{name: "fetch-site strict-same-origin", fetchSite: "strict-same-origin", wantCode: http.StatusNoContent},
+		// Regression: the fallback accepted any non-empty Sec-Fetch-Site, so a
+		// request that announced itself as cross-site passed the origin check.
+		{name: "fetch-site cross-site", fetchSite: "cross-site", wantCode: http.StatusForbidden, wantBody: "missing Origin header"},
+		{name: "fetch-site none", fetchSite: "none", wantCode: http.StatusForbidden, wantBody: "missing Origin header"},
+		{name: "fetch-site garbage", fetchSite: "not-a-real-value", wantCode: http.StatusForbidden, wantBody: "missing Origin header"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res, body := csrfTestRequest(t, app, http.MethodPost, "/mutate", "forge_csrf=abc123", "abc123", tt.origin, tt.fetchSite)
+			res, body := csrfTestRequest(t, app, http.MethodPost, "/mutate", csrfSessionCookies("sess-1", csrfBoundToken("sess-1")), csrfBoundToken("sess-1"), tt.origin, tt.fetchSite)
 			if res.StatusCode != tt.wantCode {
 				t.Fatalf("POST returned %d, want %d: %s", res.StatusCode, tt.wantCode, body)
 			}
@@ -214,7 +258,7 @@ func TestSetCSRFCookie_AttributesAndExpiry(t *testing.T) {
 func TestGetCSRFTokenHandler_SetsCookie(t *testing.T) {
 	t.Setenv("SESSION_COOKIE_SECURE", "false")
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
-	app.Get("/csrf", GetCSRFTokenHandler())
+	app.Get("/csrf", GetCSRFTokenHandler(Config{}))
 
 	req := httptest.NewRequest(http.MethodGet, "/csrf", nil)
 	res, err := app.Test(req)
@@ -242,14 +286,14 @@ func TestCSRFMiddleware_SecureCookieName(t *testing.T) {
 }
 
 func TestCSRFMiddleware_DoubleSubmitRoundTrip(t *testing.T) {
-	token, err := GenerateCSRFToken()
-	if err != nil {
-		t.Fatal(err)
+	token := csrfBoundToken("round-trip-session")
+	if token == "" {
+		t.Fatal("bound token must be non-empty")
 	}
-	app := csrfTestApp(SessionCookieConfig{Secure: false}, "")
-	res, body := csrfTestRequest(t, app, http.MethodPost, "/mutate", "forge_csrf="+token, token, "", "")
+	app := csrfTestApp(t, csrfTestSecret, SessionCookieConfig{Secure: false}, "")
+	res, body := csrfTestRequest(t, app, http.MethodPost, "/mutate", csrfSessionCookies("round-trip-session", token), token, "", "")
 	if res.StatusCode != http.StatusNoContent {
-		t.Fatalf("double-submit with freshly generated token returned %d, want 204: %s", res.StatusCode, body)
+		t.Fatalf("double-submit with freshly derived token returned %d, want 204: %s", res.StatusCode, body)
 	}
 	if token == "" || time.Now().IsZero() {
 		t.Fatal("token should be non-empty")

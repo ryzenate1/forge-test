@@ -8,39 +8,39 @@ import (
 )
 
 type AppStoreApp struct {
-	ID             string    `json:"id"`
-	Key            string    `json:"key"`
-	Name           string    `json:"name"`
-	ShortDesc      string    `json:"shortDesc"`
-	Description    string    `json:"description"`
-	Icon           string    `json:"icon"`
-	Category       string    `json:"category"`
-	Tags           []string  `json:"tags"`
-	Version        string    `json:"version"`
-	ComposeContent string    `json:"composeContent"`
-	Params         []byte    `json:"params,omitempty"`
-	MinMemoryMB    int       `json:"minMemoryMb"`
-	MinDiskMB      int       `json:"minDiskMb"`
-	Maintainer     string    `json:"maintainer"`
-	SourceURL      string    `json:"sourceUrl"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	ID             string          `json:"id"`
+	Key            string          `json:"key"`
+	Name           string          `json:"name"`
+	ShortDesc      string          `json:"shortDesc"`
+	Description    string          `json:"description"`
+	Icon           string          `json:"icon"`
+	Category       string          `json:"category"`
+	Tags           []string        `json:"tags"`
+	Version        string          `json:"version"`
+	ComposeContent string          `json:"composeContent"`
+	Params         json.RawMessage `json:"params,omitempty"`
+	MinMemoryMB    int             `json:"minMemoryMb"`
+	MinDiskMB      int             `json:"minDiskMb"`
+	Maintainer     string          `json:"maintainer"`
+	SourceURL      string          `json:"sourceUrl"`
+	CreatedAt      time.Time       `json:"createdAt"`
+	UpdatedAt      time.Time       `json:"updatedAt"`
 }
 
 type AppStoreInstall struct {
-	ID               string    `json:"id"`
-	AppKey           string    `json:"appKey"`
-	AppVersion       string    `json:"appVersion"`
-	ProjectID        string    `json:"projectId"`
-	EnvironmentID    string    `json:"environmentId"`
-	Name             string    `json:"name"`
-	Status           string    `json:"status"`
-	Params           []byte    `json:"params,omitempty"`
-	ComposeContent   string    `json:"composeContent"`
-	ComposeProjectID string    `json:"composeProjectId"`
-	ErrorMessage     string    `json:"errorMessage"`
-	CreatedAt        time.Time `json:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	ID               string          `json:"id"`
+	AppKey           string          `json:"appKey"`
+	AppVersion       string          `json:"appVersion"`
+	ProjectID        string          `json:"projectId"`
+	EnvironmentID    string          `json:"environmentId"`
+	Name             string          `json:"name"`
+	Status           string          `json:"status"`
+	Params           json.RawMessage `json:"params,omitempty"`
+	ComposeContent   string          `json:"composeContent"`
+	ComposeProjectID string          `json:"composeProjectId"`
+	ErrorMessage     string          `json:"errorMessage"`
+	CreatedAt        time.Time       `json:"createdAt"`
+	UpdatedAt        time.Time       `json:"updatedAt"`
 }
 
 func (s *Store) ListAppStoreApps(ctx context.Context, category, search string) ([]AppStoreApp, error) {
@@ -88,13 +88,12 @@ func (s *Store) GetAppStoreApp(ctx context.Context, key string) (*AppStoreApp, e
 }
 
 func (s *Store) UpsertAppStoreApp(ctx context.Context, a *AppStoreApp) error {
-	tagsJSON, err := json.Marshal(a.Tags)
-	if err != nil {
-		tagsJSON = []byte("[]")
-	}
-	_, err = s.db.Exec(ctx, `
+	// `tags` is a text[] column; bind the Go []string directly (pgx encodes it as
+	// a Postgres array). The previous $7::jsonb cast made every upsert fail with
+	// SQLSTATE 42804, so the app-store catalog never populated.
+	_, err := s.db.Exec(ctx, `
 		INSERT INTO app_store_apps (key, name, short_desc, description, icon, category, tags, version, compose_content, params, min_memory_mb, min_disk_mb, maintainer, source_url, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13,$14,NOW(),NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),NOW())
 		ON CONFLICT (key) DO UPDATE SET
 			name=EXCLUDED.name, short_desc=EXCLUDED.short_desc, description=EXCLUDED.description,
 			icon=EXCLUDED.icon, category=EXCLUDED.category, tags=EXCLUDED.tags,
@@ -102,7 +101,7 @@ func (s *Store) UpsertAppStoreApp(ctx context.Context, a *AppStoreApp) error {
 			params=EXCLUDED.params, min_memory_mb=EXCLUDED.min_memory_mb,
 			min_disk_mb=EXCLUDED.min_disk_mb, maintainer=EXCLUDED.maintainer,
 			source_url=EXCLUDED.source_url, updated_at=NOW()
-	`, a.Key, a.Name, a.ShortDesc, a.Description, a.Icon, a.Category, string(tagsJSON), a.Version, a.ComposeContent, a.Params, a.MinMemoryMB, a.MinDiskMB, a.Maintainer, a.SourceURL)
+	`, a.Key, a.Name, a.ShortDesc, a.Description, a.Icon, a.Category, a.Tags, a.Version, a.ComposeContent, a.Params, a.MinMemoryMB, a.MinDiskMB, a.Maintainer, a.SourceURL)
 	return err
 }
 

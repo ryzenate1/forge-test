@@ -20,6 +20,7 @@ import (
 	"gamepanel/forge/internal/daemon"
 	"gamepanel/forge/internal/events"
 	"gamepanel/forge/internal/eventstore"
+	gpruntime "gamepanel/forge/internal/runtime"
 	"gamepanel/forge/internal/services"
 	acmesvc "gamepanel/forge/internal/services/acme"
 	"gamepanel/forge/internal/services/activity"
@@ -29,12 +30,16 @@ import (
 	"gamepanel/forge/internal/services/auditlog"
 	"gamepanel/forge/internal/services/autoscaler"
 	"gamepanel/forge/internal/services/backup"
+	backupenginesvc "gamepanel/forge/internal/services/backupengine"
+	billingsvc "gamepanel/forge/internal/services/billing"
 	"gamepanel/forge/internal/services/build"
 	buildpacksvc "gamepanel/forge/internal/services/buildpack"
+	catalogsvc "gamepanel/forge/internal/services/catalog"
 	cleanupsvc "gamepanel/forge/internal/services/cleanup"
 	"gamepanel/forge/internal/services/clustermanager"
 	"gamepanel/forge/internal/services/clustermembership"
 	composesvc "gamepanel/forge/internal/services/compose"
+	composetemplatessvc "gamepanel/forge/internal/services/composetemplates"
 	"gamepanel/forge/internal/services/crashdetector"
 	cronjobsvc "gamepanel/forge/internal/services/cronjob"
 	"gamepanel/forge/internal/services/crossnode"
@@ -43,47 +48,72 @@ import (
 	"gamepanel/forge/internal/services/deployment"
 	dnssvc "gamepanel/forge/internal/services/dns"
 	"gamepanel/forge/internal/services/domains"
+	domainsenv "gamepanel/forge/internal/services/domainsenv"
+	drainsvc "gamepanel/forge/internal/services/drain"
+	eggseeder "gamepanel/forge/internal/services/eggseeder"
+	envaffinitysvc "gamepanel/forge/internal/services/envaffinity"
 	"gamepanel/forge/internal/services/environments"
+	envgroupssvc "gamepanel/forge/internal/services/envgroups"
+	envmanifestsvc "gamepanel/forge/internal/services/envmanifest"
 	envvarsvc "gamepanel/forge/internal/services/envvars"
 	"gamepanel/forge/internal/services/evacuationplanner"
 	"gamepanel/forge/internal/services/failover"
+	fencingsvc "gamepanel/forge/internal/services/fencing"
+	"gamepanel/forge/internal/services/forgefile"
 	gitsvc "gamepanel/forge/internal/services/git"
+	gitpushsvc "gamepanel/forge/internal/services/gitpush"
 	"gamepanel/forge/internal/services/gitprovider"
 	"gamepanel/forge/internal/services/health"
+	healthchecksvc "gamepanel/forge/internal/services/healthcheckrunner"
 	"gamepanel/forge/internal/services/heartbeatmonitor"
-	installersvc "gamepanel/forge/internal/services/installer"
 	"gamepanel/forge/internal/services/i18n"
+	incussvc "gamepanel/forge/internal/services/incus"
+	installersvc "gamepanel/forge/internal/services/installer"
 	"gamepanel/forge/internal/services/loadbalancer"
 	mailservice "gamepanel/forge/internal/services/mail"
 	"gamepanel/forge/internal/services/migration"
+	mountssvc "gamepanel/forge/internal/services/mounts"
+	netbirdsvc "gamepanel/forge/internal/services/netbird"
+	"gamepanel/forge/internal/services/nodeautoscale"
 	"gamepanel/forge/internal/services/nodeprobe"
 	"gamepanel/forge/internal/services/noderegistry"
+	nomadsvc "gamepanel/forge/internal/services/nomad"
 	notificationsvc "gamepanel/forge/internal/services/notification"
 	enhancednotifsvc "gamepanel/forge/internal/services/notifications"
 	"gamepanel/forge/internal/services/observability"
+	"gamepanel/forge/internal/services/onboarding"
 	operationsvc "gamepanel/forge/internal/services/operation"
+	"gamepanel/forge/internal/services/pipeline"
 	"gamepanel/forge/internal/services/plugins"
-	previewsvc "gamepanel/forge/internal/services/preview"
+	previewenvsvc "gamepanel/forge/internal/services/previewenv"
+	phase1gitsvc "gamepanel/forge/internal/services/phase1git"
 	proceduresvc "gamepanel/forge/internal/services/procedure"
 	processsvc "gamepanel/forge/internal/services/process"
 	"gamepanel/forge/internal/services/queue"
 	"gamepanel/forge/internal/services/reconciler"
 	recoverysvc "gamepanel/forge/internal/services/recovery"
+	registrationssvc "gamepanel/forge/internal/services/registrations"
 	replicamanager "gamepanel/forge/internal/services/replicamanager"
+	redirectssvc "gamepanel/forge/internal/services/redirects"
 	"gamepanel/forge/internal/services/reservations"
+	"gamepanel/forge/internal/services/resourcelimits"
 	runtimesvc "gamepanel/forge/internal/services/runtime"
+	scheduledtaskssvc "gamepanel/forge/internal/services/scheduledtasks"
 	"gamepanel/forge/internal/services/scheduler"
 	"gamepanel/forge/internal/services/servicediscovery"
 	"gamepanel/forge/internal/services/tenancy"
 	"gamepanel/forge/internal/services/trafficmanager"
+	upgradesvc "gamepanel/forge/internal/services/upgrade"
+	"gamepanel/forge/internal/services/vaultprovider"
 	"gamepanel/forge/internal/services/webauthn"
+	webhooksvc "gamepanel/forge/internal/services/webhook"
 	"gamepanel/forge/internal/services/zerodowntime"
 	"gamepanel/forge/internal/store"
 
 	fiberws "github.com/gofiber/contrib/websocket"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/adaptor"
 	fiberrecover "github.com/gofiber/fiber/v2/middleware/recover"
-	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -136,22 +166,36 @@ type Config struct {
 	QueueService         *queue.Service
 	OperationService     *operationsvc.Service
 	RuntimeRegistry      *runtimesvc.Registry
-	WebAuthnService      *webauthn.Service
-	EventRelay           *eventstore.Relay
-	EventRegistry        *events.Registry
+	// WorkloadRuntime is the runtime dispatcher the create-workload surface
+	// reports from. It is the authority on which engines can actually be
+	// dispatched to; offering a runtime with no adapter behind it would put a
+	// control in the UI that cannot do its job. Nil-safe: the endpoint degrades
+	// to reporting only what the provider allow-list allows.
+	WorkloadRuntime *gpruntime.MultiRuntimeAdapter
+	// IncusService drives container/VM hosts (runtime=incus) over the Incus
+	// REST API; NomadService fronts a Nomad workload orchestrator control plane.
+	// Both are nil-safe — routes return 503 when unset.
+	IncusService    *incussvc.Service
+	NomadService    *nomadsvc.Service
+	WebAuthnService *webauthn.Service
+	EventRelay      *eventstore.Relay
+	EventRegistry   *events.Registry
 
 	BackupSvc                  *backup.Service
 	AutoScaler                 *autoscaler.Service
+	NodeAutoscaler             *nodeautoscale.Service
 	CrashDetector              *crashdetector.Detector
 	DeploymentSvc              *deployment.Service
-	PreviewDeploymentSvc       *previewsvc.Service
+	PreviewDeploymentSvc       *previewDeploymentService
 	CloudManager               *cloud.Manager
 	AcmeService                *acmesvc.Service
 	LoadBalancer               *loadbalancer.Service
 	FailoverSvc                *failover.Service
 	TrafficManager             *trafficmanager.Service
+	CaddyTLS                   *trafficmanager.CaddyTLSManager
 	DomainService              *domains.Service
 	DNSService                 *dnssvc.Service
+	VaultService               *vaultprovider.Service
 	DBContainerService         *dbprovisioner.DBContainerService
 	DatabaseServiceProvisioner *services.DatabaseServiceProvisioner
 	DBBackupService            *dbbackupsvc.Service
@@ -161,7 +205,16 @@ type Config struct {
 	GitDeployService           *gitsvc.DeployService
 	GitDeployMgmtService       *gitsvc.DeploymentManagementService
 	GitProviderService         *gitprovider.Service
+	// GitPushService backs the Dokku-style "git push to deploy" flow: it owns
+	// the per-app bare repository record and the HMAC-verified receive hook.
+	// Nil-safe: without it the routes do not register.
+	GitPushService *gitpushsvc.Service
 	ComposeService             *composesvc.Service
+	ComposeTemplateService     *composetemplatessvc.Service
+	// ComposeGitOpsService owns git-backed stack deploy/redeploy/drift/webhook.
+	// Injected via Config (handlers->services->store); when nil the compose
+	// registrar falls back to inline construction for dev-mode.
+	ComposeGitOpsService *composesvc.GitOpsService
 	BuildService               *build.Service
 	BuildpackService           *buildpacksvc.Service
 	InstallerService           *installersvc.Service
@@ -169,27 +222,90 @@ type Config struct {
 	TenancyService  *tenancy.Service
 	EnvVarService   *envvarsvc.Service
 	EndpointService *environments.Service
+	// Injected environment-engine + per-app surfaces so phase registrars do
+	// not construct services inline. All nil-safe: registrars fall back to
+	// local construction when the field is unset (dev/tests), preferring the
+	// injected instance when present.
+	MountService       *mountssvc.Service
+	EnvManifestService *envmanifestsvc.Service
+	EnvGroupsService   *envgroupssvc.Service
+	RedirectService    *redirectssvc.Service
+	DomainsEnvService  *domainsenv.Service
 
 	AppHostingService *apphostingsvc.Service
 
 	ProcedureService *proceduresvc.Service
-	ReplicaManager   *replicamanager.Manager
-	AppStoreService  *appstoresvc.Service
+
+	// BackupEngineService adds Restic and Kopia as selectable backup engines on
+	// top of the classic backup pipeline. Nil-safe: the /admin/backup-engines
+	// routes are registered only when main populates the field.
+	BackupEngineService *backupenginesvc.Service
+
+	// PipelineService drives multi-stage CI/CD pipelines (definitions, runs,
+	// logs, artifacts, manual approvals). Previously unwired to any route.
+	PipelineService   *pipeline.Service
+	ReplicaManager    *replicamanager.Manager
+	AppStoreService   *appstoresvc.Service
+	CatalogService    *catalogsvc.Service
+	ForgefileSvc      *forgefile.Service
+	OnboardingService *onboarding.Service
 
 	AlertService                *alerting.Service
 	NotificationService         *notificationsvc.Service
 	EnhancedNotificationService *enhancednotifsvc.Service
-	CronJobService              *cronjobsvc.Service
-	ProcessService              *processsvc.Service
-	ZeroDowntimeSvc             *zerodowntime.Service
+	// NotificationRouter is the notifications engine (channels + subscriptions
+	// + templated fan-out). Previously the plural package was only reachable via
+	// the dormant enhanced service; the engine gives it a live wiring.
+	NotificationRouter   *enhancednotifsvc.Router
+	CronJobService       *cronjobsvc.Service
+	ScheduledTaskService *scheduledtaskssvc.Service
+	ProcessService       *processsvc.Service
+	ZeroDowntimeSvc      *zerodowntime.Service
 
 	ClusterMembershipService *clustermembership.Service
 	CleanupService           *cleanupsvc.Service
+
+	// Orphan-wiring additions: services that previously lived behind internal
+	// callers only and now back admin endpoints (see handlers_billing.go and
+	// handlers_placement.go). All are nil-safe: routes are registered only when
+	// the field is populated in main.
+	BillingService   *billingsvc.Service
+	PlacementService *envaffinitysvc.EnvAffinity
+	// DrainLedger is the durable drain-progress recorder. It reads only; the
+	// begin/cancel orchestration stays owned by clustermembership, so there is
+	// no route collision.
+	DrainLedger *drainsvc.Service
+	// HealthCheckRunner is the live target-health prober already started in
+	// main; exposed read-only for the admin health dashboard.
+	HealthCheckRunner *healthchecksvc.Service
+
+	// FencingSvc bumps workload generations on a node when it recovers from an
+	// unexpected offline; exposed for manual admin fence operations.
+	FencingSvc *fencingsvc.Service
+	// UpgradeSvc is the control-plane self-upgrade orchestrator (version check,
+	// plan creation, execution with backup + rollback, health verification).
+	UpgradeSvc *upgradesvc.Service
 
 	// Cross-node routing services
 	ServiceDiscovery    *servicediscovery.Service
 	CrossNodeResolver   *crossnode.Resolver
 	IngressSynchronizer *crossnode.IngressSynchronizer
+
+	// NetBirdService is the WireGuard mesh VPN control plane client. It is
+	// nil-safe: without NETBIRD_API_URL/NETBIRD_API_TOKEN it reads empty and
+	// rejects mutations, so the admin routes always register cleanly.
+	NetBirdService *netbirdsvc.Service
+
+	// Preview + onboarding surfaces: injected so registrars do not build them
+	// inline. PreviewEnvService backs /projects/:id/previews; Phase1GitBridge
+	// backs /git/*; RegistrationService/EggSeederService/WebhookService are
+	// the wiring points main populates for node onboarding/seed/webhook flows.
+	// All nil-safe: registrars fall back to local construction when unset.
+	PreviewEnvService   *previewenvsvc.Service
+	Phase1GitBridge     *phase1gitsvc.Bridge
+	RegistrationService *registrationssvc.Service
+	EggSeederService    *eggseeder.Service
+	WebhookService      *webhooksvc.Service
 
 	MTLSEnabled    bool
 	MTLSCACertPath string
@@ -223,8 +339,10 @@ var (
 	inMemLoginCount = map[string]int{}
 )
 
-// nodeHeartbeatNonces is a shared replay-protection cache for node heartbeat
-// requests. It mirrors the /api/remote HMAC nonce store.
+// nodeHeartbeatNonces is the replay-protection cache for node heartbeat
+// requests. It shares state across instances via Redis SETNX when NewServer
+// wires cfg.Redis (see remoteNonceStore); without Redis it degrades to a
+// per-process cache bounded by the timestamp skew window.
 var nodeHeartbeatNonces = newRemoteNonceStore()
 
 // verifyNodeTokenWithHMAC authenticates a v1 node-scoped request the way
@@ -264,7 +382,7 @@ var (
 
 func checkLoginRateLimit(ctx context.Context, cfg Config, c *fiber.Ctx, email string) error {
 	keys := []string{
-		loginRateLimitKey("ip", c.IP()),
+		loginRateLimitKey("ip", ExtractClientIP(c)),
 		loginRateLimitKey("email", email),
 	}
 	if cfg.Redis != nil && cfg.RedisEnabled {
@@ -292,7 +410,7 @@ func checkLoginRateLimit(ctx context.Context, cfg Config, c *fiber.Ctx, email st
 
 func recordLoginFailure(ctx context.Context, cfg Config, c *fiber.Ctx, email string) {
 	keys := []string{
-		loginRateLimitKey("ip", c.IP()),
+		loginRateLimitKey("ip", ExtractClientIP(c)),
 		loginRateLimitKey("email", email),
 	}
 	if cfg.Redis != nil && cfg.RedisEnabled {
@@ -334,7 +452,7 @@ func recordLoginFailure(ctx context.Context, cfg Config, c *fiber.Ctx, email str
 
 func clearLoginFailures(ctx context.Context, cfg Config, c *fiber.Ctx, email string) {
 	keys := []string{
-		loginRateLimitKey("ip", c.IP()),
+		loginRateLimitKey("ip", ExtractClientIP(c)),
 		loginRateLimitKey("email", email),
 	}
 	if cfg.Redis != nil && cfg.RedisEnabled {
@@ -451,7 +569,7 @@ func recordUserSession(ctx context.Context, cfg Config, c *fiber.Ctx, token stri
 		return
 	}
 	sum := sha256.Sum256([]byte(claims.JTI))
-	_, _ = cfg.Store.CreateUserSession(ctx, claims.Sub, hex.EncodeToString(sum[:]), c.IP(), c.Get("User-Agent"), configuredTokenTTL(cfg))
+	_, _ = cfg.Store.CreateUserSession(ctx, claims.Sub, hex.EncodeToString(sum[:]), ExtractClientIP(c), c.Get("User-Agent"), configuredTokenTTL(cfg))
 }
 
 type CreateServerRequest struct {
@@ -479,6 +597,10 @@ type CreateServerRequest struct {
 	DockerImage             string            `json:"dockerImage"`
 	StartupCommand          string            `json:"startupCommand"`
 	StartupVariables        map[string]string `json:"startupVariables"`
+	// RuntimeProvider selects the workload engine (docker, containerd, podman,
+	// firecracker, kubernetes, kvm, lxc). Empty means "use the node default"
+	// which resolves to docker. Placement filters nodes by this field.
+	RuntimeProvider string `json:"runtimeProvider"`
 }
 
 type CreateUserRequest struct {
@@ -803,16 +925,18 @@ type UpdateNodeRequest struct {
 }
 
 type NodeHeartbeatRequest struct {
-	Version         string `json:"version"`
-	OS              string `json:"os"`
-	Architecture    string `json:"architecture"`
-	CPUThreads      int    `json:"cpuThreads"`
-	MemoryMB        int    `json:"memoryMb"`
-	DiskMB          int    `json:"diskMb"`
-	DockerStatus    string `json:"dockerStatus,omitempty"`
-	RuntimeStatus   string `json:"runtimeStatus"`
-	RuntimeProvider string `json:"runtimeProvider"`
-	Error           string `json:"error"`
+	Version         string  `json:"version"`
+	OS              string  `json:"os"`
+	Architecture    string  `json:"architecture"`
+	CPUThreads      int     `json:"cpuThreads"`
+	MemoryMB        int     `json:"memoryMb"`
+	DiskMB          int     `json:"diskMb"`
+	DockerStatus    string  `json:"dockerStatus,omitempty"`
+	RuntimeStatus   string  `json:"runtimeStatus"`
+	RuntimeProvider string  `json:"runtimeProvider"`
+	Error           string  `json:"error"`
+	LoadAverage     float64 `json:"load_average"`
+	Uptime          int64   `json:"uptime_seconds"`
 }
 
 type CreateRegionRequest struct {
@@ -848,13 +972,27 @@ func NewServer(cfg Config) *fiber.App {
 	started := time.Now()
 	runner := newScheduleRunner(cfg)
 
+	// Fail fast on an insecure session-cookie configuration: without Secure
+	// cookies (or with SameSite=None over HTTP) session and CSRF cookies can
+	// be intercepted or sent cross-site. This is a startup panic, not a
+	// request-time error, so a misconfigured production panel never serves.
+	if err := ValidateSessionCookieConfig(LoadSessionCookieConfig(), cfg.AppEnv); err != nil {
+		panic("invalid session cookie configuration: " + err.Error())
+	}
+
 	if cfg.HealthService != nil {
 		cfg.HealthService.AddCheck(health.NewQueueCheck("Queue Worker", runner.Health))
 	}
 
 	// WebSocket ticket store (in-memory; tickets are short-lived and single-use).
 	wsTickets := newWSTicketStore(cfg)
-	fileDownloadTickets := newFileDownloadTicketStore()
+	fileDownloadTickets := newFileDownloadTicketStore(cfg)
+
+	// Share the HMAC nonce replay cache across instances when Redis is
+	// configured so a nonce consumed on one instance is rejected on every
+	// other (SETNX + expiry). Without Redis each instance keeps its own
+	// cache bounded by the timestamp skew window.
+	nodeHeartbeatNonces.setRedis(cfg.Redis, cfg.RedisEnabled)
 
 	// Services are fully constructed in main.go and injected via Config.
 	nodeRegistry := cfg.NodeRegistry
@@ -909,7 +1047,7 @@ func NewServer(cfg Config) *fiber.App {
 		if raw := os.Getenv("API_CORS_ALLOWED_ORIGINS"); raw != "" {
 			corsCfg.AllowedOrigins = parseAllowedOrigins(raw)
 			corsCfg.AllowMethods = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
-			corsCfg.AllowHeaders = "Origin,Content-Type,Accept,Authorization,X-CSRF-Token,X-Forge-Session-Mode"
+			corsCfg.AllowHeaders = "Origin,Content-Type,Accept,Authorization,X-API-Key,X-CSRF-Token,X-Forge-Session-Mode"
 			corsCfg.AllowCredentials = true
 			corsCfg.MaxAge = 86400
 		} else {
@@ -932,9 +1070,23 @@ func NewServer(cfg Config) *fiber.App {
 		app.Use(StructuredLogger(cfg.Logger))
 	}
 
+	// HTTP RED metrics (rate/errors/duration). Mounted here so the collector
+	// observes every request and /metrics can emit http_requests_total /
+	// http_request_duration_seconds without a second instrumentation path.
+	httpMetrics := NewMetricsCollector()
+	app.Use(MetricsMiddleware(httpMetrics))
+
 	registerSwaggerRoutes(app, cfg.AppEnv)
 
 	registerWellKnownVerifyRoute(app, cfg.DomainService)
+
+	// ACME HTTP-01 challenge solver. Let's Encrypt fetches
+	// http://<domain>/.well-known/acme-challenge/<token>; without this mounted the
+	// default HTTP-01 issuance path can never validate. Served by the acme
+	// service's in-memory challenger (public, no auth).
+	if cfg.AcmeService != nil {
+		app.All("/.well-known/acme-challenge/*", adaptor.HTTPHandler(cfg.AcmeService.HTTPSolver()))
+	}
 
 	// Internationalization middleware
 	if cfg.Translator != nil {
@@ -1001,15 +1153,39 @@ func NewServer(cfg Config) *fiber.App {
 		if err := c.BodyParser(&req); err != nil || strings.TrimSpace(req.Token) == "" {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 		}
+		// Redacted identifier for audit/logs: the token ID prefix only.
+		// The full token and the resulting node credential must never be
+		// logged, echoed, or stored in audit metadata.
+		redactedID := "unknown"
+		if id, _, ok := strings.Cut(strings.TrimSpace(req.Token), "."); ok && id != "" {
+			if len(id) > 8 {
+				redactedID = id[:8] + "..."
+			} else {
+				redactedID = id
+			}
+		}
+		clientIP := ExtractClientIP(c)
 		ctx, cancel := requestContext()
 		defer cancel()
 		nodeID, err := cfg.Store.ConsumeOnboardingToken(ctx, req.Token)
 		if err != nil {
+			_ = cfg.Store.AppendAudit(ctx, nil, "node.onboarding.exchange.failed", "node", nil, safeAuditMeta(map[string]string{"tokenId": redactedID, "ip": clientIP}))
+			if cfg.Logger != nil {
+				cfg.Logger.Warn("onboarding exchange failed", "tokenId", redactedID, "ip", clientIP)
+			}
 			return fiber.NewError(fiber.StatusUnauthorized, "invalid or expired onboarding token")
 		}
 		credential, err := cfg.Store.GetNodeDaemonCredential(ctx, nodeID)
 		if err != nil {
+			_ = cfg.Store.AppendAudit(ctx, nil, "node.onboarding.exchange.failed", "node", &nodeID, safeAuditMeta(map[string]string{"tokenId": redactedID, "ip": clientIP}))
+			if cfg.Logger != nil {
+				cfg.Logger.Error("onboarding exchange credential unavailable", "nodeId", nodeID, "ip", clientIP)
+			}
 			return fiber.NewError(fiber.StatusInternalServerError, "node credential is unavailable")
+		}
+		_ = cfg.Store.AppendAudit(ctx, nil, "node.onboarding.exchange", "node", &nodeID, safeAuditMeta(map[string]string{"tokenId": redactedID, "ip": clientIP}))
+		if cfg.Logger != nil {
+			cfg.Logger.Info("onboarding exchange succeeded", "nodeId", nodeID, "ip", clientIP)
 		}
 		return c.JSON(fiber.Map{"nodeId": nodeID, "nodeToken": credential})
 	})
@@ -1063,13 +1239,16 @@ func NewServer(cfg Config) *fiber.App {
 		return c.JSON(cfg.Translator.AvailableLocales())
 	})
 
-	// Translation file endpoint — serves locale JSON for the frontend
+	// Translation file endpoint — serves locale JSON for the frontend.
+	// Single source of truth for the supported set is the `lang/*.json`
+	// catalog together with `supportedLocales` in
+	// `packages/shared-types/src/i18n.ts` (drift between the two fails
+	// `sync:locales:check`). This allowlist must match that set exactly:
+	// listing a locale here that has no catalog would serve the English
+	// fallback while reporting success for a translation that does not exist.
 	allowedLocales := map[string]bool{
 		"en": true, "de": true, "fr": true, "es": true, "pt": true,
-		"ru": true, "zh": true, "ja": true, "ko": true, "it": true,
-		"nl": true, "pl": true, "sv": true, "nb": true, "da": true,
-		"fi": true, "cs": true, "hu": true, "ro": true, "uk": true,
-		"tr": true, "ar": true, "th": true, "vi": true, "ms": true,
+		"ru": true, "zh": true, "ja": true,
 	}
 	v1.Get("/i18n/:locale", func(c *fiber.Ctx) error {
 		locale := c.Params("locale")
@@ -1099,10 +1278,12 @@ func NewServer(cfg Config) *fiber.App {
 	})
 
 	// CSRF token endpoint for clients to fetch CSRF token
-	v1.Get("/csrf-token", GetCSRFTokenHandler())
+	v1.Get("/csrf-token", GetCSRFTokenHandler(cfg))
 	// Session exchange endpoint — exchanges a single-use code for a session token.
 	// Used after social auth redirects to avoid placing the token in the URL.
-	v1.Post("/auth/session/exchange", ExchangeCodeHandler(cfg))
+	// Rate-limited and origin-checked like the rest of the public auth surface;
+	// without a limiter a stolen exchange code could be brute-forced.
+	v1.Post("/auth/session/exchange", publicMutationOriginCheck(LoadSessionCookieConfig()), authLimiter, ExchangeCodeHandler(cfg))
 
 	// Liveness, readiness, and diagnostics handlers exposed both on /api/v1/health
 	// and directly at root /health for external health probes, load balancers, and scripts.
@@ -1130,12 +1311,13 @@ func NewServer(cfg Config) *fiber.App {
 			report := cfg.HealthService.RunAll(c.Context())
 			return c.JSON(report)
 		}
-		// Keep the diagnostics response shape stable even when monitoring has not
-		// been configured yet. The Monitoring Center can then distinguish an empty
-		// report from an unavailable endpoint without relying on mock data.
-		return c.JSON(health.HealthReport{
-			Status:    health.StatusOK,
-			OK:        true,
+		// Monitoring has not been configured: the endpoint is unavailable, not
+		// healthy. An empty OK report would claim health that was never
+		// measured; unknown is not zero, so answer 503 with an explicit
+		// unknown status.
+		return c.Status(fiber.StatusServiceUnavailable).JSON(health.HealthReport{
+			Status:    health.StatusUnknown,
+			OK:        false,
 			Service:   "api",
 			Checks:    []health.CheckResult{},
 			CheckedAt: time.Now(),
@@ -1232,6 +1414,143 @@ func NewServer(cfg Config) *fiber.App {
 			}
 		}
 
+		// Dark service metrics: expose the cumulative counters (and the handful
+		// of instantaneous gauges) reported by long-lived services that
+		// implement Metrics() but were previously unobserved. Every block is
+		// nil-guarded so a partially configured API emits no missing series.
+		// Series are named game_panel_api_<service>_<metric> and carry no
+		// high-cardinality labels.
+		type mCounter struct {
+			name  string
+			help  string
+			value uint64
+		}
+		writeCounters := func(counters []mCounter) {
+			for _, counter := range counters {
+				body.WriteString("# HELP " + counter.name + " " + counter.help + "\n")
+				body.WriteString("# TYPE " + counter.name + " counter\n")
+				body.WriteString(counter.name + " " + strconv.FormatUint(counter.value, 10) + "\n")
+			}
+		}
+
+		if cfg.ClusterMembershipService != nil {
+			cmm := cfg.ClusterMembershipService.Metrics()
+			writeCounters([]mCounter{
+				{"game_panel_api_cluster_membership_nodes_joined_total", "Cumulative cluster nodes that joined.", cmm.NodesJoinedTotal},
+				{"game_panel_api_cluster_membership_nodes_left_total", "Cumulative cluster nodes that left.", cmm.NodesLeftTotal},
+				{"game_panel_api_cluster_membership_drain_started_total", "Cumulative node drains started.", cmm.DrainStartedTotal},
+				{"game_panel_api_cluster_membership_drain_completed_total", "Cumulative node drains completed.", cmm.DrainCompletedTotal},
+				{"game_panel_api_cluster_membership_maintenance_started_total", "Cumulative maintenance windows started.", cmm.MaintStartedTotal},
+				{"game_panel_api_cluster_membership_maintenance_ended_total", "Cumulative maintenance windows ended.", cmm.MaintEndedTotal},
+			})
+		}
+
+		if cfg.ReservationManager != nil {
+			rm := cfg.ReservationManager.Metrics()
+			writeCounters([]mCounter{
+				{"game_panel_api_reservations_placement_total", "Cumulative placement reservations made.", rm.PlacementReservationsTotal},
+				{"game_panel_api_reservations_conflicts_total", "Cumulative reservation conflicts.", rm.ReservationConflictsTotal},
+				{"game_panel_api_reservations_expirations_total", "Cumulative reservation expirations.", rm.ReservationExpirationsTotal},
+			})
+		}
+
+		if cfg.ReplicaManager != nil {
+			rpm := cfg.ReplicaManager.Metrics()
+			writeCounters([]mCounter{
+				{"game_panel_api_replica_manager_create_app_total", "Cumulative replica apps created.", rpm.CreateAppTotal},
+				{"game_panel_api_replica_manager_delete_app_total", "Cumulative replica apps deleted.", rpm.DeleteAppTotal},
+				{"game_panel_api_replica_manager_scale_up_total", "Cumulative replica scale-up operations.", rpm.ScaleUpTotal},
+				{"game_panel_api_replica_manager_scale_down_total", "Cumulative replica scale-down operations.", rpm.ScaleDownTotal},
+				{"game_panel_api_replica_manager_replacement_total", "Cumulative replica replacements.", rpm.ReplacementTotal},
+				{"game_panel_api_replica_manager_reservation_errors_total", "Cumulative replica reservation errors.", rpm.ReservationErrors},
+				{"game_panel_api_replica_manager_dispatch_errors_total", "Cumulative replica dispatch errors.", rpm.DispatchErrors},
+				{"game_panel_api_replica_manager_reconcile_total", "Cumulative replica reconciles.", rpm.ReconcileTotal},
+				{"game_panel_api_replica_manager_no_double_reservation_total", "Cumulative double-reservation preventions.", rpm.NoDoubleReservation},
+				{"game_panel_api_replica_manager_no_duplicate_alloc_total", "Cumulative duplicate-allocation preventions.", rpm.NoDuplicateAlloc},
+			})
+		}
+
+		if cfg.RecoveryCoordinator != nil {
+			rcm := cfg.RecoveryCoordinator.Metrics()
+			writeCounters([]mCounter{
+				{"game_panel_api_recovery_plans_total", "Cumulative recovery plans created.", rcm.RecoveryPlansTotal},
+				{"game_panel_api_recovery_items_total", "Cumulative recovery items processed.", rcm.RecoveryItemsTotal},
+				{"game_panel_api_recovery_failures_total", "Cumulative recovery failures.", rcm.RecoveryFailuresTotal},
+			})
+		}
+
+		if cfg.EvacuationPlanner != nil {
+			ep := cfg.EvacuationPlanner.Metrics()
+			writeCounters([]mCounter{
+				{"game_panel_api_evacuation_planner_plans_total", "Cumulative evacuation plans created.", ep.EvacuationPlansTotal},
+				{"game_panel_api_evacuation_planner_candidates_total", "Cumulative evacuation candidates evaluated.", ep.EvacuationCandidatesTotal},
+				{"game_panel_api_evacuation_planner_validation_failures_total", "Cumulative evacuation validation failures.", ep.EvacuationValidationFailuresTotal},
+				{"game_panel_api_evacuation_planner_storage_local_skipped_total", "Cumulative local-storage workloads skipped during evacuation.", ep.StorageLocalSkippedTotal},
+				{"game_panel_api_evacuation_planner_orphan_detection_total", "Cumulative orphan detections run.", ep.OrphanDetectionTotal},
+			})
+		}
+
+		if cfg.CleanupService != nil {
+			cl := cfg.CleanupService.Metrics()
+			writeCounters([]mCounter{
+				{"game_panel_api_cleanup_stale_reservations_cleaned_total", "Cumulative stale reservations cleaned.", cl.StaleReservationsCleaned},
+				{"game_panel_api_cleanup_orphaned_allocations_cleaned_total", "Cumulative orphaned allocations cleaned.", cl.OrphanedAllocationsCleaned},
+				{"game_panel_api_cleanup_runs_total", "Cumulative cleanup runs.", cl.CleanupRunsTotal},
+				{"game_panel_api_cleanup_errors_total", "Cumulative cleanup errors.", cl.CleanupErrorsTotal},
+			})
+		}
+
+		if cfg.AutoScaler != nil {
+			as := cfg.AutoScaler.Metrics()
+			writeCounters([]mCounter{
+				{"game_panel_api_autoscaler_scale_up_events_total", "Cumulative autoscaler scale-up events.", as.ScaleUpEventsTotal},
+				{"game_panel_api_autoscaler_scale_down_events_total", "Cumulative autoscaler scale-down events.", as.ScaleDownEventsTotal},
+				{"game_panel_api_autoscaler_scaling_errors_total", "Cumulative autoscaler scaling errors.", as.ScalingErrorsTotal},
+			})
+			// ActivePolicies is an instantaneous count, not a cumulative counter.
+			body.WriteString("# HELP game_panel_api_autoscaler_active_policies Current number of active autoscaling policies.\n")
+			body.WriteString("# TYPE game_panel_api_autoscaler_active_policies gauge\n")
+			body.WriteString("game_panel_api_autoscaler_active_policies " + strconv.Itoa(as.ActivePolicies) + "\n")
+		}
+
+		if cfg.FailoverSvc != nil {
+			fo := cfg.FailoverSvc.Metrics()
+			writeCounters([]mCounter{
+				{"game_panel_api_failover_failures_detected_total", "Cumulative failover failures detected.", fo.FailuresDetected},
+				{"game_panel_api_failover_evacuations_triggered_total", "Cumulative failover evacuations triggered.", fo.EvacuationsTriggered},
+				{"game_panel_api_failover_restarts_triggered_total", "Cumulative failover restarts triggered.", fo.RestartsTriggered},
+				{"game_panel_api_failover_notifications_sent_total", "Cumulative failover notifications sent.", fo.NotificationsSent},
+			})
+		}
+
+		if cfg.MigrationService != nil {
+			mg := cfg.MigrationService.Metrics()
+			writeCounters([]mCounter{
+				{"game_panel_api_migration_total", "Cumulative migrations started.", mg.MigrationTotal},
+				{"game_panel_api_migration_completed_total", "Cumulative migrations completed.", mg.MigrationCompletedTotal},
+				{"game_panel_api_migration_failed_total", "Cumulative migrations failed.", mg.MigrationFailedTotal},
+				{"game_panel_api_migration_reconciliation_total", "Cumulative migration reconciliations.", mg.ReconciliationTotal},
+				{"game_panel_api_migration_reconciliation_failures_total", "Cumulative migration reconciliation failures.", mg.ReconciliationFailures},
+				{"game_panel_api_migration_cleanup_completed_total", "Cumulative migration cleanups completed.", mg.CleanupCompletedTotal},
+			})
+		}
+
+		if cfg.HeartbeatMonitor != nil {
+			hb := cfg.HeartbeatMonitor.Metrics()
+			writeCounters([]mCounter{
+				{"game_panel_api_heartbeat_monitor_evaluations_total", "Cumulative heartbeat evaluations.", hb.HeartbeatEvaluationsTotal},
+				{"game_panel_api_heartbeat_monitor_nodes_suspected_total", "Cumulative nodes marked suspected.", hb.NodesSuspectedTotal},
+				{"game_panel_api_heartbeat_monitor_nodes_unreachable_total", "Cumulative nodes marked unreachable.", hb.NodesUnreachableTotal},
+				{"game_panel_api_heartbeat_monitor_nodes_offline_total", "Cumulative nodes marked offline.", hb.NodesOfflineTotal},
+				{"game_panel_api_heartbeat_monitor_nodes_recovered_total", "Cumulative nodes recovered.", hb.NodesRecoveredTotal},
+				{"game_panel_api_heartbeat_monitor_nodes_reconciling_total", "Cumulative nodes placed into reconciling.", hb.NodesReconcilingTotal},
+				{"game_panel_api_heartbeat_monitor_nodes_unavailable_total", "Cumulative nodes marked unavailable.", hb.NodesUnavailableTotal},
+			})
+		}
+
+		// HTTP request RED metrics recorded by MetricsMiddleware.
+		body.WriteString(httpMetrics.FormatPrometheus())
+
 		c.Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		return c.SendString(body.String())
 	})
@@ -1240,9 +1559,13 @@ func NewServer(cfg Config) *fiber.App {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
-		token := strings.TrimPrefix(c.Get("Authorization"), "Bearer ")
-		if token == c.Get("Authorization") {
-			token = c.Get("X-Node-Token")
+		// Node credentials travel in the Authorization header only. A second
+		// header (X-Node-Token) would create two credential paths with
+		// different logging/redaction handling; Beacon sends Bearer on every
+		// node-authenticated call, so the fallback is removed, not widened.
+		token := strings.TrimSpace(strings.TrimPrefix(c.Get("Authorization"), "Bearer "))
+		if token == "" || token == strings.TrimSpace(c.Get("Authorization")) {
+			return fiber.NewError(fiber.StatusUnauthorized, "missing daemon bearer token")
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
@@ -1275,10 +1598,19 @@ func NewServer(cfg Config) *fiber.App {
 			RuntimeStatus:   req.RuntimeStatus,
 			RuntimeProvider: req.RuntimeProvider,
 			Error:           req.Error,
+			LoadAverage:     req.LoadAverage,
+			Uptime:          req.Uptime,
 		}
 		node, err := cfg.Store.UpdateNodeHeartbeat(ctx, c.Params("id"), heartbeat)
 		if err != nil {
-			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+			// Unknown node is 404, not 400: the heartbeat path names a
+			// resource, and a missing resource must not look like a bad
+			// request. Internal text is never echoed; respondInternalError
+			// handles prod sanitization.
+			if strings.Contains(strings.ToLower(err.Error()), "not found") || strings.Contains(strings.ToLower(err.Error()), "no rows") {
+				return fiber.NewError(fiber.StatusNotFound, "node not found")
+			}
+			return respondInternalError(c, err)
 		}
 		if cfg.Observability != nil {
 			cfg.Observability.RecordNodeHeartbeat(ctx, node, heartbeat)
@@ -1300,9 +1632,13 @@ func NewServer(cfg Config) *fiber.App {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
-		token := strings.TrimPrefix(c.Get("Authorization"), "Bearer ")
-		if token == c.Get("Authorization") {
-			token = c.Get("X-Node-Token")
+		// Node credentials travel in the Authorization header only. A second
+		// header (X-Node-Token) would create two credential paths with
+		// different logging/redaction handling; Beacon sends Bearer on every
+		// node-authenticated call, so the fallback is removed, not widened.
+		token := strings.TrimSpace(strings.TrimPrefix(c.Get("Authorization"), "Bearer "))
+		if token == "" || token == strings.TrimSpace(c.Get("Authorization")) {
+			return fiber.NewError(fiber.StatusUnauthorized, "missing daemon bearer token")
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
@@ -1423,21 +1759,28 @@ func NewServer(cfg Config) *fiber.App {
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
+		if err := checkLoginRateLimit(ctx, cfg, c, req.Email); err != nil {
+			return err
+		}
 		user, err := cfg.Store.Authenticate(ctx, req.Email, req.Password)
 		if err != nil {
 			recordLoginFailure(ctx, cfg, c, req.Email)
 			if err := cfg.Store.AppendAudit(ctx, nil, "login.failed", "user", nil, safeAuditMeta(map[string]string{"email": req.Email})); err != nil {
-				cfg.Logger.Error("audit append failed", "action", "login.failed", "error", err)
+				if cfg.Logger != nil {
+					cfg.Logger.Error("audit append failed", "action", "login.failed", "error", err)
+				}
 			}
 			return fiber.NewError(fiber.StatusUnauthorized, "invalid credentials")
 		}
 		clearLoginFailures(ctx, cfg, c, req.Email)
 		if err := cfg.Store.AppendAudit(ctx, &user.ID, "login.success", "user", &user.ID, "{}"); err != nil {
-			cfg.Logger.Error("audit append failed", "action", "login.success", "error", err)
+			if cfg.Logger != nil {
+				cfg.Logger.Error("audit append failed", "action", "login.success", "error", err)
+			}
 		}
 
 		if user.UseTOTP {
-			confToken, err := issue2FAConfirmationToken(cfg.AuthSecret, user.ID, c.IP(), c.Get("User-Agent"))
+			confToken, err := issue2FAConfirmationToken(cfg.AuthSecret, user.ID, ExtractClientIP(c), c.Get("User-Agent"))
 			if err != nil {
 				return fiber.NewError(fiber.StatusInternalServerError, "could not issue confirmation token")
 			}
@@ -1453,13 +1796,11 @@ func NewServer(cfg Config) *fiber.App {
 		}
 		recordUserSession(ctx, cfg, c, token)
 
-		// Always set HttpOnly session and CSRF cookies for browser clients
-		csrfToken, err := generateCSRFToken()
-		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, "could not generate CSRF token")
-		}
+		// Always set HttpOnly session and CSRF cookies for browser clients.
+		// The CSRF token is bound to this session (HMAC) so it cannot be
+		// replayed against a different session.
 		expires := tokenExpiry(cfg)
-		setSessionCookies(c, token, csrfToken, expires)
+		setSessionCookies(c, token, deriveSessionCSRFToken(cfg.AuthSecret, token), expires)
 
 		return c.JSON(fiber.Map{
 			"complete": true,
@@ -1485,8 +1826,10 @@ func NewServer(cfg Config) *fiber.App {
 		}
 
 		// The confirmation token is bound to the IP/user agent it was issued
-		// to; replaying it from another client is rejected.
-		if claims.IP != "" && claims.IP != c.IP() {
+		// to; replaying it from another client is rejected. Both ends resolve the
+		// address the same way, otherwise the binding either never matches or
+		// matches whatever header the replaying client sends.
+		if claims.IP != "" && claims.IP != ExtractClientIP(c) {
 			return fiber.NewError(fiber.StatusUnauthorized, "confirmation token was issued to a different client")
 		}
 		if claims.UA != "" && claims.UA != truncateUserAgent(c.Get("User-Agent")) {
@@ -1495,6 +1838,14 @@ func NewServer(cfg Config) *fiber.App {
 
 		// Per-account brute-force lockout (10 failures → 15 minutes).
 		if err := checkTwoFactorLockout(c.Context(), cfg, claims.Sub); err != nil {
+			return err
+		}
+		// The checkpoint is part of the login flow: the same IP+account
+		// rate limit that guards /auth/login applies here so the TOTP step
+		// cannot be used to bypass it.
+		ctx0, cancel0 := requestContext()
+		defer cancel0()
+		if err := checkLoginRateLimit(ctx0, cfg, c, claims.Sub); err != nil {
 			return err
 		}
 
@@ -1531,13 +1882,10 @@ func NewServer(cfg Config) *fiber.App {
 		}
 		recordUserSession(ctx, cfg, c, token)
 
-		// Always set HttpOnly session and CSRF cookies for browser clients
-		csrfToken, err := generateCSRFToken()
-		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, "could not generate CSRF token")
-		}
+		// Always set HttpOnly session and CSRF cookies for browser clients.
+		// The CSRF token is bound to this session (HMAC).
 		expires := tokenExpiry(cfg)
-		setSessionCookies(c, token, csrfToken, expires)
+		setSessionCookies(c, token, deriveSessionCSRFToken(cfg.AuthSecret, token), expires)
 
 		return c.JSON(fiber.Map{
 			"complete": true,
@@ -1545,11 +1893,22 @@ func NewServer(cfg Config) *fiber.App {
 		})
 	})
 
-	// Session refresh – re-issue cookie with new expiry
-	v1.Post("/auth/session/refresh", func(c *fiber.Ctx) error {
+	// Session refresh – re-issue cookie with new expiry. Rate-limited and
+	// origin-checked like login; requires the double-submit CSRF token so a
+	// cross-site POST cannot rotate a victim's session.
+	v1.Post("/auth/session/refresh", publicMutationOriginCheck(LoadSessionCookieConfig()), authLimiter, func(c *fiber.Ctx) error {
 		sessionToken, ok := getSessionCookie(c)
 		if !ok || sessionToken == "" {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing session cookie")
+		}
+		// CSRF: the refresh cookie is HttpOnly, so the caller must prove
+		// same-origin by echoing the session-bound CSRF cookie value in the
+		// header. Constant-time, and bound to the presented session.
+		csrfCfg := LoadSessionCookieConfig()
+		csrfCookie := c.Cookies(secureCookieName(csrfCookieName, csrfCfg.Secure))
+		csrfHeader := c.Get("X-CSRF-Token")
+		if !validSessionBoundCSRF(cfg.AuthSecret, sessionToken, csrfCookie, csrfHeader) {
+			return fiber.NewError(fiber.StatusForbidden, "invalid CSRF token")
 		}
 		claims, err := parseToken(cfg.AuthSecret, sessionToken)
 		if err != nil {
@@ -1568,16 +1927,12 @@ func NewServer(cfg Config) *fiber.App {
 		if claims.JTI != "" {
 			_ = cfg.Store.RevokeJWT(ctx, claims.JTI, time.Unix(claims.Exp, 0))
 		}
-		csrfToken, err := generateCSRFToken()
-		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, "could not generate CSRF token")
-		}
 		expires := tokenExpiry(cfg)
-		setSessionCookies(c, newToken, csrfToken, expires)
+		setSessionCookies(c, newToken, deriveSessionCSRFToken(cfg.AuthSecret, newToken), expires)
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 
-	v1.Get("/servers/:id/ws/stats", requireRealtimeServices(cfg), fiberws.New(realtimeProxy(cfg, wsTickets, "stats"), fiberws.Config{
+	v1.Get("/servers/:id/ws/stats", requireRealtimeServices(cfg), readLimiter, fiberws.New(realtimeProxy(cfg, wsTickets, "stats"), fiberws.Config{
 		RecoverHandler: func(conn *fiberws.Conn) {
 			defer func() {
 				if err := recover(); err != nil {
@@ -1588,7 +1943,7 @@ func NewServer(cfg Config) *fiber.App {
 		},
 		Origins: getWebSocketAllowedOrigins(cfg),
 	}))
-	v1.Get("/servers/:id/ws/logs", requireRealtimeServices(cfg), fiberws.New(realtimeProxy(cfg, wsTickets, "logs"), fiberws.Config{
+	v1.Get("/servers/:id/ws/logs", requireRealtimeServices(cfg), readLimiter, fiberws.New(realtimeProxy(cfg, wsTickets, "logs"), fiberws.Config{
 		RecoverHandler: func(conn *fiberws.Conn) {
 			defer func() {
 				if err := recover(); err != nil {
@@ -1599,7 +1954,20 @@ func NewServer(cfg Config) *fiber.App {
 		},
 		Origins: getWebSocketAllowedOrigins(cfg),
 	}))
-	v1.Get("/servers/:id/ws/console", requireRealtimeServices(cfg), fiberws.New(realtimeProxy(cfg, wsTickets, "console"), fiberws.Config{
+	v1.Get("/servers/:id/ws/console", requireRealtimeServices(cfg), readLimiter, fiberws.New(realtimeProxy(cfg, wsTickets, "console"), fiberws.Config{
+		RecoverHandler: func(conn *fiberws.Conn) {
+			defer func() {
+				if err := recover(); err != nil {
+					_ = conn.WriteJSON(fiber.Map{"error": "internal error"})
+					_ = conn.Close()
+				}
+			}()
+		},
+		Origins: getWebSocketAllowedOrigins(cfg),
+	}))
+	// Backup progress streaming — proxies Beacon's GET /servers/:id/ws/backup so
+	// the UI receives live backup/restore progress instead of polling every 3s.
+	v1.Get("/servers/:id/ws/backup", requireRealtimeServices(cfg), readLimiter, fiberws.New(realtimeProxy(cfg, wsTickets, "backup"), fiberws.Config{
 		RecoverHandler: func(conn *fiberws.Conn) {
 			defer func() {
 				if err := recover(); err != nil {
@@ -1616,7 +1984,7 @@ func NewServer(cfg Config) *fiber.App {
 	// Execution is gated by INSTALLER_WORKFLOW_ENABLED on the workflow service;
 	// when disabled, workflows remain visible (DB→UI) but live streaming defers.
 	// See forge/web/lib/api/install-ws.ts createInstallWSManager for frontend.
-	v1.Get("/servers/:id/ws/install", requireRealtimeServices(cfg), fiberws.New(realtimeProxy(cfg, wsTickets, "install"), fiberws.Config{
+	v1.Get("/servers/:id/ws/install", requireRealtimeServices(cfg), readLimiter, fiberws.New(realtimeProxy(cfg, wsTickets, "install"), fiberws.Config{
 		RecoverHandler: func(conn *fiberws.Conn) {
 			defer func() {
 				if err := recover(); err != nil {
@@ -1627,7 +1995,7 @@ func NewServer(cfg Config) *fiber.App {
 		},
 		Origins: getWebSocketAllowedOrigins(cfg),
 	}))
-	v1.Get("/servers/:id/install/ws", requireRealtimeServices(cfg), fiberws.New(realtimeProxy(cfg, wsTickets, "install"), fiberws.Config{
+	v1.Get("/servers/:id/install/ws", requireRealtimeServices(cfg), readLimiter, fiberws.New(realtimeProxy(cfg, wsTickets, "install"), fiberws.Config{
 		RecoverHandler: func(conn *fiberws.Conn) {
 			defer func() {
 				if err := recover(); err != nil {
@@ -1639,43 +2007,35 @@ func NewServer(cfg Config) *fiber.App {
 		Origins: getWebSocketAllowedOrigins(cfg),
 	}))
 
-	// POST /api/edge/connect — Beacon edge-agent registration. The beacon
-	// posts here (Bearer node token, no HMAC) when it wants a live edge
-	// channel for console/control-plane events.
+	// POST /api/edge/connect — Beacon edge-agent registration. Authenticates
+	// like /nodes/:id/heartbeat: bearer node token plus a fresh one-time HMAC
+	// (method, URI, timestamp, nonce, body keyed with the node token) so a
+	// stolen token alone cannot open an edge channel and replays are rejected.
 	app.Post("/api/edge/connect", apiIPAccess, mtlsMw, func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
-		token := strings.TrimPrefix(c.Get("Authorization"), "Bearer ")
-		if token == c.Get("Authorization") {
-			token = c.Get("X-Node-Token")
+		// Node credentials travel in the Authorization header only. A second
+		// header (X-Node-Token) would create two credential paths with
+		// different logging/redaction handling; Beacon sends Bearer on every
+		// node-authenticated call, so the fallback is removed, not widened.
+		token := strings.TrimSpace(strings.TrimPrefix(c.Get("Authorization"), "Bearer "))
+		if token == "" || token == strings.TrimSpace(c.Get("Authorization")) {
+			return fiber.NewError(fiber.StatusUnauthorized, "missing daemon bearer token")
 		}
 		var req struct {
 			NodeID string `json:"nodeId"`
 		}
 		if err := c.BodyParser(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"connected": false,
-				"message":   "invalid request body",
-			})
+			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 		}
 		if strings.TrimSpace(req.NodeID) == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"connected": false,
-				"message":   "nodeId is required",
-			})
+			return fiber.NewError(fiber.StatusBadRequest, "nodeId is required")
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		ok, err := cfg.Store.VerifyNodeToken(ctx, req.NodeID, token)
-		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, "token verification failed")
-		}
-		if !ok {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"connected": false,
-				"message":   "invalid node token",
-			})
+		if err := verifyNodeTokenWithHMAC(ctx, cfg, c, req.NodeID, token); err != nil {
+			return err
 		}
 		return c.JSON(fiber.Map{
 			"connected": true,
@@ -1707,11 +2067,13 @@ func NewServer(cfg Config) *fiber.App {
 			"data": data,
 			"meta": fiber.Map{
 				"pagination": fiber.Map{
-					"total":        len(data),
-					"count":        len(data),
-					"per_page":     len(data),
-					"current_page": 1,
-					"total_pages":  1,
+					"total":         len(data),
+					"count":         len(data),
+					"per_page":      len(data),
+					"current":       1,
+					"total_records": len(data),
+					"current_page":  1,
+					"total_pages":   1,
 				},
 			},
 		})
@@ -1749,13 +2111,15 @@ func NewServer(cfg Config) *fiber.App {
 		defer cancel()
 		var result store.SFTPAuthResult
 		var err error
-		switch body.Type {
-		case "", "password":
+		switch strings.TrimSpace(body.Type) {
+		case "password":
 			result, err = cfg.Store.AuthenticateSFTP(ctx, node.ID, body.Username, body.Password)
 		case "public_key":
 			result, err = cfg.Store.AuthenticateSFTPPublicKey(ctx, node.ID, body.Username, body.PublicKey)
 		case "check":
 			result, err = cfg.Store.AuthorizeSFTPSession(ctx, node.ID, body.User, body.Server)
+		case "":
+			return fiber.NewError(fiber.StatusBadRequest, "sftp authentication type is required")
 		default:
 			return fiber.NewError(fiber.StatusForbidden, "unsupported sftp authentication type")
 		}
@@ -1771,12 +2135,8 @@ func NewServer(cfg Config) *fiber.App {
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		belongs, err := cfg.Store.ServerBelongsToNode(ctx, c.Params("id"), node.ID)
-		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
-		}
-		if !belongs {
-			return fiber.NewError(fiber.StatusForbidden, "requesting node cannot access this server")
+		if err := requireNodeOwnsServer(ctx, c, cfg.Store, c.Params("id"), node.ID, nodeCannotAccessServer); err != nil {
+			return err
 		}
 		target, err := cfg.Store.ServerProvisionTarget(ctx, c.Params("id"))
 		if err != nil {
@@ -1795,12 +2155,8 @@ func NewServer(cfg Config) *fiber.App {
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		belongs, err := cfg.Store.ServerBelongsToNode(ctx, c.Params("id"), node.ID)
-		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
-		}
-		if !belongs {
-			return fiber.NewError(fiber.StatusForbidden, "requesting node cannot access this server")
+		if err := requireNodeOwnsServer(ctx, c, cfg.Store, c.Params("id"), node.ID, nodeCannotAccessServer); err != nil {
+			return err
 		}
 		target, err := cfg.Store.ServerProvisionTarget(ctx, c.Params("id"))
 		if err != nil {
@@ -1827,12 +2183,8 @@ func NewServer(cfg Config) *fiber.App {
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		belongs, err := cfg.Store.ServerBelongsToNode(ctx, c.Params("id"), node.ID)
-		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
-		}
-		if !belongs {
-			return fiber.NewError(fiber.StatusForbidden, "requesting node cannot access this server")
+		if err := requireNodeOwnsServer(ctx, c, cfg.Store, c.Params("id"), node.ID, nodeCannotAccessServer); err != nil {
+			return err
 		}
 		state := "installed"
 		if !body.Successful {
@@ -1873,16 +2225,16 @@ func NewServer(cfg Config) *fiber.App {
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		belongs, err := cfg.Store.ServerBelongsToNode(ctx, c.Params("id"), node.ID)
-		if err != nil || !belongs {
-			return fiber.NewError(fiber.StatusForbidden, "requesting node cannot access this server")
+		if err := requireNodeOwnsServer(ctx, c, cfg.Store, c.Params("id"), node.ID, nodeCannotAccessServer); err != nil {
+			return err
 		}
+		var err error
 		if body.Status == "completed" && body.Checksum != "" {
 			completedAt := time.Now().UTC()
-			var actorID *string
-			if claims, ok := c.Locals("user").(tokenClaims); ok {
-				actorID = &claims.Sub
-			}
+			// Node-authenticated callers carry no user session:
+			// remoteNodeMiddleware sets remoteNode, never user. The actor
+			// stays nil (a Beacon report is not a user action); the node is
+			// identifiable via the server's node_id, not the actor column.
 			_, err = cfg.Store.UpsertBackup(ctx, c.Params("id"), store.UpsertBackupRequest{
 				UUID:        body.UUID,
 				Name:        body.Name,
@@ -1890,13 +2242,17 @@ func NewServer(cfg Config) *fiber.App {
 				Size:        body.Size,
 				Status:      body.Status,
 				CompletedAt: &completedAt,
-			}, actorID)
+			}, nil)
 		} else {
-			var actorID *string
-			err = cfg.Store.MarkBackupStatus(ctx, c.Params("id"), body.Name, body.Status, actorID)
+			err = cfg.Store.MarkBackupStatus(ctx, c.Params("id"), body.Name, body.Status, nil)
 		}
 		if err != nil {
-			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+			// Was a flat 400 with the raw error text. A backup report can fail
+			// because the caller named something that does not exist, but it
+			// can equally fail because the database is down, and blaming the
+			// node for that hides the outage. respondStoreError classifies the
+			// recognisable client-side conditions and redacts the rest.
+			return respondStoreError(c, err)
 		}
 		return c.SendStatus(fiber.StatusNoContent)
 	})
@@ -1916,18 +2272,23 @@ func NewServer(cfg Config) *fiber.App {
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		belongs, err := cfg.Store.ServerBelongsToNode(ctx, c.Params("id"), node.ID)
-		if err != nil || !belongs {
-			return fiber.NewError(fiber.StatusForbidden, "requesting node cannot access this server")
+		if err := requireNodeOwnsServer(ctx, c, cfg.Store, c.Params("id"), node.ID, nodeCannotAccessServer); err != nil {
+			return err
 		}
 		if body.ActualState != "" {
 			if err := cfg.Store.SetServerActualState(ctx, c.Params("id"), store.ServerActualState(body.ActualState), body.Status); err != nil {
-				cfg.Logger.Error("failed to set server actual state", "serverId", c.Params("id"), "error", err)
+				if cfg.Logger != nil {
+					cfg.Logger.Error("failed to set server actual state", "serverId", c.Params("id"), "error", err)
+				}
+				return respondInternalError(c, err)
 			}
 		}
 		if body.Status != "" {
 			if err := cfg.Store.SetServerStatus(ctx, c.Params("id"), body.Status, body.Error); err != nil {
-				cfg.Logger.Error("failed to set server status", "serverId", c.Params("id"), "error", err)
+				if cfg.Logger != nil {
+					cfg.Logger.Error("failed to set server status", "serverId", c.Params("id"), "error", err)
+				}
+				return respondInternalError(c, err)
 			}
 		}
 		return c.SendStatus(fiber.StatusNoContent)
@@ -1950,20 +2311,25 @@ func NewServer(cfg Config) *fiber.App {
 		}
 		ctx, cancel := requestContext()
 		defer cancel()
-		belongs, err := cfg.Store.ServerBelongsToNode(ctx, c.Params("id"), node.ID)
-		if err != nil || !belongs {
-			return fiber.NewError(fiber.StatusForbidden, "requesting node cannot access this server")
+		if err := requireNodeOwnsServer(ctx, c, cfg.Store, c.Params("id"), node.ID, nodeCannotAccessServer); err != nil {
+			return err
 		}
 		serverID := c.Params("id")
 		if err := cfg.Store.AppendAudit(ctx, nil, body.Action, "server", &serverID, body.Metadata); err != nil {
-			cfg.Logger.Error("audit append failed", "action", body.Action, "error", err)
+			if cfg.Logger != nil {
+				cfg.Logger.Error("audit append failed", "action", body.Action, "error", err)
+			}
 		}
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 
 	remote.Post("/servers/:id/crash", func(c *fiber.Ctx) error {
+		node, ok := c.Locals("remoteNode").(store.Node)
+		if !ok {
+			return fiber.NewError(fiber.StatusUnauthorized, "missing node")
+		}
 		if cfg.Store == nil {
-			return c.Status(503).JSON(fiber.Map{"error": "database not available"})
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
 		var req struct {
 			ExitCode    int  `json:"exit_code"`
@@ -1971,26 +2337,124 @@ func NewServer(cfg Config) *fiber.App {
 			AutoRestart bool `json:"auto_restart"`
 		}
 		if err := c.BodyParser(&req); err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "invalid request body"})
+			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 		}
-		crashID := uuid.NewString()
+		ctx, cancel := requestContext()
+		defer cancel()
+		if err := requireNodeOwnsServer(ctx, c, cfg.Store, c.Params("id"), node.ID, nodeCannotAccessServer); err != nil {
+			return err
+		}
 		crashCtx := cfg.BackgroundContext
 		if crashCtx == nil {
 			crashCtx = context.Background()
 		}
-		_, err := cfg.Store.Exec(crashCtx, `INSERT INTO server_crash_events
-			(id, server_id, node_id, exit_code, oom_killed, auto_restarted, created_at)
-			SELECT $1, s.id, s.node_id, $3, $4, $5, NOW() FROM servers s WHERE s.id = $2`,
-			crashID, c.Params("id"), req.ExitCode, req.OOMKilled, req.AutoRestart)
-		if err != nil {
+		// Detached from the request context on purpose: a node that drops the
+		// connection mid-report should not cost us the crash record.
+		//
+		// The write goes through the store rather than an inline INSERT. The
+		// previous inline form was an INSERT ... SELECT ... FROM servers WHERE
+		// s.id = $2, which recorded nothing when the server row was gone while
+		// Exec reported no error, so this endpoint answered ok:true for a crash
+		// it had not stored. node_id is passed explicitly — the ownership check
+		// above has just established that it is this server's node.
+		event, err := cfg.Store.CreateCrashEvent(crashCtx, store.CreateCrashEventRequest{
+			ServerID:      c.Params("id"),
+			NodeID:        node.ID,
+			ExitCode:      req.ExitCode,
+			OOMKilled:     req.OOMKilled,
+			AutoRestarted: req.AutoRestart,
+			// Beacon reports one crash per call and does not send a running
+			// count; 1 matches the column default the inline INSERT relied on
+			// by omitting the column. CleanExit stays false: this endpoint is
+			// only called for crashes.
+			CrashCount: 1,
+		})
+		switch {
+		case errors.Is(err, store.ErrCrashEventUnreadable):
+			// Durably recorded, only the read-back failed. Answering with an
+			// error here would make the node retry and log the crash twice.
+			// cfg.Logger is optional (see respondInternalError), and a partial
+			// write is exactly the case that must not go unrecorded, so fall
+			// back to the default logger rather than skipping the line.
+			crashLog := cfg.Logger
+			if crashLog == nil {
+				crashLog = slog.Default()
+			}
+			crashLog.Warn("crash event stored but not read back",
+				"server_id", c.Params("id"), "node_id", node.ID, "crash_id", event.ID, "error", err)
+		case err != nil:
 			return respondInternalError(c, err)
 		}
-		return c.JSON(fiber.Map{"ok": true, "id": crashID})
+		return c.JSON(fiber.Map{"ok": true, "id": event.ID})
+	})
+
+	// remote.Post("/servers/:id/health") is the control-plane ingest seam for
+	// Beacon's post-deploy health probes: it records a HealthObservation through
+	// the resource-limits service so HealthStatus/ShouldRollback can gate a
+	// release. Beacon runs the probe; the observation store lives here, so this
+	// handler is a thin, node-authenticated forward into resourcelimits.Service.
+	remote.Post("/servers/:id/health", func(c *fiber.Ctx) error {
+		node, ok := c.Locals("remoteNode").(store.Node)
+		if !ok {
+			return fiber.NewError(fiber.StatusUnauthorized, "missing node")
+		}
+		if cfg.Store == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
+		}
+		pool := cfg.Store.GetDB()
+		if pool == nil {
+			return fiber.NewError(fiber.StatusServiceUnavailable, "resource limits store is not configured")
+		}
+		var body struct {
+			Healthy      bool   `json:"healthy"`
+			Detail       string `json:"detail"`
+			ProcessType  string `json:"processType"`
+			ProcessType2 string `json:"process_type"`
+		}
+		if err := c.BodyParser(&body); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		}
+		// Accept both camelCase (the panel-facing twin) and snake_case (the
+		// daemon's convention) for the process type; it is required because a
+		// probe that names no process type cannot be attributed to a release.
+		// When both spellings are present they must agree — silently picking
+		// one would attribute the probe to a process the sender did not name.
+		camel := strings.TrimSpace(body.ProcessType)
+		snake := strings.TrimSpace(body.ProcessType2)
+		if camel != "" && snake != "" && camel != snake {
+			return fiber.NewError(fiber.StatusBadRequest, "conflicting processType and process_type values")
+		}
+		processType := camel
+		if processType == "" {
+			processType = snake
+		}
+		if processType == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "processType is required")
+		}
+		serverID := strings.TrimSpace(c.Params("id"))
+		if serverID == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "server id is required")
+		}
+		ctx, cancel := requestContext()
+		defer cancel()
+		if err := requireNodeOwnsServer(ctx, c, cfg.Store, serverID, node.ID, nodeCannotAccessServer); err != nil {
+			return err
+		}
+		svc := resourcelimits.NewFromPool(pool)
+		if err := svc.ReportHealth(ctx, serverID, processType, body.Healthy, body.Detail); err != nil {
+			return respondInternalError(c, err)
+		}
+		return c.JSON(fiber.Map{"ok": true})
 	})
 
 	// Additional /api/remote/* routes for daemon parity
 	// (cluster-wide activity, backup lifecycle, archive completion, transfer state).
 	registerRemoteExtras(remote, cfg)
+
+	// Node-reported container lifecycle feed. Mounted here, on the guarded
+	// /api/remote group, so it can never carry a weaker middleware chain than the
+	// rest of the node-facing API.
+	registerDockerEventIngest(remote, cfg)
 
 	// Setup wizard routes (public, gated to "no admin exists" server-side)
 	registerSetupRoutes(v1, cfg, authLimiter)
@@ -2001,11 +2465,18 @@ func NewServer(cfg Config) *fiber.App {
 	v1.Post("/oauth2/token", authLimiter, IssueOAuth2Token(cfg))
 	v1.Post("/oauth/token", authLimiter, IssueOAuth2Token(cfg)) // alias
 
-	// Social authentication (Discord, Steam, Authentik)
-	registerSocialAuthRoutes(v1, cfg, mutationLimiter, authLimiter)
+	// Social authentication (Discord, Steam, Authentik). The public OAuth
+	// redirect/callback routes mount on v1; the account/admin half must ride the
+	// canonical protected router, so the full registration is deferred until
+	// just after `protected` is defined below.
 
 	// Git webhook endpoints (public, verified by HMAC signatures)
 	registerGitWebhookRoutes(v1, cfg)
+
+	// Git-push deploy hook (public by design: it is called by a repository's
+	// post-receive hook on a node, which has no session; the HMAC of the raw
+	// body against the app's shared secret is the only credential).
+	registerGitPushWebhookRoutes(v1, cfg)
 
 	// Set panel origin for CSRF validation
 	v1.Use(func(c *fiber.Ctx) error {
@@ -2038,7 +2509,41 @@ func NewServer(cfg Config) *fiber.App {
 		}
 		return mutationLimiter(c)
 	}
-	protected := v1.Group("", authMiddleware(cfg.AuthSecret, cfg.Store), sessMw, requireTwoFactorAuthentication(cfg), csrfMiddleware(LoadSessionCookieConfig()), methodLimiter)
+	protected := v1.Group("", authMiddleware(cfg.AuthSecret, cfg.Store), sessMw, requireTwoFactorAuthentication(cfg), csrfMiddleware(cfg.AuthSecret, LoadSessionCookieConfig()), methodLimiter)
+
+	// Log every successful mutating request into the activity feed. Runs after
+	// auth so the actor is known; the read endpoints (/admin/activity) depend on
+	// this, otherwise the feed is permanently empty.
+	protected.Use(func(c *fiber.Ctx) error {
+		herr := c.Next()
+		if cfg.ActivityService == nil || c.Method() == fiber.MethodGet || herr != nil {
+			return herr
+		}
+		if c.Response().StatusCode() >= 400 {
+			return herr
+		}
+		var actorID, actorEmail string
+		if claims, ok := c.Locals("user").(tokenClaims); ok {
+			actorID, actorEmail = claims.Sub, claims.Email
+		}
+		routePath := ""
+		if r := c.Route(); r != nil {
+			routePath = r.Path
+		}
+		actCtx, actCancel := requestContext()
+		defer actCancel()
+		_ = cfg.ActivityService.NewEvent("http:"+c.Method()+" "+routePath).
+			Actor(actorID, actorEmail, "user").
+			IP(ExtractClientIP(c)).
+			Description(c.Method()+" "+c.OriginalURL()).
+			Save(actCtx, cfg.ActivityService)
+		return herr
+	})
+
+	// Social authentication: the canonical protected router now exists, so mount
+	// the public (v1) and protected/admin social routes on it.
+	registerSocialAuthRoutes(v1, protected, cfg, mutationLimiter, authLimiter)
+
 	protected.Post("/servers/:id/ws/ticket", IssueWSTicket(cfg, wsTickets))
 	protected.Post("/servers/:id/files/download-ticket", mutationLimiter, issueFileDownloadTicket(cfg, fileDownloadTickets))
 	protected.Post("/servers/:id/backups/download-ticket", mutationLimiter, issueBackupDownloadTicket(cfg, fileDownloadTickets))
@@ -2058,11 +2563,19 @@ func NewServer(cfg Config) *fiber.App {
 			return fiber.NewError(fiber.StatusBadRequest, "path parameter is required")
 		}
 
-		// Issue a download ticket for the file
+		// Issue a download ticket for the file, bound to the issuing user and IP
+		// so a leaked URL cannot be replayed from another account or network.
+		var issuerID, issuerIP string
+		if claims, ok := c.Locals("user").(tokenClaims); ok {
+			issuerID = claims.Sub
+		}
+		issuerIP = ExtractClientIP(c)
 		ticket, err := fileDownloadTickets.issue(fileDownloadTicket{
 			serverID: serverID,
 			filePath: filePath,
 			expires:  time.Now().Add(5 * time.Minute),
+			userID:   issuerID,
+			ip:       issuerIP,
 		})
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "failed to issue download ticket")
@@ -2078,7 +2591,7 @@ func NewServer(cfg Config) *fiber.App {
 		})
 	})
 
-	v1.Get("/download/file", downloadFileWithTicket(cfg, fileDownloadTickets))
+	v1.Get("/download/file", authLimiter, downloadFileWithTicket(cfg, fileDownloadTickets))
 
 	// ---- Tier 1: Console command ----
 
@@ -2109,14 +2622,16 @@ func NewServer(cfg Config) *fiber.App {
 			actorID = &claims.Sub
 		}
 		if err := cfg.Store.AppendAudit(ctx, actorID, "server:console.command", "server", &target.ServerID, safeAuditMeta(map[string]string{"command": body.Command})); err != nil {
-			cfg.Logger.Error("audit append failed", "action", "server:console.command", "error", err)
+			if cfg.Logger != nil {
+				cfg.Logger.Error("audit append failed", "action", "server:console.command", "error", err)
+			}
 		}
 		return c.JSON(fiber.Map{"ok": true})
 	})
 
 	// ---- Tier 2: Single-GET routes ----
 
-	protected.Get("/users/:id", requireRole("admin"), func(c *fiber.Ctx) error {
+	protected.Get("/users/:id", requireRole("admin"), requireAdminScope("users.read"), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
 		}
@@ -2129,18 +2644,12 @@ func NewServer(cfg Config) *fiber.App {
 		return c.JSON(user)
 	})
 
-	protected.Get("/mounts/:id", requireRole("admin"), func(c *fiber.Ctx) error {
-		if cfg.Store == nil {
-			return fiber.NewError(fiber.StatusServiceUnavailable, "postgres is required")
-		}
-		ctx, cancel := requestContext()
-		defer cancel()
-		mount, err := cfg.Store.GetMount(ctx, c.Params("id"))
-		if err != nil {
-			return fiber.NewError(fiber.StatusNotFound, "mount not found")
-		}
-		return c.JSON(mount)
-	})
+	// GET /mounts/:id is registered by registerAdminRoutes with
+	// requireAdminScope("mounts.read"). It used to be duplicated here with only
+	// requireRole("admin"); because Fiber resolves overlapping paths in
+	// registration order and this block runs first, the copy below shadowed the
+	// scoped one and let any admin API key read a mount regardless of its
+	// scopes. The duplicate is gone so the scoped registration is the live one.
 
 	protected.Get("/servers/:id/users/:userId", requireRole("admin"), requireAdminScope("servers.read"), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
@@ -2159,10 +2668,18 @@ func NewServer(cfg Config) *fiber.App {
 	registerExternalLookupRoutes(protected, cfg)
 	registerAuthRoutes(protected, cfg, mutationLimiter)
 	registerPasswordResetRoutes(v1, cfg, authLimiter)
-	registerAccountRecoveryRoutes(v1, cfg, authLimiter)
+	registerAccountRecoveryRoutes(v1, protected, cfg, authLimiter)
 	// Register fixed plugin subroutes before admin's /admin/plugins/:id route.
 	// Otherwise paths such as /discover are parsed as a plugin identifier.
 	registerPluginRoutes(protected, cfg)
+	// /api-keys is owned by registerAuthRoutes above: keys belong to the
+	// authenticated user, not to admins. A second /api-keys group used to be
+	// registered here; it was unreachable (registerAuthRoutes runs first) and
+	// read the caller from a "userId" local that authMiddleware never sets.
+	registerNestRoutes(protected, cfg, mutationLimiter, adminIPAccess)
+	registerLocationRoutes(protected, cfg, mutationLimiter, adminIPAccess)
+	registerRegionRoutes(protected, cfg, mutationLimiter, adminIPAccess)
+	registerTemplateRoutes(protected, cfg, mutationLimiter, adminIPAccess)
 	registerAdminRoutes(protected, cfg, nodeRegistry, clusterManager, evacuationPlanner, migrationService, reservationManager, recoveryCoordinator, mutationLimiter, adminIPAccess)
 	registerServerRoutes(protected, cfg, runner, clusterManager, mutationLimiter, adminIPAccess)
 	registerSettingsRoutes(protected, cfg, mutationLimiter, adminIPAccess)
@@ -2171,17 +2688,29 @@ func NewServer(cfg Config) *fiber.App {
 	registerActivityRoutes(protected, cfg)
 	registerAuditLogRoutes(protected, cfg)
 	registerOrphanRemediationRoutes(protected, cfg, mutationLimiter, adminIPAccess)
-	registerAdminExtras(protected, cfg, nodeProbe)
+	registerAdminExtras(protected, cfg, nodeProbe, adminIPAccess, mutationLimiter)
+	// The following three registrars were defined but never invoked, so the
+	// admin Operations-timeline, Kubernetes and Installer pages (advertised as
+	// "available" in the admin registry and backed by lib/api modules) 404'd.
+	registerOperationsTimelineRoutes(protected, cfg)
+	registerKubernetesRoutes(protected, cfg, adminIPAccess)
+	registerIncusRoutes(protected, cfg, adminIPAccess)
+	registerNomadRoutes(protected, cfg, adminIPAccess)
+	registerInstallerRoutes(protected, cfg)
 	registerObservabilityRoutes(protected, cfg, cfg.Observability, cfg.HeartbeatMonitor)
 	registerAlertRoutes(protected, cfg.AlertService, cfg.Observability, mutationLimiter)
 	registerNotificationRoutes(protected, cfg.NotificationService, mutationLimiter)
+	// User-facing notifications engine routes. Registered before the enhanced
+	// admin-only registrar so /notifications/channels is the user-scoped list.
+	registerNotificationCrudRoutes(protected, cfg.NotificationRouter, mutationLimiter)
 	if cfg.EnhancedNotificationService != nil {
-		registerEnhancedNotificationRoutes(protected, cfg.EnhancedNotificationService, mutationLimiter)
+		registerEnhancedNotificationRoutes(protected, cfg, cfg.EnhancedNotificationService, mutationLimiter)
 	}
 	registerMailSettingsRoutes(protected, cfg, mutationLimiter, adminIPAccess)
 	registerSFTPRoutes(protected, cfg, mutationLimiter)
-	registerWebAuthnRoutes(protected, cfg, mutationLimiter, cfg.WebAuthnService)
+	registerWebAuthnRoutes(v1, protected, cfg, authLimiter, mutationLimiter, cfg.WebAuthnService)
 	registerAutoScalerRoutes(protected, cfg, cfg.AutoScaler, adminIPAccess, mutationLimiter)
+	registerNodeAutoscaleRoutes(protected, cfg, cfg.NodeAutoscaler, adminIPAccess, mutationLimiter)
 	registerDeploymentRoutes(protected, cfg, cfg.DeploymentSvc, adminIPAccess, mutationLimiter)
 	registerDeploymentHistoryRoutes(protected, cfg, adminIPAccess, mutationLimiter)
 	registerRevisionRoutes(protected, cfg, cfg.DeploymentSvc, adminIPAccess, mutationLimiter)
@@ -2192,24 +2721,29 @@ func NewServer(cfg Config) *fiber.App {
 	registerTrafficManagerRoutes(protected, cfg, cfg.TrafficManager, adminIPAccess, mutationLimiter)
 	registerDomainRoutes(protected, cfg, cfg.DomainService, mutationLimiter)
 	registerCertificateRoutes(protected, cfg, cfg.AcmeService, adminIPAccess, mutationLimiter)
-	registerCertificateRoutesExt(protected, cfg, adminIPAccess, mutationLimiter)
+	registerCertificateRoutesExt(protected, cfg, cfg.AcmeService, adminIPAccess, mutationLimiter)
 	registerAcmeAccountRoutes(protected, cfg, adminIPAccess, mutationLimiter)
 	registerMTLSRoutes(protected, cfg, cfg.CertService, cfg.MTLSMigrator, adminIPAccess, mutationLimiter)
 	registerSchedulerRoutes(protected, cfg, cfg.PredictiveScorer, cfg.ConstraintScheduler, adminIPAccess, mutationLimiter)
 	registerCrashDetectionRoutes(protected, cfg, cfg.CrashDetector, mutationLimiter)
 	registerBackupRoutes(protected, cfg, cfg.BackupSvc, mutationLimiter)
+	registerBackupEngineRoutes(protected, cfg, cfg.BackupEngineService, mutationLimiter)
 	registerDNSRoutes(protected, cfg, cfg.DNSService, mutationLimiter)
 	registerMaintenanceRoutes(protected, cfg, mutationLimiter)
 	registerComposeRoutes(protected, cfg, mutationLimiter)
+	registerComposeTemplateRoutes(protected, cfg, mutationLimiter)
 	registerDBContainerRoutes(protected, cfg, mutationLimiter)
 	registerDatabaseServiceRoutes(protected, cfg, mutationLimiter)
+	registerDBDiagnosticRoutes(protected, cfg)
 	registerManagedDatabaseRoutes(protected, cfg, mutationLimiter)
 	registerGitRoutes(protected, cfg, adminIPAccess, mutationLimiter)
+	registerGitPushRoutes(protected, cfg, mutationLimiter, adminIPAccess)
 	RegisterGitDeploymentRoutes(protected, cfg, mutationLimiter)
 	registerBuildRoutes(protected, cfg, cfg.BuildService, mutationLimiter)
 	registerBuildpackRoutes(protected, cfg, cfg.BuildpackService, mutationLimiter)
 	registerZeroDowntimeRoutes(protected, cfg, cfg.ZeroDowntimeSvc, mutationLimiter)
 	registerSourceDeploymentRoutes(protected, cfg, mutationLimiter)
+	registerRegistryRoutes(protected, cfg, adminIPAccess, mutationLimiter)
 	registerReconcileRoutes(protected, cfg, cfg.Reconciler, adminIPAccess, mutationLimiter)
 
 	// Capability inventory and onboarding token management
@@ -2226,10 +2760,17 @@ func NewServer(cfg Config) *fiber.App {
 	// App hosting routes (Application → Service model)
 	registerAppHostingRoutes(protected, cfg, cfg.AppHostingService, mutationLimiter)
 	registerProcedureRoutes(protected, cfg, cfg.ProcedureService, mutationLimiter)
+	// Pipelines are served by the single validated phase5 surface
+	// (registerPhase5PipelineRoutes): it prefers cfg.PipelineService when
+	// main injects it and otherwise builds from the Postgres pool. The legacy
+	// registerPipelineRoutes duplicate is retired so /pipelines and
+	// /pipeline-runs have exactly one owner.
 
 	// Portainer-inspired container/image/network/volume administration
 	registerPortainerRoutes(protected, cfg, mutationLimiter, adminIPAccess)
 	registerAppStoreRoutes(protected, cfg, cfg.AppStoreService, mutationLimiter)
+	registerCatalogRoutes(protected, cfg, cfg.CatalogService, adminIPAccess, mutationLimiter)
+	registerForgefileRoutes(protected, cfg, cfg.ForgefileSvc, mutationLimiter)
 
 	// Docker management routes (cleaner replacement for Portainer admin routes)
 	registerDockerRoutes(protected, cfg, mutationLimiter, adminIPAccess)
@@ -2241,6 +2782,11 @@ func NewServer(cfg Config) *fiber.App {
 	// Cron job management
 	if cfg.CronJobService != nil {
 		registerCronJobRoutes(protected, cfg, cfg.CronJobService, mutationLimiter)
+	}
+
+	// Per-app scheduled tasks (cron-expression commands dispatched to Beacon)
+	if cfg.ScheduledTaskService != nil {
+		registerScheduledTaskRoutes(protected, cfg, cfg.ScheduledTaskService, mutationLimiter)
 	}
 
 	// Procfile process management
@@ -2262,12 +2808,35 @@ func NewServer(cfg Config) *fiber.App {
 	registerClusterMembershipRoutes(protected, cfg.ClusterMembershipService, mutationLimiter)
 	registerCleanupRoutes(protected, cfg.CleanupService, mutationLimiter)
 
+	// Billing / placement (previously-orphan services now wired). Drain is not
+	// registered: /nodes/:id/drain is already served by clustermembership.
+	registerBillingRoutes(protected, cfg, mutationLimiter)
+	registerBillingWebhookRoute(v1, cfg, mutationLimiter)
+	registerPlacementRoutes(protected, cfg, cfg.PlacementService, mutationLimiter)
+	registerDrainRoutes(protected, cfg, cfg.DrainLedger)
+	registerHealthCheckRoutes(protected, cfg, cfg.HealthCheckRunner)
+	registerFencingRoutes(protected, cfg, cfg.FencingSvc, mutationLimiter)
+	registerUpgradeRoutes(protected, cfg, cfg.UpgradeSvc, mutationLimiter)
+
 	// Cross-node routing and service discovery routes
 	registerServiceDiscoveryRoutes(protected, cfg, cfg.ServiceDiscovery, adminIPAccess, mutationLimiter)
 	registerCrossNodeRoutes(protected, cfg, cfg.CrossNodeResolver, cfg.IngressSynchronizer, adminIPAccess, mutationLimiter)
+	registerNetBirdRoutes(protected, cfg, adminIPAccess, mutationLimiter)
 
-	// Phase registrars (each of the 8 build phases registers here)
-	registerPhaseHooks(v1, protected, &cfg)
+	// Phase registrars (16 registered; see internal/http/phase_registry.go).
+	//
+	// A registrar failure is fatal. This is a startup panic for the same
+	// reason as the session-cookie check above: a panel that mounted only
+	// part of its API surface but reported a successful startup is
+	// indistinguishable from a healthy one until a user hits a route that has
+	// silently become a 404. Refusing to serve is the only outcome that does
+	// not report success for work that was not performed.
+	//
+	// Deliberate skips (ErrPhaseSkipped, for an optional dependency that is
+	// not configured) are logged and do not reach here.
+	if err := registerPhaseHooks(v1, protected, &cfg); err != nil {
+		panic("phase route registration failed: " + err.Error())
+	}
 
 	// Start schedule runner
 	if cfg.Store != nil {

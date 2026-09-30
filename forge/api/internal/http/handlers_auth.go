@@ -64,14 +64,22 @@ func registerAuthRoutes(protected fiber.Router, cfg Config, mutationLimiter fibe
 		if err != nil {
 			return fiber.NewError(fiber.StatusUnauthorized, "invalid or revoked session")
 		}
+		// Revoke the presented (legacy localStorage) JTI so the migration is
+		// a rotation, not a duplication: after this call only the new
+		// HttpOnly-cookie session remains usable. Fail closed if the revoke
+		// cannot be persisted.
+		if claims.JTI != "" {
+			if err := cfg.Store.RevokeJWT(ctx, claims.JTI, time.Unix(claims.Exp, 0)); err != nil {
+				return fiber.NewError(fiber.StatusServiceUnavailable, "could not revoke legacy session")
+			}
+		}
 		// Issue new token with same JTI/Exp for continuity
 		newToken, err := issueConfiguredToken(cfg, store.User{ID: current.Sub, Email: current.Email, Role: current.Role, SessionVersion: current.SessionVersion})
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "could not issue session token")
 		}
-		csrfToken, _ := generateCSRFToken()
 		expires := time.Unix(current.Exp, 0)
-		setSessionCookies(c, newToken, csrfToken, expires)
+		setSessionCookies(c, newToken, deriveSessionCSRFToken(cfg.AuthSecret, newToken), expires)
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 
@@ -587,9 +595,8 @@ func handlePasswordChange(cfg Config) fiber.Handler {
 		if err == nil {
 			newToken, tokenErr := issueConfiguredToken(cfg, user)
 			if tokenErr == nil {
-				csrfToken, _ := generateCSRFToken()
 				expires := tokenExpiry(cfg)
-				setSessionCookies(c, newToken, csrfToken, expires)
+				setSessionCookies(c, newToken, deriveSessionCSRFToken(cfg.AuthSecret, newToken), expires)
 			}
 		}
 		_ = cfg.Store.AppendAudit(ctx, &claims.Sub, "account.password.changed", "user", &claims.Sub, "{}")

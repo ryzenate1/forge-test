@@ -1,4 +1,4 @@
-import { fetchJSON, postJSON, API_BASE_URL, getAuthHeaders, getCSRFToken } from './http';
+import { fetchJSON, postJSON, requestText, requestBlob, requestVoid, fetchExternalBlob } from './http';
 
 export interface FileEntry {
   name: string;
@@ -25,20 +25,11 @@ export function listFiles(path: string = '/', nodeId?: string): Promise<FileEntr
 }
 
 export async function readFile(path: string, nodeId?: string): Promise<string> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Accept: 'text/plain',
-  };
-  const csrf = getCSRFToken();
-  if (csrf) headers['X-CSRF-Token'] = csrf;
-  const response = await fetch(
-    `${API_BASE_URL}${nodePath('/host/files/read', nodeId)}`,
-    { method: 'POST', headers, credentials: 'include', body: JSON.stringify({ path }) },
-  );
-  if (!response.ok) {
-    throw new Error(`Failed to read file: ${response.status}`);
-  }
-  return response.text();
+  return requestText(nodePath('/host/files/read', nodeId), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/plain' },
+    body: JSON.stringify({ path }),
+  });
 }
 
 export async function writeFile(path: string, content: string, nodeId?: string): Promise<void> {
@@ -68,25 +59,35 @@ export async function chmodFile(path: string, mode: string, nodeId?: string): Pr
 export async function uploadFile(path: string, file: File, nodeId?: string): Promise<void> {
   const formData = new FormData();
   formData.append('files', file);
-  const headers: Record<string, string> = {};
-  const csrf = getCSRFToken();
-  if (csrf) headers['X-CSRF-Token'] = csrf;
-  const response = await fetch(
-    `${API_BASE_URL}/host/files/upload?path=${encodeURIComponent(path)}${nodeQuery(nodeId)}`,
-    { method: 'POST', headers, credentials: 'include', body: formData },
-  );
-  if (!response.ok) {
-    throw new Error(`Failed to upload file: ${response.status}`);
-  }
+  // requestVoid routes through the canonical primitive (CSRF + credentials);
+  // the browser sets the multipart Content-Type boundary because no explicit
+  // Content-Type is passed.
+  await requestVoid(`/host/files/upload?path=${encodeURIComponent(path)}${nodeQuery(nodeId)}`, {
+    method: 'POST',
+    body: formData,
+  });
 }
 
 export async function downloadFile(path: string, nodeId?: string): Promise<Blob> {
-  const response = await fetch(
-    `${API_BASE_URL}/host/files/download?path=${encodeURIComponent(path)}${nodeQuery(nodeId)}`,
-    { headers: { ...getAuthHeaders() }, credentials: 'include' },
-  );
-  if (!response.ok) {
-    throw new Error(`Failed to download file: ${response.status}`);
-  }
-  return response.blob();
+  return requestBlob(`/host/files/download?path=${encodeURIComponent(path)}${nodeQuery(nodeId)}`);
+}
+
+/**
+ * Client-side pull of an ARBITRARY external URL (used by the host file manager
+ * when no dedicated beacon pull endpoint exists). Routes through the shared
+ * {@link fetchExternalBlob} — the single HTTP execution path — so error
+ * shaping matches every other call (`ApiError`, status 0 for transport
+ * failures, `AbortError` untouched). Absolute URLs bypass the API base prefix;
+ * cross-origin targets never receive cookies (`same-origin` credentials) and
+ * are never CSRF-signed (see `isSameOriginRequest` in `./http`).
+ *
+ * A default 30s timeout applies when the caller provides no signal; pass
+ * `{ signal }` to cancel with your own controller or `{ timeoutMs: false }`
+ * to opt out.
+ */
+export async function pullRemoteFile(
+  url: string,
+  options?: { signal?: AbortSignal; timeoutMs?: number | false },
+): Promise<Blob> {
+  return fetchExternalBlob(url, options);
 }

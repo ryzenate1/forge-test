@@ -4,6 +4,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"gamepanel/forge/internal/services/crashdetector"
+	"gamepanel/forge/internal/store"
 )
 
 func registerCrashDetectionRoutes(protected fiber.Router, cfg Config, detector *crashdetector.Detector, mutationLimiter fiber.Handler) {
@@ -11,10 +12,12 @@ func registerCrashDetectionRoutes(protected fiber.Router, cfg Config, detector *
 		return
 	}
 
-	admin := protected.Group("/admin")
+	// Crash detection is an operator-only surface; the group must carry the
+	// admin role guard, not just session auth.
+	admin := protected.Group("/admin", requireRole("admin"))
 
 	// GET /admin/crash-detection/servers/:id - get crash history for a server
-	admin.Get("/crash-detection/servers/:id", func(c *fiber.Ctx) error {
+	admin.Get("/crash-detection/servers/:id", requireServerPermission(cfg, store.PermServerView), func(c *fiber.Ctx) error {
 		if cfg.Store == nil {
 			return c.Status(503).JSON(fiber.Map{"error": "database not available"})
 		}
@@ -26,13 +29,13 @@ func registerCrashDetectionRoutes(protected fiber.Router, cfg Config, detector *
 	})
 
 	// POST /admin/crash-detection/servers/:id/reset - reset crash state for a server
-	admin.Post("/crash-detection/servers/:id/reset", mutationLimiter, func(c *fiber.Ctx) error {
+	admin.Post("/crash-detection/servers/:id/reset", mutationLimiter, requireServerPermission(cfg, store.PermControlRestart), func(c *fiber.Ctx) error {
 		detector.Reset(c.Params("id"))
 		return c.JSON(fiber.Map{"ok": true})
 	})
 
 	// GET /admin/crash-detection/config - get current crash detection config
-	admin.Get("/crash-detection/config", func(c *fiber.Ctx) error {
+	admin.Get("/crash-detection/config", requireAdminScope("nodes.read"), func(c *fiber.Ctx) error {
 		dc := crashdetector.DefaultConfig()
 		return c.JSON(fiber.Map{
 			"threshold":   dc.Threshold,

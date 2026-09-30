@@ -1,37 +1,48 @@
 "use client";
 
 import { useState } from "react";
+import { Download, Plus } from "lucide-react";
 import { AdminDatabases } from "@/components/admin/AdminDatabases";
 import { DBContainerView } from "@/components/database/container-view";
 import { ManagedDatabaseView } from "@/components/database/managed-database-view";
 import { DatabaseServicesView } from "@/components/database/database-services-view";
-import { AdminPageLayout, AdminPageHeader, AdminTabs } from "@/components/admin/admin-ui";
+import { CreateDatabaseModal, DatabasesOverview, type DatabaseTab } from "@/components/database/databases-overview";
+import { AdminPageLayout, AdminTabs, SectionHeader } from "@/components/admin/admin-ui";
 import { OfflineBanner } from "@/components/shared/states-offline";
-
-type Tab = "hosts" | "containers" | "managed" | "services";
+import { Btn } from "@/components/admin/admin-ui";
+import { adminPageGuides } from "@/components/admin/admin-page-guides";
 
 export default function AdminDatabasesPage() {
-  const [activeTab, setActiveTab] = useState<Tab>("containers");
+  const [activeTab, setActiveTab] = useState<DatabaseTab>("overview");
+  const [showCreate, setShowCreate] = useState(false);
 
   const tabs = [
-    { id: "hosts" as Tab, label: "Database Hosts" },
-    { id: "containers" as Tab, label: "DB Containers" },
-    { id: "managed" as Tab, label: "Managed DBs" },
-    { id: "services" as Tab, label: "Services" },
+    { id: "overview" as DatabaseTab, label: "Overview" },
+    { id: "hosts" as DatabaseTab, label: "Database Hosts" },
+    { id: "containers" as DatabaseTab, label: "DB Containers" },
+    { id: "managed" as DatabaseTab, label: "Managed DBs" },
+    { id: "services" as DatabaseTab, label: "Services" },
   ];
 
   return (
     <AdminPageLayout>
-      <AdminPageHeader
+      <SectionHeader
         title="Databases"
-        description="Database hosts, containers, managed database services — plus Restart/TestConnection/Templates via Services tab"
+        sub="Database inventory: hosts, managed instances and linked services."
+        info={adminPageGuides.databases}
+        action={<div className="flex flex-wrap items-center gap-2">
+          <Btn tone="ghost" onClick={() => setActiveTab("hosts")}><Download size={14} /> Import</Btn>
+          <Btn tone="primary" onClick={() => setShowCreate(true)}><Plus size={14} /> Create Database</Btn>
+        </div>}
       />
       <OfflineBanner onRetry={() => window.location.reload()} />
-      <AdminTabs active={activeTab} onChange={(id) => setActiveTab(id as Tab)} tabs={tabs} />
+      <AdminTabs active={activeTab} onChange={(id) => setActiveTab(id as DatabaseTab)} tabs={tabs} />
+      {activeTab === "overview" && <DatabasesOverview onOpenTab={setActiveTab} />}
       {activeTab === "hosts" && <AdminDatabases />}
       {activeTab === "containers" && <DBContainerView />}
       {activeTab === "managed" && <ManagedDatabaseView />}
       {activeTab === "services" && <DatabaseServicesView />}
+      {showCreate && <CreateDatabaseModal onClose={() => setShowCreate(false)} onSelect={setActiveTab} />}
     </AdminPageLayout>
   );
 }

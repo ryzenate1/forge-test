@@ -26,9 +26,15 @@ func clampPageParams(page, perPage int) (int, int) {
 	return page, perPage
 }
 
+// ListServers is a full-table scan for background workers (scheduler,
+// reconciler, affinity) that genuinely need every server. It is NOT
+// paginated: HTTP handlers and any UI-facing path MUST use
+// ListServersPaginated or ListServersForUser instead, which clamp page size
+// and return totals. Adding callers of this method for request paths will
+// reintroduce unbounded result sets.
 func (s *Store) ListServers(ctx context.Context) ([]Server, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT s.id::text, s.name, COALESCE(s.description, ''), s.status, s.desired_state::text, s.actual_state::text, s.config_sync_pending, s.suspended, s.transferring, s.transfer_target_node_id::text, s.transfer_state, s.transfer_error, s.transfer_run_token::text, s.memory_mb, s.cpu_shares, s.disk_mb, n.name, u.email, e.name
+		SELECT s.id::text, s.name, COALESCE(s.description, ''), s.status, s.desired_state::text, s.actual_state::text, s.config_sync_pending, s.suspended, s.transferring, s.transfer_target_node_id::text, s.transfer_state, s.transfer_error, s.transfer_run_token::text, s.memory_mb, s.cpu_shares, s.disk_mb, n.name, u.email, e.name, COALESCE(s.runtime_provider, 'docker')
 		FROM servers s
 		JOIN nodes n ON n.id = s.node_id
 		JOIN users u ON u.id = s.owner_id
@@ -43,7 +49,7 @@ func (s *Store) ListServers(ctx context.Context) ([]Server, error) {
 	servers := []Server{}
 	for rows.Next() {
 		var server Server
-		if err := rows.Scan(&server.ID, &server.Name, &server.Description, &server.Status, &server.DesiredState, &server.ActualState, &server.ConfigSyncPending, &server.Suspended, &server.Transferring, &server.TransferTargetNodeID, &server.TransferState, &server.TransferError, &server.TransferRunToken, &server.MemoryMB, &server.CPUShares, &server.DiskMB, &server.Node, &server.Owner, &server.Template); err != nil {
+		if err := rows.Scan(&server.ID, &server.Name, &server.Description, &server.Status, &server.DesiredState, &server.ActualState, &server.ConfigSyncPending, &server.Suspended, &server.Transferring, &server.TransferTargetNodeID, &server.TransferState, &server.TransferError, &server.TransferRunToken, &server.MemoryMB, &server.CPUShares, &server.DiskMB, &server.Node, &server.Owner, &server.Template, &server.RuntimeProvider); err != nil {
 			return nil, err
 		}
 		servers = append(servers, server)
@@ -59,9 +65,9 @@ func (s *Store) ListServersForUser(ctx context.Context, userID, role string, pag
 
 	offset := (page - 1) * perPage
 	baseQuery := `
-		SELECT id, name, description, status, desired_state, actual_state, config_sync_pending, suspended, transferring, transfer_target_node_id, transfer_state, transfer_error, transfer_run_token, memory_mb, cpu_shares, disk_mb, node_name, owner_email, template_name
+		SELECT id, name, description, status, desired_state, actual_state, config_sync_pending, suspended, transferring, transfer_target_node_id, transfer_state, transfer_error, transfer_run_token, memory_mb, cpu_shares, disk_mb, node_name, owner_email, template_name, runtime_provider
 		FROM (
-			SELECT DISTINCT s.id::text AS id, s.name, COALESCE(s.description, '') AS description, s.status, s.desired_state::text AS desired_state, s.actual_state::text AS actual_state, s.config_sync_pending, s.suspended, s.transferring, s.transfer_target_node_id::text AS transfer_target_node_id, s.transfer_state, s.transfer_error, s.transfer_run_token::text AS transfer_run_token, s.memory_mb, s.cpu_shares, s.disk_mb, n.name AS node_name, u.email AS owner_email, e.name AS template_name, s.created_at
+			SELECT DISTINCT s.id::text AS id, s.name, COALESCE(s.description, '') AS description, s.status, s.desired_state::text AS desired_state, s.actual_state::text AS actual_state, s.config_sync_pending, s.suspended, s.transferring, s.transfer_target_node_id::text AS transfer_target_node_id, s.transfer_state, s.transfer_error, s.transfer_run_token::text AS transfer_run_token, s.memory_mb, s.cpu_shares, s.disk_mb, n.name AS node_name, u.email AS owner_email, e.name AS template_name, COALESCE(s.runtime_provider, 'docker') AS runtime_provider, s.created_at
 			FROM servers s
 			JOIN nodes n ON n.id = s.node_id
 			JOIN users u ON u.id = s.owner_id
@@ -108,7 +114,7 @@ func (s *Store) ListServersForUser(ctx context.Context, userID, role string, pag
 	servers := []Server{}
 	for rows.Next() {
 		var server Server
-		if err := rows.Scan(&server.ID, &server.Name, &server.Description, &server.Status, &server.DesiredState, &server.ActualState, &server.ConfigSyncPending, &server.Suspended, &server.Transferring, &server.TransferTargetNodeID, &server.TransferState, &server.TransferError, &server.TransferRunToken, &server.MemoryMB, &server.CPUShares, &server.DiskMB, &server.Node, &server.Owner, &server.Template); err != nil {
+		if err := rows.Scan(&server.ID, &server.Name, &server.Description, &server.Status, &server.DesiredState, &server.ActualState, &server.ConfigSyncPending, &server.Suspended, &server.Transferring, &server.TransferTargetNodeID, &server.TransferState, &server.TransferError, &server.TransferRunToken, &server.MemoryMB, &server.CPUShares, &server.DiskMB, &server.Node, &server.Owner, &server.Template, &server.RuntimeProvider); err != nil {
 			return nil, 0, err
 		}
 		servers = append(servers, server)
@@ -120,9 +126,9 @@ func (s *Store) ListServersPaginated(ctx context.Context, page, perPage int, sea
 	page, perPage = clampPageParams(page, perPage)
 	offset := (page - 1) * perPage
 	baseQuery := `
-		SELECT id, name, description, status, desired_state, actual_state, config_sync_pending, suspended, transferring, transfer_target_node_id, transfer_state, transfer_error, transfer_run_token, memory_mb, cpu_shares, disk_mb, node_name, owner_email, template_name
+		SELECT id, name, description, status, desired_state, actual_state, config_sync_pending, suspended, transferring, transfer_target_node_id, transfer_state, transfer_error, transfer_run_token, memory_mb, cpu_shares, disk_mb, node_name, owner_email, template_name, runtime_provider
 		FROM (
-			SELECT DISTINCT s.id::text AS id, s.name, COALESCE(s.description, '') AS description, s.status, s.desired_state::text AS desired_state, s.actual_state::text AS actual_state, s.config_sync_pending, s.suspended, s.transferring, s.transfer_target_node_id::text AS transfer_target_node_id, s.transfer_state, s.transfer_error, s.transfer_run_token::text AS transfer_run_token, s.memory_mb, s.cpu_shares, s.disk_mb, n.name AS node_name, u.email AS owner_email, e.name AS template_name, s.created_at
+			SELECT DISTINCT s.id::text AS id, s.name, COALESCE(s.description, '') AS description, s.status, s.desired_state::text AS desired_state, s.actual_state::text AS actual_state, s.config_sync_pending, s.suspended, s.transferring, s.transfer_target_node_id::text AS transfer_target_node_id, s.transfer_state, s.transfer_error, s.transfer_run_token::text AS transfer_run_token, s.memory_mb, s.cpu_shares, s.disk_mb, n.name AS node_name, u.email AS owner_email, e.name AS template_name, COALESCE(s.runtime_provider, 'docker') AS runtime_provider, s.created_at
 			FROM servers s
 			JOIN nodes n ON n.id = s.node_id
 			JOIN users u ON u.id = s.owner_id
@@ -167,7 +173,7 @@ func (s *Store) ListServersPaginated(ctx context.Context, page, perPage int, sea
 	servers := []Server{}
 	for rows.Next() {
 		var server Server
-		if err := rows.Scan(&server.ID, &server.Name, &server.Description, &server.Status, &server.DesiredState, &server.ActualState, &server.ConfigSyncPending, &server.Suspended, &server.Transferring, &server.TransferTargetNodeID, &server.TransferState, &server.TransferError, &server.TransferRunToken, &server.MemoryMB, &server.CPUShares, &server.DiskMB, &server.Node, &server.Owner, &server.Template); err != nil {
+		if err := rows.Scan(&server.ID, &server.Name, &server.Description, &server.Status, &server.DesiredState, &server.ActualState, &server.ConfigSyncPending, &server.Suspended, &server.Transferring, &server.TransferTargetNodeID, &server.TransferState, &server.TransferError, &server.TransferRunToken, &server.MemoryMB, &server.CPUShares, &server.DiskMB, &server.Node, &server.Owner, &server.Template, &server.RuntimeProvider); err != nil {
 			return nil, 0, err
 		}
 		servers = append(servers, server)
@@ -248,18 +254,22 @@ func (s *Store) CreateServer(ctx context.Context, req CreateServerRequest) (Serv
 
 	serverUUID := uuid.NewString()
 	uuidShort := serverUUID[:8]
+	runtimeProvider := strings.TrimSpace(req.RuntimeProvider)
+	if runtimeProvider == "" {
+		runtimeProvider = "docker"
+	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO servers (
 			id, node_id, owner_id, template_id, egg_id, name, status, desired_state, actual_state,
 			memory_mb, cpu_shares, cpu_limit, disk_mb, database_limit, backup_limit,
 			allocation_limit, io_weight, swap_mb, threads, oom_disabled, docker_image,
 			startup_command, primary_allocation_id, installed, config_sync_pending,
-			uuid, uuid_short, skip_scripts, docker_labels
+			uuid, uuid_short, skip_scripts, docker_labels, runtime_provider
 		)
 		VALUES ($1, $2, $3, $4, $4, $5, 'provisioning', 'stopped', 'stopped',
 			$6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, false, false,
-			$20, $21, $22, $23::jsonb)
-	`, serverID, req.NodeID, req.OwnerID, req.TemplateID, strings.TrimSpace(req.Name), req.MemoryMB, req.CPUShares, req.CPULimit, req.DiskMB, req.DatabaseLimit, req.BackupLimit, req.AllocationLimit, req.IOWeight, req.SwapMB, strings.TrimSpace(req.Threads), req.OOMDisabled, strings.TrimSpace(req.DockerImage), strings.TrimSpace(req.StartupCommand), req.AllocationID, serverUUID, uuidShort, req.SkipScripts, req.DockerLabels)
+			$20, $21, $22, $23::jsonb, $24)
+	`, serverID, req.NodeID, req.OwnerID, req.TemplateID, strings.TrimSpace(req.Name), req.MemoryMB, req.CPUShares, req.CPULimit, req.DiskMB, req.DatabaseLimit, req.BackupLimit, req.AllocationLimit, req.IOWeight, req.SwapMB, strings.TrimSpace(req.Threads), req.OOMDisabled, strings.TrimSpace(req.DockerImage), strings.TrimSpace(req.StartupCommand), req.AllocationID, serverUUID, uuidShort, req.SkipScripts, req.DockerLabels, runtimeProvider)
 	if err != nil {
 		return Server{}, err
 	}
@@ -317,7 +327,8 @@ func (s *Store) GetServer(ctx context.Context, serverID string) (Server, error) 
 		       n.name, n.id::text, COALESCE(NULLIF(n.fqdn, ''), n.base_url), COALESCE(n.daemon_sftp, 2022),
 		       u.email, u.id::text, e.name,
 		       COALESCE(s.uuid, ''), COALESCE(s.uuid_short, ''), s.installed_at, s.skip_scripts, s.docker_labels,
-		       COALESCE(s.generation, 0), s.workload_lease_expiry
+		       COALESCE(s.generation, 0), s.workload_lease_expiry,
+		       COALESCE(s.runtime_provider, 'docker')
 		FROM servers s
 		JOIN nodes n ON n.id = s.node_id
 		JOIN users u ON u.id = s.owner_id
@@ -334,6 +345,7 @@ func (s *Store) GetServer(ctx context.Context, serverID string) (Server, error) 
 		&server.Owner, &server.OwnerID, &server.Template,
 		&server.Uuid, &server.UuidShort, &server.InstalledAt, &server.SkipScripts, &server.DockerLabels,
 		&server.Generation, &server.WorkloadLeaseExpiry,
+		&server.RuntimeProvider,
 	)
 	if err != nil {
 		return Server{}, err
@@ -369,29 +381,11 @@ func (s *Store) UpdateServerTransferState(ctx context.Context, serverID, state s
 	return err
 }
 
-func (s *Store) SetServerSuspension(ctx context.Context, serverID string, suspended bool) error {
-	commandTag, err := s.db.Exec(ctx, `UPDATE servers SET suspended = $1 WHERE id = $2`, suspended, serverID)
-	if err != nil {
-		return err
-	}
-	if commandTag.RowsAffected() == 0 {
-		return errors.New("server not found")
-	}
-	return nil
-}
-
-func (s *Store) CompareAndSetServerSuspension(ctx context.Context, serverID string, expected, suspended bool) (bool, error) {
-	commandTag, err := s.db.Exec(ctx, `
-		UPDATE servers
-		SET suspended = $3
-		WHERE id = $1 AND suspended = $2
-	`, serverID, expected, suspended)
-	if err != nil {
-		return false, err
-	}
-	return commandTag.RowsAffected() == 1, nil
-}
-
+// SetServerSuspended is the only suspension write. Suspension is not a column
+// update: it has to stop the workload too, so it is reached through the cluster
+// manager. The flag-only variants that used to sit here let a caller mark a
+// running server suspended and leave it running, which is why they are gone
+// rather than kept as a tempting shortcut.
 func (s *Store) SetServerSuspended(ctx context.Context, serverID string, suspended bool, actorID *string) error {
 	commandTag, err := s.db.Exec(ctx, `UPDATE servers SET suspended = $1 WHERE id = $2`, suspended, serverID)
 	if err != nil {
@@ -506,9 +500,78 @@ func (s *Store) UpdateServerGeneration(ctx context.Context, serverID string, gen
 		return err
 	}
 	if commandTag.RowsAffected() == 0 {
-		return errors.New("server not found")
+		return ErrServerNotFound
 	}
 	return nil
+}
+
+// GetServerGeneration returns servers.generation for a server.
+//
+// Generation is a fencing value: consumers compare it against an operation's
+// observed generation to decide whether that operation is stale. Zero is a
+// meaningful reading (never fenced), which is exactly why a failed lookup must
+// not produce it — a caller handed 0 on error concludes that nothing is
+// fenced. Callers that previously ran this query inline and discarded the
+// error did precisely that.
+//
+// A server with no row returns ErrServerNotFound, distinct from a query
+// failure.
+func (s *Store) GetServerGeneration(ctx context.Context, serverID string) (int64, error) {
+	if s.db == nil {
+		return 0, errors.New("no database connection")
+	}
+	var generation int64
+	err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(generation, 0)
+		FROM servers
+		WHERE id = $1
+	`, serverID).Scan(&generation)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, fmt.Errorf("%w: %s", ErrServerNotFound, serverID)
+	case err != nil:
+		return 0, fmt.Errorf("read generation for server %s: %w", serverID, err)
+	}
+	return generation, nil
+}
+
+// GetServerGenerations returns servers.generation for each of the given server
+// IDs, keyed by ID. IDs with no row are simply absent from the map, so a
+// caller can tell "this server is gone" from "generation 0"; any failure to
+// read is an error, never a short map.
+//
+// Callers use this to fence a batch of operations at once. A partial result
+// looks identical to a complete one, so a mid-stream failure (rows.Err) has to
+// be surfaced here rather than left to the caller to remember.
+func (s *Store) GetServerGenerations(ctx context.Context, serverIDs []string) (map[string]int64, error) {
+	generations := make(map[string]int64, len(serverIDs))
+	if len(serverIDs) == 0 {
+		return generations, nil
+	}
+	if s.db == nil {
+		return nil, errors.New("no database connection")
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id::text, COALESCE(generation, 0)
+		FROM servers
+		WHERE id = ANY($1::uuid[])
+	`, serverIDs)
+	if err != nil {
+		return nil, fmt.Errorf("query server generations: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var generation int64
+		if err := rows.Scan(&id, &generation); err != nil {
+			return nil, fmt.Errorf("scan server generation: %w", err)
+		}
+		generations[id] = generation
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read server generations: %w", err)
+	}
+	return generations, nil
 }
 
 func invalidOptionalInt(value *int, minimum int, strict bool) bool {

@@ -6,21 +6,29 @@ import { Suspense, useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Eye, EyeOff, KeyRound, ShieldCheck } from "lucide-react";
 import { login, loginCheckpoint, fetchSetupStatus, type LoginResponse } from "@/lib/api";
+import { queryKeys } from "@/lib/api/query-keys";
 import { useServerStore } from "@/stores/use-server-store";
 import { AuthShell } from "@/components/ui/auth-shell";
 import { Alert, Button, Field, Input } from "@/components/ui/primitives";
 import { safeRedirectPath } from "@/components/ui/auth-utils";
 import { useT } from "@/components/TranslationProvider";
 
-type SetupStatus = "ready" | "required" | "unreachable";
+type SetupStatus = "checking" | "ready" | "required" | "unreachable";
 
 function LoginContent() {
   const t = useT();
   const router = useRouter();
-  const replaceRoute = router.replace;
+  // Effects below depend on `replace`, not on `router`. `useRouter()` may hand
+  // back a fresh object identity per render (every test mock returns a new
+  // object literal), so a `[router]` dependency would re-run these effects on
+  // every render — looping the setup probe and draining mocked fetch queues.
+  // Extracting the method keeps the dependency exact and lets
+  // react-hooks/exhaustive-deps verify it instead of being suppressed.
+  const { replace } = router;
   const params = useSearchParams();
   const qc = useQueryClient();
-  const { currentUser, setCurrentUser } = useServerStore();
+  const currentUser = useServerStore((s) => s.currentUser);
+  const setCurrentUser = useServerStore((s) => s.setCurrentUser);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -29,7 +37,7 @@ function LoginContent() {
   const [code, setCode] = useState("");
   const [isRecovery, setIsRecovery] = useState(false);
   const [cooldown, setCooldown] = useState(0);
-  const [setupStatus, setSetupStatus] = useState<SetupStatus>("ready");
+  const [setupStatus, setSetupStatus] = useState<SetupStatus>("checking");
 
   useEffect(() => {
     let cancelled = false;
@@ -38,7 +46,7 @@ function LoginContent() {
         if (cancelled) return;
         if (data.required) {
           setSetupStatus("required");
-          replaceRoute("/setup");
+          replace("/setup");
         } else {
           setSetupStatus("ready");
         }
@@ -49,16 +57,19 @@ function LoginContent() {
         setSetupStatus("unreachable");
       });
     return () => { cancelled = true; };
-  }, [replaceRoute]);
+  }, [replace]);
 
-  useEffect(() => { if (currentUser && setupStatus === "ready") { replaceRoute(currentUser.role === "admin" ? "/admin/overview" : "/servers"); } }, [currentUser, replaceRoute, setupStatus]);
+  // Block the authenticated redirect until the setup probe resolves: with an
+  // initial "checking" state a signed-in user cannot be bounced to /servers
+  // on first run before we know setup is required.
+  useEffect(() => { if (currentUser && setupStatus === "ready") { replace(currentUser.role === "admin" ? "/admin/overview" : "/servers"); } }, [currentUser, replace, setupStatus]);
   useEffect(() => { if (cooldown <= 0) return; const timer = window.setInterval(() => setCooldown((value) => Math.max(0, value - 1)), 1000); return () => window.clearInterval(timer); }, [cooldown]);
 
   function finishLogin(data: LoginResponse) {
       if (!data.complete || !data.user) { setErrors({ form: t("auth.incompleteResponse") }); return; }
-      setCurrentUser(data.user); qc.setQueryData(["current-user"], data.user);
+      setCurrentUser(data.user); qc.setQueryData(queryKeys.session.currentUser(), data.user);
       const requested = safeRedirectPath(params.get("next"));
-      replaceRoute(requested || (data.user.role === "admin" ? "/admin/overview" : "/servers"));
+      router.replace(requested || (data.user.role === "admin" ? "/admin/overview" : "/servers"));
     }
 
   function mutationError(error: unknown, fallback: string) {
@@ -82,7 +93,7 @@ function LoginContent() {
 
   return <AuthShell eyebrow={t("auth.welcomeBack")} title={t("auth.login")} description={t("auth.useCredentialsToContinue")} footer={<>{t("auth.needAccessHelp")}</>}>
     <form className="ui-card space-y-5 p-5 sm:p-6" noValidate onSubmit={(event) => { event.preventDefault(); const nextErrors: typeof errors = {}; if (!/^\S+@\S+\.\S+$/.test(email.trim())) nextErrors.email = t("auth.enterValidEmail"); if (!password) nextErrors.password = t("auth.enterYourPassword"); setErrors(nextErrors); if (!nextErrors.email && !nextErrors.password) loginMutation.mutate(); }}>
-      {setupStatus === "unreachable" ? <Alert actions={<Button onClick={() => { setSetupStatus("ready"); }} variant="secondary">{t("common.retry")}</Button>} className="mb-4" title={t("auth.unableToReachApi")} tone="warning">{t("auth.outageNotConfigured")}</Alert> : null}
+      {setupStatus === "unreachable" ? <Alert actions={<Button onClick={() => { setSetupStatus("checking"); fetchSetupStatus().then((data) => { if (data.required) { setSetupStatus("required"); router.replace("/setup"); } else { setSetupStatus("ready"); } }).catch(() => setSetupStatus("unreachable")); }} variant="secondary">{t("common.retry")}</Button>} className="mb-4" title={t("auth.unableToReachApi")} tone="warning">{t("auth.outageNotConfigured")}</Alert> : null}
       {params.get("setup") === "complete" ? <Alert tone="success" title={t("auth.administratorCreated")}>{t("auth.setupCompleteSignIn")}</Alert> : null}
       {params.get("reason") === "session-expired" ? <Alert tone="warning" title={t("auth.sessionExpiredTitle")}>{t("auth.signInAgainToContinue")}</Alert> : null}
       <Field error={errors.email} id="email" label={t("auth.email")}><Input aria-describedby={errors.email ? "email-error" : undefined} autoComplete="email" autoFocus id="email" invalid={Boolean(errors.email)} onChange={(event) => { setEmail(event.target.value); if (errors.email) setErrors((value) => ({ ...value, email: undefined })); }} placeholder="you@example.com" type="email" value={email} /></Field>

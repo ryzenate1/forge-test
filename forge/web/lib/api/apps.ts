@@ -1,3 +1,6 @@
+import { fetchJSON, postJSON, putJSON, patchJSON, deleteJSON, buildWebSocketUrl, isApiError } from "./http";
+import { getAllTemplates } from "@/lib/app-templates-data";
+
 export type AppType = "image" | "git" | "compose" | "game_server";
 
 export type AppStatus =
@@ -9,7 +12,9 @@ export type AppStatus =
   | "pending"
   | "restarting"
   | "starting"
-  | "stopping";
+  | "stopping"
+  | "idle"
+  | "unknown";
 
 export type DeploymentStatus =
   | "pending"
@@ -23,6 +28,12 @@ export type ApiApp = {
   name: string;
   type: AppType;
   status: AppStatus;
+  // Explicit desired vs observed lifecycle state, projected straight from the
+  // backend store.Application row. Absent means unknown — never defaulted.
+  desiredState?: string;
+  observedStatus?: string;
+  // Convenience primary domain (first configured domain); full list in `domains`.
+  domain?: string;
   node?: string;
   region?: string;
   image?: string;
@@ -93,19 +104,29 @@ export type ComposeService = {
 
 export type AppDeployment = {
   id: string;
-  appId: string;
-  revision: number;
   status: DeploymentStatus;
-  source: AppType;
-  trigger: "manual" | "webhook" | "auto";
+  // Fields provided by the backend (store.Deployment projection over
+  // GET /apps/:id/deployments).
+  serverId?: string;
+  strategy?: string;
+  image?: string;
+  currentRevisionId?: string;
+  rolloutStrategy?: string;
+  progressPct?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  error?: string;
+  // Optional/legacy fields some views still reference; may be absent from the API.
+  appId?: string;
+  revision?: number;
+  source?: AppType;
+  trigger?: "manual" | "webhook" | "auto";
   commit?: string;
   commitMessage?: string;
-  image?: string;
-  startedAt: string;
+  startedAt?: string;
   completedAt?: string;
   duration?: number;
   log?: string;
-  error?: string;
 };
 
 export type AppBackup = {
@@ -126,6 +147,7 @@ export type AppTemplate = {
   icon?: string;
   image?: string;
   gitUrl?: string;
+  gitBranch?: string;
   composeContent?: string;
   defaultPorts: AppPort[];
   defaultEnvVars: Record<string, string>;
@@ -219,28 +241,184 @@ export type AppLogEntry = {
   stream: "stdout" | "stderr";
 };
 
-import { fetchJSON, postJSON, putJSON, patchJSON, deleteJSON, API_BASE_URL } from "./http";
-import { getAllTemplates } from "@/lib/app-templates-data";
-
 export async function fetchApps(): Promise<ApiApp[]> {
-  const response = await fetchJSON<ApiApp[] | { data: ApiApp[] }>("/apps");
-  if (Array.isArray(response)) return response;
-  if (response && Array.isArray((response as { data?: ApiApp[] }).data)) {
-    return (response as { data: ApiApp[] }).data;
+  const response = await fetchJSON<BackendApplication[] | { data: BackendApplication[] }>("/apps");
+  const raw = Array.isArray(response)
+    ? response
+    : response && Array.isArray((response as { data?: BackendApplication[] }).data)
+      ? (response as { data: BackendApplication[] }).data
+      : [];
+  return raw.map(mapApplication);
+}
+
+export async function fetchApp(id: string): Promise<ApiAppDetail> {
+  const raw = await fetchJSON<BackendApplication>(`/apps/${encodeURIComponent(id)}`);
+  return mapApplicationDetail(raw);
+}
+
+export async function createApp(input: CreateAppInput): Promise<ApiApp> {
+  // Send both shapes: the canonical {sourceType, sourceConfig} the API
+  // persists, plus the flat wizard fields older servers fold themselves.
+  const raw = await postJSON<BackendApplication>("/apps", toBackendCreatePayload(input));
+  return mapApplication(raw);
+}
+
+export async function updateApp(id: string, input: UpdateAppInput): Promise<ApiApp> {
+  const raw = await putJSON<BackendApplication>(`/apps/${encodeURIComponent(id)}`, input);
+  return mapApplication(raw);
+}
+
+// ---- Backend contract mapping -------------------------------------------
+// GET /apps returns store.Application rows:
+//   {id, name, sourceType: "GIT"|"DOCKER_IMAGE"|"COMPOSE", sourceConfig: {...},
+//    desiredState, observedStatus, serverId, ...}
+// which this module normalizes into the ApiApp shape the UI renders.
+
+export type BackendApplication = {
+  id: string;
+  name: string;
+  description?: string;
+  orgId?: string;
+  type?: string;
+  sourceType?: string;
+  sourceConfig?: unknown;
+  status?: string;
+  desiredState?: string;
+  observedStatus?: string;
+  node?: string;
+  region?: string;
+  serverId?: string;
+  image?: string;
+  version?: string;
+  ports?: AppPort[];
+  domains?: AppDomain[];
+  envVars?: Record<string, string>;
+  volumes?: AppVolume[];
+  cpuLimit?: number;
+  memoryLimit?: number;
+  diskLimit?: number;
+  createdAt: string;
+  updatedAt?: string;
+  deployedAt?: string;
+  ownerId?: string;
+};
+
+type SourceConfigDoc = {
+  image?: string;
+  gitUrl?: string;
+  gitBranch?: string;
+  gitProvider?: string;
+  composeContent?: string;
+  content?: string;
+  nodeId?: string;
+  regionId?: string;
+  envVars?: Record<string, string>;
+  ports?: AppPort[];
+  volumes?: AppVolume[];
+  memoryMb?: number;
+  cpuShares?: number;
+  diskMb?: number;
+  cpuLimit?: string;
+  memoryLimit?: string;
+  diskLimit?: string;
+};
+
+const SOURCE_TYPE_TO_APP: Record<string, AppType> = {
+  DOCKER_IMAGE: "image",
+  GIT: "git",
+  COMPOSE: "compose",
+};
+
+function parseSourceConfig(raw: unknown): SourceConfigDoc {
+  if (!raw) return {};
+  try {
+    const doc = typeof raw === "string" ? (JSON.parse(raw) as unknown) : raw;
+    if (doc && typeof doc === "object" && !Array.isArray(doc)) return doc as SourceConfigDoc;
+  } catch {
+    // Unreadable config is not fatal for the list view.
   }
-  return [];
+  return {};
 }
 
-export function fetchApp(id: string): Promise<ApiAppDetail> {
-  return fetchJSON<ApiAppDetail>(`/apps/${encodeURIComponent(id)}`);
+function splitImageTag(image?: string): { image?: string; version?: string } {
+  if (!image) return {};
+  const at = image.indexOf("@");
+  const ref = at >= 0 ? image.slice(0, at) : image;
+  const slash = ref.lastIndexOf("/");
+  const colon = ref.lastIndexOf(":");
+  if (colon > slash) {
+    return { image, version: ref.slice(colon + 1) || undefined };
+  }
+  return { image, version: undefined };
 }
 
-export function createApp(input: CreateAppInput): Promise<ApiApp> {
-  return postJSON<ApiApp>("/apps", input);
+function toBackendCreatePayload(input: CreateAppInput): Record<string, unknown> {
+  const sourceType =
+    input.type === "image" ? "DOCKER_IMAGE" : input.type === "git" ? "GIT" : input.type === "compose" ? "COMPOSE" : input.type;
+  const sourceConfig: Record<string, unknown> = {};
+  if (input.image?.trim()) sourceConfig.image = input.image.trim();
+  if (input.gitUrl?.trim()) sourceConfig.gitUrl = input.gitUrl.trim();
+  if (input.gitBranch?.trim()) sourceConfig.gitBranch = input.gitBranch.trim();
+  if (input.gitProvider?.trim()) sourceConfig.gitProvider = input.gitProvider.trim();
+  if (input.composeContent?.trim()) sourceConfig.composeContent = input.composeContent;
+  if (input.nodeId?.trim()) sourceConfig.nodeId = input.nodeId.trim();
+  if (input.regionId?.trim()) sourceConfig.regionId = input.regionId.trim();
+  return { ...input, sourceType, sourceConfig };
 }
 
-export function updateApp(id: string, input: UpdateAppInput): Promise<ApiApp> {
-  return putJSON<ApiApp>(`/apps/${encodeURIComponent(id)}`, input);
+export function mapApplication(raw: BackendApplication): ApiApp {
+  const cfg = parseSourceConfig(raw.sourceConfig);
+  const upperType = typeof raw.sourceType === "string" ? raw.sourceType.toUpperCase() : "";
+  const type: AppType =
+    SOURCE_TYPE_TO_APP[upperType] ??
+    (raw.type === "image" || raw.type === "git" || raw.type === "compose" || raw.type === "game_server" ? raw.type : "image");
+  const split = splitImageTag(cfg.image ?? raw.image);
+  // Absent means unknown — never default to a healthy-looking state. "unknown"
+  // is now a first-class AppStatus so the UI renders it as not-reported.
+  const reportedStatus = raw.observedStatus || raw.status || "unknown";
+  return {
+    id: raw.id,
+    name: raw.name,
+    type,
+    status: reportedStatus as ApiApp["status"],
+    desiredState: raw.desiredState,
+    observedStatus: raw.observedStatus,
+    domain: (raw.domains ?? [])[0]?.domain,
+    node: raw.node ?? cfg.nodeId,
+    region: raw.region ?? cfg.regionId,
+    image: split.image,
+    version: split.version ?? raw.version,
+    cpuUsage: undefined,
+    cpuLimit: raw.cpuLimit,
+    memoryUsage: undefined,
+    memoryLimit: raw.memoryLimit,
+    diskUsage: undefined,
+    diskLimit: raw.diskLimit,
+    ports: cfg.ports ?? raw.ports ?? [],
+    domains: raw.domains ?? [],
+    envVars: cfg.envVars ?? raw.envVars ?? {},
+    volumes: cfg.volumes ?? raw.volumes ?? [],
+    createdAt: raw.createdAt,
+    updatedAt: raw.updatedAt,
+    deployedAt: raw.deployedAt,
+    ownerId: raw.ownerId,
+  };
+}
+
+export function mapApplicationDetail(raw: BackendApplication): ApiAppDetail {
+  const cfg = parseSourceConfig(raw.sourceConfig);
+  const base = mapApplication(raw);
+  return {
+    ...base,
+    gitRepo: cfg.gitUrl,
+    gitBranch: cfg.gitBranch,
+    gitProvider: cfg.gitProvider,
+    resourceLimits: {
+      cpu: cfg.cpuLimit ?? "",
+      memory: cfg.memoryLimit ?? (cfg.memoryMb != null ? String(cfg.memoryMb) : ""),
+      disk: cfg.diskLimit ?? (cfg.diskMb != null ? String(cfg.diskMb) : ""),
+    },
+  };
 }
 
 export function deleteApp(id: string): Promise<void> {
@@ -339,9 +517,7 @@ export function toggleAppAutoDeploy(appId: string, enabled: boolean): Promise<{ 
 }
 
 export function fetchAppConsoleWSURL(serverId: string): string {
-  const protocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
-  const wsBase = API_BASE_URL.replace("http:", protocol).replace("https:", protocol);
-  return `${wsBase}/servers/${encodeURIComponent(serverId)}/ws/console`;
+  return buildWebSocketUrl(`/servers/${encodeURIComponent(serverId)}/ws/console`);
 }
 
 /**
@@ -362,7 +538,9 @@ export async function fetchAppTemplates(): Promise<AppTemplate[]> {
   try {
     return await fetchJSON<AppTemplate[]>("/admin/app-templates");
   } catch (error) {
-    if (error instanceof TypeError) {
+    // `sendRequest` wraps transport failures as `ApiError` with status 0, so
+    // a raw `TypeError` never escapes the primitive — check both shapes.
+    if (error instanceof TypeError || (isApiError(error) && error.status === 0)) {
       console.warn("API unreachable, using local templates", error);
       return getAllTemplates();
     }
@@ -370,40 +548,29 @@ export async function fetchAppTemplates(): Promise<AppTemplate[]> {
   }
 }
 
-export function typeLabel(type: AppType): string {
+export function typeLabel(type: AppType | string | null | undefined): string {
   switch (type) {
     case "image": return "Docker Image";
     case "git": return "Git Repository";
     case "compose": return "Docker Compose";
     case "game_server": return "Game Server";
-    default: return type;
+    default: return typeof type === "string" && type ? type : "unknown";
   }
 }
 
-export function statusLabel(status: AppStatus): string {
+export function statusLabel(status: AppStatus | string | null | undefined): string {
+  if (typeof status !== "string" || !status) return "unknown";
   return status.replace(/_/g, " ");
 }
 
-export function statusTone(status: AppStatus): "green" | "red" | "yellow" | "blue" | "neutral" {
-  switch (status) {
-    case "running": return "green";
-    case "stopped": return "neutral";
-    case "deploying": case "pending": case "installing": case "starting": case "restarting": return "blue";
-    case "stopping": return "yellow";
-    case "failed": return "red";
-    default: return "neutral";
-  }
-}
-
-export function deploymentStatusTone(status: DeploymentStatus): "green" | "red" | "yellow" | "blue" | "neutral" {
-  switch (status) {
-    case "completed": return "green";
-    case "failed": return "red";
-    case "canceled": return "neutral";
-    case "running": return "blue";
-    case "pending": return "yellow";
-    default: return "neutral";
-  }
-}
-
-export { fetchDnsProviders } from "./dns";
+// `statusTone` and `deploymentStatusTone` used to live here, returning colour
+// words and defaulting an unrecognised status to "neutral". They had no
+// importers, but `lib/api.ts` does `export * from './api/apps'` while *not*
+// exporting `./api/status` — so `import { statusTone } from "@/lib/api"`
+// resolved to these instead of the real ones. Both now live only in
+// `lib/api/status.ts`; import from there.
+//
+// NOTE: `fetchDnsProviders` is canonical in `./dns` (re-exported via the
+// barrel). It is deliberately NOT re-exported here: a second star-export path
+// for the same name would make the barrel's `fetchDnsProviders` ambiguous and
+// drop it from `@/lib/api` entirely. Import from `@/lib/api/dns` or `@/lib/api`.

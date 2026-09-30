@@ -14,11 +14,12 @@
  */
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
 import {
   Activity, Boxes, Cable, ChevronRight, Cpu, Gauge,
-  HardDrive, MemoryStick, Network, Settings2, ShieldQuestion, Wrench, Wifi,
+  HardDrive, MemoryStick, Network, Settings2, ShieldQuestion, Terminal, Wrench, Wifi,
 } from "lucide-react";
 import {
   AdminBackButton, AdminErrorState, AdminLoadingState, AdminPageHeader, AdminSection,
@@ -28,16 +29,21 @@ import { NodeDetailView } from "./AdminNodes";
 import {
   fetchNode, fetchNodeAllocations, fetchNodeCapacity, fetchNodeLifecycle,
   fetchNodeServers, fetchNodeSystemInformation,
-  type ApiAllocation, type ApiNode, type ApiServer,
+  type ApiAllocation, type ApiServer,
 } from "@/lib/api";
+import { resolveTone, type ForgeTone } from "@/components/ui/forge/status";
 
-type Tab = "overview" | "workloads" | "network" | "capacity";
+type Tab = "overview" | "workloads" | "network" | "capacity" | "hardware" | "firewall" | "terminal" | "maintenance";
 
 const TABS = [
   { id: "overview", label: "Overview", icon: Activity },
   { id: "workloads", label: "Workloads", icon: Boxes },
   { id: "network", label: "Network", icon: Cable },
   { id: "capacity", label: "Capacity", icon: Gauge },
+  { id: "hardware", label: "Hardware", icon: Cpu },
+  { id: "firewall", label: "Firewall", icon: ShieldQuestion },
+  { id: "terminal", label: "Terminal", icon: Terminal },
+  { id: "maintenance", label: "Maintenance", icon: Wrench },
 ] as const;
 
 function fmtMiB(mib?: number): string {
@@ -65,28 +71,62 @@ function heartbeatAge(iso?: string): string {
   return `${Math.round(m / 60)}h ago`;
 }
 
-function healthTone(value?: string): "green" | "yellow" | "red" | "neutral" {
-  switch ((value ?? "").toLowerCase()) {
-    case "healthy": case "ok": case "good": return "green";
-    case "warning": case "degraded": case "elevated": return "yellow";
-    case "critical": case "failing": case "unhealthy": return "red";
-    default: return "neutral";
-  }
+// healthTone and stateTone used to live here.
+//
+// healthTone ended in `neutral`, so a subsystem Beacon had not reported
+// rendered in the same grey as a deliberately idle one — a reading we do not
+// have, shown as a reading. Its call sites now use resolveTone, which yields
+// `unknown` for exactly that case.
+//
+// stateTone had no call sites: it was a dead third copy of the node verdict,
+// and a weaker one (it called maintenance and draining `neutral`). The
+// canonical version is nodeStatus in lib/admin/telemetry.ts.
+
+/**
+ * Total capacity from an allocated/available pair.
+ *
+ * Both halves have to be present for the sum to mean anything: adding a
+ * reported "allocated" to an absent "available" would understate the host's
+ * size and overstate how full it is.
+ */
+function capacityTotal(allocated?: number, available?: number): number | undefined {
+  if (typeof allocated !== "number" || !Number.isFinite(allocated)) return undefined;
+  if (typeof available !== "number" || !Number.isFinite(available)) return undefined;
+  return allocated + available;
 }
 
-function stateTone(node: ApiNode): "green" | "yellow" | "red" | "neutral" {
-  const actual = node.actualState ?? "unknown";
-  if (actual === "online") return "green";
-  if (actual === "degraded") return "yellow";
-  if (actual === "offline") return "red";
-  return "neutral";
-}
-
-/** Allocated-vs-total capacity bar. */
+/**
+ * Allocated-vs-total capacity bar.
+ *
+ * `used` and `total` are optional because the node may not have reported its
+ * capacity yet — and an empty bar reading "0 / 0, 0% allocated" is the most
+ * reassuring thing this component could possibly draw for a host it has heard
+ * nothing from. A capacity we do not have is rendered as not reported, never as
+ * zero.
+ */
 function CapacityBar({ label, used, total, unit, icon: Icon }: {
-  label: string; used: number; total: number; unit: string; icon?: typeof Cpu;
+  label: string; used?: number; total?: number; unit: string; icon?: typeof Cpu;
 }) {
-  const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0;
+  const known = typeof used === "number" && Number.isFinite(used)
+    && typeof total === "number" && Number.isFinite(total) && total > 0;
+
+  if (!known) {
+    return (
+      <div>
+        <div className="mb-1 flex items-center justify-between text-xs">
+          <span className="flex items-center gap-1.5 text-slate-400">{Icon ? <Icon size={12} /> : null}{label}</span>
+          <span className="font-mono text-slate-500">not reported</span>
+        </div>
+        {/* Dashed rather than empty: an unfilled solid track is hard to tell
+            apart from a genuine 0%. No role="progressbar" — there is no value
+            to announce, so a screen reader is told the figure is missing. */}
+        <div aria-hidden="true" className="h-1.5 rounded-full border border-dashed border-white/[0.12]" />
+        <div className="mt-0.5 text-right text-[10px] text-slate-500">Awaiting capacity from this node</div>
+      </div>
+    );
+  }
+
+  const pct = Math.min(100, Math.round((used / total) * 100));
   const tone = pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-400" : "bg-emerald-500";
   return (
     <div>
@@ -103,9 +143,17 @@ function CapacityBar({ label, used, total, unit, icon: Icon }: {
 }
 
 function VitalsCard({ label, value, tone, icon: Icon }: {
-  label: string; value: string; tone: "green" | "yellow" | "red" | "neutral"; icon?: typeof Cpu;
+  label: string; value: string; tone: ForgeTone; icon?: typeof Cpu;
 }) {
-  const toneRing = tone === "green" ? "text-emerald-400" : tone === "yellow" ? "text-amber-400" : tone === "red" ? "text-red-400" : "text-slate-400";
+  // `unknown` and `neutral` share the grey family but are not the same claim:
+  // neutral is an idle subsystem, unknown is one we have no reading for. The
+  // dimmer grey keeps an unreported vital from reading as a settled one.
+  const toneRing = tone === "ok" ? "text-emerald-400"
+    : tone === "warn" ? "text-amber-400"
+    : tone === "danger" ? "text-red-400"
+    : tone === "info" || tone === "pending" ? "text-sky-400"
+    : tone === "unknown" ? "text-slate-500"
+    : "text-slate-400";
   return (
     <Card className="flex items-center gap-3 p-4">
       {Icon ? <Icon size={16} className={cn("shrink-0", toneRing)} /> : null}
@@ -185,7 +233,6 @@ export function BeaconWorkspace() {
   return (
     <div className="space-y-5">
       <AdminPageHeader
-        breadcrumb="Infrastructure / Beacons"
         title={node.name}
         description={[
           node.fqdn ?? node.baseUrl ?? "—",
@@ -204,15 +251,15 @@ export function BeaconWorkspace() {
 
       {/* Live vitals — answers "is this machine healthy?" before anything else */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <VitalsCard label="CPU" value={lifecycle?.health.cpu ?? (lifecycleQuery.isError ? "Offline" : "Probing…")} tone={healthTone(lifecycle?.health.cpu)} icon={Cpu} />
-        <VitalsCard label="Memory" value={lifecycle?.health.memory ?? (lifecycleQuery.isError ? "Offline" : "Probing…")} tone={healthTone(lifecycle?.health.memory)} icon={MemoryStick} />
-        <VitalsCard label="Disk" value={lifecycle?.health.disk ?? (lifecycleQuery.isError ? "Offline" : "Probing…")} tone={healthTone(lifecycle?.health.disk)} icon={HardDrive} />
-        <VitalsCard label="Network" value={lifecycle?.health.network ?? (lifecycleQuery.isError ? "Offline" : "Probing…")} tone={healthTone(lifecycle?.health.network)} icon={Wifi} />
-        <VitalsCard label="Runtime" value={lifecycle?.health.runtime ?? (lifecycleQuery.isError ? "Offline" : "Probing…")} tone={healthTone(lifecycle?.health.runtime)} icon={Boxes} />
+        <VitalsCard label="CPU" value={lifecycle?.health.cpu ?? (lifecycleQuery.isError ? "Offline" : "Probing…")} tone={resolveTone(lifecycle?.health.cpu)} icon={Cpu} />
+        <VitalsCard label="Memory" value={lifecycle?.health.memory ?? (lifecycleQuery.isError ? "Offline" : "Probing…")} tone={resolveTone(lifecycle?.health.memory)} icon={MemoryStick} />
+        <VitalsCard label="Disk" value={lifecycle?.health.disk ?? (lifecycleQuery.isError ? "Offline" : "Probing…")} tone={resolveTone(lifecycle?.health.disk)} icon={HardDrive} />
+        <VitalsCard label="Network" value={lifecycle?.health.network ?? (lifecycleQuery.isError ? "Offline" : "Probing…")} tone={resolveTone(lifecycle?.health.network)} icon={Wifi} />
+        <VitalsCard label="Runtime" value={lifecycle?.health.runtime ?? (lifecycleQuery.isError ? "Offline" : "Probing…")} tone={resolveTone(lifecycle?.health.runtime)} icon={Boxes} />
         <VitalsCard
           label="Health score"
           value={healthScore ? `${healthScore.total}/100` : lifecycleQuery.isError ? "Offline" : "Probing…"}
-          tone={healthScore ? (healthScore.total >= 80 ? "green" : healthScore.total >= 50 ? "yellow" : "red") : "neutral"}
+          tone={healthScore ? (healthScore.total >= 80 ? "ok" : healthScore.total >= 50 ? "warn" : "danger") : "unknown"}
           icon={ShieldQuestion}
         />
       </div>
@@ -236,7 +283,7 @@ export function BeaconWorkspace() {
                 ["Kernel", sys?.kernelVersion ?? "—"],
                 ["Daemon version", sys?.version ?? "—"],
                 ["Docker", sys ? `${sys.dockerAvailable ? "Available" : "Unavailable"}${sys.dockerStatus ? ` · ${sys.dockerStatus}` : ""}` : "—"],
-                ["Uptime", fmtUptime(sys?.uptime)],
+                ["Uptime", fmtUptime(sys?.daemonUptimeSeconds ?? sys?.uptime)],
                 ["CPU threads", sys?.cpuThreads != null ? String(sys.cpuThreads) : node.cpuCores != null ? String(node.cpuCores) : "—"],
                 ["Memory limit", fmtMiB(node.memoryMb)],
                 ["Disk limit", fmtMiB(node.diskMb)],
@@ -258,9 +305,13 @@ export function BeaconWorkspace() {
                 <button type="button" className="text-xs text-slate-400 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400" onClick={() => setTab("capacity")}>Details <ChevronRight size={10} className="inline" /></button>
               </div>
               <div className="space-y-4">
-                <CapacityBar label="Memory" used={capacity?.allocated_memory ?? 0} total={(capacity?.available_memory ?? 0) + (capacity?.allocated_memory ?? 0)} unit="MiB" icon={MemoryStick} />
-                <CapacityBar label="Disk" used={capacity?.allocated_disk ?? 0} total={(capacity?.available_disk ?? 0) + (capacity?.allocated_disk ?? 0)} unit="MiB" icon={HardDrive} />
-                <CapacityBar label="CPU" used={capacity?.allocated_cpu ?? 0} total={(capacity?.available_cpu ?? 0) + (capacity?.allocated_cpu ?? 0)} unit="%" icon={Cpu} />
+                {/* No `?? 0`: coercing an unreported figure to zero drew a
+                    0%-allocated bar for a node that had not answered, which
+                    reads as abundant free capacity. Pass the absent value
+                    through and let CapacityBar say it is not reported. */}
+                <CapacityBar label="Memory" used={capacity?.allocated_memory} total={capacityTotal(capacity?.allocated_memory, capacity?.available_memory)} unit="MiB" icon={MemoryStick} />
+                <CapacityBar label="Disk" used={capacity?.allocated_disk} total={capacityTotal(capacity?.allocated_disk, capacity?.available_disk)} unit="MiB" icon={HardDrive} />
+                <CapacityBar label="CPU" used={capacity?.allocated_cpu} total={capacityTotal(capacity?.allocated_cpu, capacity?.available_cpu)} unit="%" icon={Cpu} />
               </div>
             </Card>
             <Card className="p-4">
@@ -305,9 +356,9 @@ export function BeaconWorkspace() {
                           <button
                             type="button"
                             className="text-xs text-slate-400 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
-                            onClick={() => router.push(`/console/servers/${server.id}`)}
+                            onClick={() => router.push(`/server/${server.id}/console`)}
                           >
-                            Open console <ChevronRight size={10} className="inline" />
+                            Open terminal <ChevronRight size={10} className="inline" />
                           </button>
                         </td>
                       </tr>
@@ -376,6 +427,80 @@ export function BeaconWorkspace() {
               </Card>
             </div>
           )}
+        </AdminSection>
+      ) : null}
+
+      {/* ─── Hardware Tab ──────────────────────────────────────────────────── */}
+      {tab === "hardware" ? (
+        <AdminSection title="Hardware & Virtualization">
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card className="p-5">
+              <h3 className="mb-3 text-sm font-semibold text-white">CPU &amp; Kernel</h3>
+              <dl className="space-y-2 text-xs">
+                <div className="flex justify-between"><dt className="text-slate-400">Threads</dt><dd className="font-mono text-slate-200">{typeof sysQuery.data?.cpuThreads === "number" ? sysQuery.data.cpuThreads : "—"}</dd></div>
+                <div className="flex justify-between"><dt className="text-slate-400">Architecture</dt><dd className="font-mono text-slate-200">{sysQuery.data?.architecture ?? "—"}</dd></div>
+                <div className="flex justify-between"><dt className="text-slate-400">Kernel</dt><dd className="font-mono text-slate-200">{sysQuery.data?.kernelVersion ?? "—"}</dd></div>
+                <div className="flex justify-between"><dt className="text-slate-400">OS</dt><dd className="font-mono text-slate-200">{sysQuery.data?.os ?? "—"}</dd></div>
+                <div className="flex justify-between"><dt className="text-slate-400">Container engine</dt><dd className="font-mono text-slate-200">{sysQuery.data?.dockerStatus ?? "—"}</dd></div>
+              </dl>
+            </Card>
+            <Card className="p-5">
+              <h3 className="mb-3 text-sm font-semibold text-white">Memory, Storage &amp; Uptime</h3>
+              <dl className="space-y-2 text-xs">
+                <div className="flex justify-between"><dt className="text-slate-400">Total Memory</dt><dd className="font-mono text-slate-200">{sysQuery.data?.memoryMb ? fmtMiB(sysQuery.data.memoryMb) : "—"}</dd></div>
+                <div className="flex justify-between"><dt className="text-slate-400">Total Disk</dt><dd className="font-mono text-slate-200">{capacity ? fmtMiB((capacity.available_disk ?? 0) + (capacity.allocated_disk ?? 0)) : "—"}</dd></div>
+                <div className="flex justify-between"><dt className="text-slate-400">Host Uptime</dt><dd className="font-mono text-slate-200">{sysQuery.data?.uptime ? fmtUptime(sysQuery.data.uptime) : "—"}</dd></div>
+                <div className="flex justify-between"><dt className="text-slate-400">Agent Uptime</dt><dd className="font-mono text-slate-200">{sysQuery.data?.daemonUptimeSeconds ? fmtUptime(sysQuery.data.daemonUptimeSeconds) : "—"}</dd></div>
+                <div className="flex justify-between"><dt className="text-slate-400">Beacon Version</dt><dd className="font-mono text-slate-200">{sysQuery.data?.version ?? "—"}</dd></div>
+              </dl>
+            </Card>
+            <Card className="p-5 lg:col-span-2">
+              <h3 className="mb-3 text-sm font-semibold text-white">Virtualization Capabilities</h3>
+              <p className="text-xs text-slate-400">Nested virt detection (vmx/svm), hugepages, IOMMU groups, and GPU passthrough require the Beacon host-capabilities endpoint. This section will populate from <code className="rounded bg-white/[0.06] px-1">GET /nodes/:id/host/capabilities</code> once available.</p>
+            </Card>
+          </div>
+        </AdminSection>
+      ) : null}
+
+      {/* ─── Firewall Tab ───────────────────────────────────────────────────── */}
+      {tab === "firewall" ? (
+        <AdminSection title="Firewall & Port Forwards">
+          <Card className="p-5">
+            <p className="text-xs text-slate-400">Manage iptables rules and DNAT port-forwards for this node via the dedicated <Link href={`/admin/firewall?node=${nodeId}`} className="text-red-400 hover:underline">Firewall page</Link>. The firewall supports allow-rules (INPUT chain) and port-forwards (PREROUTING DNAT).</p>
+          </Card>
+        </AdminSection>
+      ) : null}
+
+      {/* ─── Terminal Tab ───────────────────────────────────────────────────── */}
+      {tab === "terminal" ? (
+        <AdminSection title="Host Terminal">
+          <Card className="p-5">
+            <p className="text-xs text-slate-400">Interactive shell on this node requires the PTY host terminal implementation in Beacon. Use <Link href="/admin/terminal" className="text-red-400 hover:underline">Admin Terminal</Link> when it becomes live. Container exec is available via <Link href="/admin/docker" className="text-red-400 hover:underline">Docker</Link>.</p>
+          </Card>
+        </AdminSection>
+      ) : null}
+
+      {/* ─── Maintenance Tab ───────────────────────────────────────────────── */}
+      {tab === "maintenance" ? (
+        <AdminSection title="Maintenance Operations">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Card className="p-5">
+              <h3 className="mb-2 text-sm font-semibold text-white">Drain & Evacuate</h3>
+              <p className="text-xs text-slate-400">Set lifecycle to draining/maintenance via Configure. Evacuation previews at <Link href="/admin/drain" className="text-red-400 hover:underline">/admin/drain</Link>.</p>
+            </Card>
+            <Card className="p-5">
+              <h3 className="mb-2 text-sm font-semibold text-white">Beacon Upgrade</h3>
+              <p className="text-xs text-slate-400">Self-upgrade endpoints exist on Beacon but the API service currently simulates them. Fleet upgrade orchestration is planned.</p>
+            </Card>
+            <Card className="p-5">
+              <h3 className="mb-2 text-sm font-semibold text-white">Reconciliation</h3>
+              <p className="text-xs text-slate-400">Desired-vs-actual drift detection at <Link href="/admin/reconciliation" className="text-red-400 hover:underline">/admin/reconciliation</Link>. Plan→confirm→execute pattern reusable for dangerous VM ops.</p>
+            </Card>
+            <Card className="p-5">
+              <h3 className="mb-2 text-sm font-semibold text-white">Operations Timeline</h3>
+              <p className="text-xs text-slate-400">Recent migrations, recovery plans, install workflows at <Link href="/admin/operations" className="text-red-400 hover:underline">/admin/operations</Link>.</p>
+            </Card>
+          </div>
         </AdminSection>
       ) : null}
 

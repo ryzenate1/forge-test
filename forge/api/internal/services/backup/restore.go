@@ -379,6 +379,13 @@ func (s *RestoreService) Execute(ctx context.Context, restoreID string, userID s
 	if err != nil {
 		return fmt.Errorf("failed to get backup artifact: %w", err)
 	}
+	// Verify the artifact's integrity (independent re-download + re-hash) BEFORE
+	// restoring. Restoring a corrupt/truncated archive onto a live workload is
+	// worse than refusing to; a stored checksum alone is beacon-self-reported and
+	// not proof of integrity.
+	if err := s.artifactService.Verify(ctx, artifact.ID); err != nil {
+		return fmt.Errorf("refusing to restore: backup verification failed: %w", err)
+	}
 	if s.daemonClient != nil {
 		switch restore.RestoreType {
 		case BackupTypeApp:
@@ -817,8 +824,12 @@ func (s *RestoreService) createPreRestoreSnapshot(ctx context.Context, restore *
 
 	rollbackArtifact, err := s.artifactService.Create(ctx, rollbackReq, "system")
 	if err != nil {
-		s.logger.Warnf("Failed to create pre-restore snapshot artifact: %v", err)
-		return nil
+		// Report the failure. Returning nil here claimed the snapshot phase had
+		// succeeded while CanRollback stayed false, so the restore recorded a
+		// passed "creating pre-restore snapshot" phase for work that never
+		// happened. Callers decide whether to continue without a rollback
+		// point; they must not be told there is one.
+		return fmt.Errorf("failed to create pre-restore snapshot artifact: %w", err)
 	}
 
 	restore.RollbackArtifactID = &rollbackArtifact.ID
@@ -850,7 +861,10 @@ func (s *RestoreService) executeAppRestore(ctx context.Context, restore *BackupR
 	restore.CurrentPhase = "creating pre-restore snapshot"
 	_ = s.persistRestore(ctx, restore)
 	if err := s.createPreRestoreSnapshot(ctx, restore, artifact); err != nil {
-		s.logger.Warnf("Pre-restore snapshot warning: %v", err)
+		// Non-fatal by design: the restore proceeds, but without a rollback
+		// point. Say so — restore.CanRollback stays false and Rollback() will
+		// refuse, so silence here would be the only signal an operator gets.
+		s.logger.Warnf("Pre-restore snapshot failed, continuing without rollback capability: %v", err)
 	}
 
 	restore.CurrentPhase = "preparing storage"
@@ -968,7 +982,10 @@ func (s *RestoreService) executeVolumeRestore(ctx context.Context, restore *Back
 	restore.CurrentPhase = "creating pre-restore snapshot"
 	_ = s.persistRestore(ctx, restore)
 	if err := s.createPreRestoreSnapshot(ctx, restore, artifact); err != nil {
-		s.logger.Warnf("Pre-restore snapshot warning: %v", err)
+		// Non-fatal by design: the restore proceeds, but without a rollback
+		// point. Say so — restore.CanRollback stays false and Rollback() will
+		// refuse, so silence here would be the only signal an operator gets.
+		s.logger.Warnf("Pre-restore snapshot failed, continuing without rollback capability: %v", err)
 	}
 
 	restore.CurrentPhase = "downloading backup"
@@ -1054,7 +1071,10 @@ func (s *RestoreService) executeDatabaseRestore(ctx context.Context, restore *Ba
 	restore.CurrentPhase = "creating pre-restore snapshot"
 	_ = s.persistRestore(ctx, restore)
 	if err := s.createPreRestoreSnapshot(ctx, restore, artifact); err != nil {
-		s.logger.Warnf("Pre-restore snapshot warning: %v", err)
+		// Non-fatal by design: the restore proceeds, but without a rollback
+		// point. Say so — restore.CanRollback stays false and Rollback() will
+		// refuse, so silence here would be the only signal an operator gets.
+		s.logger.Warnf("Pre-restore snapshot failed, continuing without rollback capability: %v", err)
 	}
 
 	restore.CurrentPhase = "downloading backup"
@@ -1140,7 +1160,10 @@ func (s *RestoreService) executeServerRestore(ctx context.Context, restore *Back
 	restore.CurrentPhase = "creating pre-restore snapshot"
 	_ = s.persistRestore(ctx, restore)
 	if err := s.createPreRestoreSnapshot(ctx, restore, artifact); err != nil {
-		s.logger.Warnf("Pre-restore snapshot warning: %v", err)
+		// Non-fatal by design: the restore proceeds, but without a rollback
+		// point. Say so — restore.CanRollback stays false and Rollback() will
+		// refuse, so silence here would be the only signal an operator gets.
+		s.logger.Warnf("Pre-restore snapshot failed, continuing without rollback capability: %v", err)
 	}
 
 	restore.CurrentPhase = "downloading backup"

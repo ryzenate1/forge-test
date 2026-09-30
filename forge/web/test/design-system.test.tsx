@@ -31,8 +31,8 @@ import {
   type as typeTokens,
   space,
   motion,
-  statusTones,
 } from "@/lib/design-tokens";
+import { forgeStatusTones, toneStyles } from "@/components/ui/forge/status";
 import { GenerationFencedDots, StateLanesBadge, ServerStateLaneBadge, NodeStateLaneBadge } from "@/components/shared/generation-fenced-dot";
 
 // ---------------------------------------------------------------------------
@@ -143,8 +143,28 @@ describe("design tokens: semantic groups exist", () => {
     expect(colors.canvas).toBe("#0a0e16");
   });
 
-  it("statusTones covers 6-tone scale", () => {
-    expect(statusTones).toEqual(["neutral", "success", "warning", "danger", "info", "blue"]);
+  it("the status vocabulary is the canonical seven, and every one has styles", () => {
+    expect(forgeStatusTones).toEqual([
+      "ok",
+      "warn",
+      "danger",
+      "info",
+      "pending",
+      "neutral",
+      "unknown",
+    ]);
+    for (const tone of forgeStatusTones) {
+      expect(toneStyles[tone]).toBeDefined();
+    }
+  });
+
+  it("unknown is visually distinct from every other tone", () => {
+    // A reading we do not have must not look like one we do. The dashed edge
+    // is what separates "no reading" from the solid chips around it.
+    expect(toneStyles.unknown.chip).toContain("border-dashed");
+    for (const tone of forgeStatusTones.filter((t) => t !== "unknown")) {
+      expect(toneStyles[tone].chip).not.toContain("border-dashed");
+    }
   });
 
   it("spacing uses 4pt grid", () => {
@@ -159,7 +179,7 @@ describe("design tokens: semantic groups exist", () => {
     expect(motion.duration).toBe(180);
     expect(motion.easing).toBe("cubic-bezier(0.2,0,0,1)");
     expect(typeTokens.display).toBe("Space Grotesk");
-    expect(typeTokens.body).toBe("IBM Plex Sans");
+    expect(typeTokens.body).toBe("Manrope");
     expect(typeTokens.mono).toBe("JetBrains Mono");
   });
 
@@ -202,7 +222,13 @@ describe("design tokens: semantic groups exist", () => {
     expect(tw).toContain('fault: "var(--fault)"');
     // shadow/radius
     expect(tw).toContain('card: "var(--shadow-card)"');
-    expect(tw).toContain('sm: "var(--radius-sm)"');
+    // The radius scale is flatter than Tailwind's default (4/6/8/12): `sm` is
+    // the tightest corner and `lg` the card corner. What matters here is that
+    // every step resolves through a token, not which alias holds which step.
+    expect(tw).toContain('sm: "var(--radius-xs)"');
+    expect(tw).toContain('md: "var(--radius-sm)"');
+    expect(tw).toContain('lg: "var(--radius)"');
+    expect(tw).toContain('full: "var(--radius-full)"');
     // ensure no raw bg hex slipped into tailwind config outside comments
     const hardcodedInTw = tw.match(/"#[0-9a-fA-F]{3,8}"/g) ?? [];
     // No quoted hex outside comments — tokens are all var(--*)
@@ -299,21 +325,18 @@ describe("no hardcoded bg-[#...] remaining (except blurple)", () => {
 // 3. Space Grotesk / IBM Plex Sans / JetBrains Mono via next/font
 // ---------------------------------------------------------------------------
 describe("typography: next/font loading", () => {
-  it("app/fonts.ts imports Space_Grotesk, IBM_Plex_Sans, JetBrains_Mono from next/font/google", () => {
+  it("app/fonts.ts imports Manrope and JetBrains_Mono from next/font/google", () => {
     const src = readFileSync(resolve(__dirname, "../app/fonts.ts"), "utf8");
     expect(src).toContain('from "next/font/google"');
-    expect(src).toContain("Space_Grotesk");
-    expect(src).toContain("IBM_Plex_Sans");
+    expect(src).toContain("Manrope");
     expect(src).toContain("JetBrains_Mono");
   });
 
   it("fonts.ts exports sans/display/mono with correct variable names", () => {
     const src = readFileSync(resolve(__dirname, "../app/fonts.ts"), "utf8");
     expect(src).toContain('variable: "--font-sans"');
-    expect(src).toContain('variable: "--font-display"');
     expect(src).toContain('variable: "--font-mono"');
-    expect(src).toContain("export const sans = IBM_Plex_Sans");
-    expect(src).toContain("export const display = Space_Grotesk");
+    expect(src).toContain("export const sans = Manrope");
     expect(src).toContain("export const mono = JetBrains_Mono");
     // weights cover body/display
     expect(src).toContain('weight: ["400", "500", "600", "700"]');
@@ -338,7 +361,7 @@ describe("typography: next/font loading", () => {
 
   it("tailwind.config.ts fontFamily prefers next/font vars", () => {
     const tw = readFileSync(resolve(__dirname, "../tailwind.config.ts"), "utf8");
-    expect(tw).toContain('sans: ["var(--font-sans)", "IBM Plex Sans"');
+    expect(tw).toContain('sans: ["var(--font-sans)", "Manrope"');
     expect(tw).toContain('display: ["var(--font-display)", "Space Grotesk"');
     expect(tw).toContain('mono: ["var(--font-mono)", "JetBrains Mono"');
   });
@@ -413,9 +436,10 @@ describe("GenerationFencedDots — two-dot badge", () => {
   it("applies fenced ring to actual dot when generation < fenceGeneration", () => {
     const { container } = render(<GenerationFencedDots desired="running" actual="pending" generation={1} fenceGeneration={5} />);
     const dots = container.firstElementChild!.querySelectorAll("span[aria-hidden]");
-    // second dot should have fenced ring
+    // second dot should have fenced ring, tinted from --danger rather than the
+    // flat token so the ring reads as a warning outline, not a solid border.
     expect(dots[1].className).toContain("ring-2");
-    expect(dots[1].className).toContain("ring-[var(--danger)]");
+    expect(dots[1].className).toContain("ring-[color-mix(in_srgb,var(--danger)_70%,transparent)]");
     // title should contain fenced
     expect(screen.getByLabelText(/fenced/)).toBeInTheDocument();
   });

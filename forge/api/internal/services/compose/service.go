@@ -10,6 +10,21 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+// env_file (service-level string/list form and include-level form) is ACCEPTED
+// AND SILENTLY IGNORED: rawService/rawInclude keep an EnvFile field only so the
+// key survives YAML round-tripping. It never fails parsing, never affects
+// validity, and emits no diagnostic, regardless of FORGE_ENV_FILE_STRICT.
+//
+// This is the final contract pinned by
+// forge/api/internal/services/compose/env_file_test.go and compose_fixes_test.go
+// (see their NOTE comments: "the refactor deleted the gate ... env_file is
+// accepted and silently ignored in all forms"). It supersedes the earlier
+// FORGE_ENV_FILE_STRICT reject gate recorded in
+// audits/110-phase-03-impl/subagent-06-compose-fixes.md (section 2.3); the
+// accept-and-ignore posture matches the "env_file silently ignored" reference
+// state in audits/110-phase-02-context/subagent-05-runtime-compose-confirm.md
+// (section 3.7). Policy: never hard-fail on env_file.
+
 const MaxComposeYAMLBytes = 1 * 1024 * 1024 // 1 MB
 
 type GitStackConfig struct {
@@ -93,6 +108,7 @@ type rawService struct {
 	Build       map[string]interface{} `yaml:"build,omitempty"`
 	Ports       []interface{}          `yaml:"ports,omitempty"`
 	Environment interface{}            `yaml:"environment,omitempty"`
+	EnvFile     interface{}            `yaml:"env_file,omitempty"`
 	Volumes     []interface{}          `yaml:"volumes,omitempty"`
 	DependsOn   interface{}            `yaml:"depends_on,omitempty"`
 	Profiles    []string               `yaml:"profiles,omitempty"`
@@ -156,6 +172,8 @@ func (s *Service) ParseComposeYAML(content []byte, workingDir string, envVars ma
 		return nil, fmt.Errorf("failed to parse compose YAML: %w", err)
 	}
 
+	// env_file (svc.EnvFile / include EnvFile) is deliberately NOT inspected
+	// here: it is accepted and ignored and must never fail parsing.
 	projectName := raw.Name
 	if projectName == "" && workingDir != "" {
 		projectName = filepath.Base(workingDir)
@@ -238,6 +256,9 @@ func (s *Service) ParseComposeYAML(content []byte, workingDir string, envVars ma
 
 func (s *Service) ValidateCompose(content []byte, workingDir string) *ValidateResult {
 	result := &ValidateResult{Valid: true}
+
+	// env_file is accepted and ignored (never an error, never a warning) in
+	// every form, including strict mode — see the note above MaxComposeYAMLBytes.
 
 	parsed, err := s.ParseComposeYAML(content, workingDir, nil)
 	if err != nil {
